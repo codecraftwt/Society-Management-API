@@ -54,9 +54,10 @@ const createOrder = async (req, res) => {
 
   } catch (err) {
     console.error("Create Order Error:", err);
+    const detail = (err && (err.error && err.error.description)) || (err && err.message) || "Payment gateway error";
     return res.status(500).json({
       success: false,
-      message: err.message,
+      message: detail,
     });
   }
 };
