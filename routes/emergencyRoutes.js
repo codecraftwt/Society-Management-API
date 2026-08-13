@@ -13,7 +13,7 @@ router.post("/", auth, role("GUARD", "RESIDENT", "FAMILY_MEMBER"), createEmergen
 router.get("/", auth, role("SOCIETY_ADMIN", "GUARD"), getEmergencyAlerts);
 
 // ✅ FAMILY_MEMBER can view active emergencies
-router.get("/active", auth, role("SOCIETY_ADMIN", "RESIDENT", "GUARD", "FAMILY_MEMBER"), getActiveEmergencies);
+router.get("/active", auth, role("SOCIETY_ADMIN", "RESIDENT", "GUARD", "FAMILY_MEMBER", "COMMITTEE_MEMBER"), getActiveEmergencies);
 
 // Admin only — resolve
 router.patch("/:id/resolve", auth, role("SOCIETY_ADMIN"), resolveEmergency);

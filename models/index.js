@@ -28,6 +28,7 @@ const ResidentHistory = require("./ResidentHistory");
 const Floor = require("./Floor");
 const UserDocuments = require("./UserDocuments");
 const FlatMembership = require("./FlatMembership");
+const BillingRule = require("./BillingRule");
 
 
 
@@ -389,4 +390,5 @@ module.exports = {
   ComplaintComment,
   UserDocuments,
   FlatMembership,
+  BillingRule,
 };
