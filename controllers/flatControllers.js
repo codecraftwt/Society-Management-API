@@ -313,8 +313,8 @@ const deleteFlat = async (req, res) => {
 
 /* ─────────────────────────────────────────────────────────────
    GET ASSIGNED FLATS
-   Excludes RENTED (tenant) flats so they don't appear
-   in the bill-creation dropdown
+   Returns flats that currently have an active resident/member
+   so shared UI dropdowns can use the same society-scoped list.
 ───────────────────────────────────────────────────────────── */
 const getAssignedFlats = async (req, res) => {
   try {
@@ -333,7 +333,6 @@ const getAssignedFlats = async (req, res) => {
     const flatWhere = {
       resident_id:      { [Op.ne]: null },
       block_id:         { [Op.in]: blockIds },
-      occupancy_status: { [Op.in]: ["OWNER_OCCUPIED"] },
       ...(search && { flat_number: { [Op.like]: `%${search}%` } }),
     };
 

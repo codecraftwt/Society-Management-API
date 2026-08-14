@@ -135,7 +135,7 @@ const {
 // ✅ SPECIFIC routes FIRST — before any /:param routes
 router.get("/getall", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), getAllFlats);
 router.get("/unassigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getUnassignedFlats);
-router.get("/assigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getAssignedFlats);
+router.get("/assigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "GUARD"), getAssignedFlats);
 router.get("/neighbours", auth, role("RESIDENT", "FAMILY_MEMBER"), getNeighbours);
 router.get("/filter", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "GUARD"), getFlatsByBlockAndFloor);
 
