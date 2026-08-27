@@ -8,31 +8,8 @@ const OtpVerification = require("../models/OtpVerification");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
-const nodemailer = require("nodemailer");
 const { Op } = require("sequelize");
-
-/* =====
-    MAIL TRANSPORTER (Gmail) — connection pool enabled
-    ===== */
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 465,
-  secure: true,
-  pool: true,          // ✅ reuse connections instead of creating a new one each time
-  maxConnections: 5,
-  maxMessages: 100,
-  auth: {
-    user: process.env.MAIL_USER,
-    pass: process.env.MAIL_PASS,
-  },
-  tls: { rejectUnauthorized: false },
-});
-
-// ✅ Verify transporter once at startup (non-blocking)
-transporter.verify((err) => {
-  if (err) console.error("[Mailer] SMTP connection failed:", err.message);
-  else console.log("[Mailer] SMTP ready");
-});
+const transporter = require("../utils/mailer");
 
 /* =====
     HELPERS
@@ -43,6 +20,7 @@ function generateOtp() {
 }
 
 async function sendOtpEmail(toEmail, otp, userName) {
+  if (!transporter) return;
   const appName = process.env.APP_NAME || "SocietyApp";
 
   const istNow = new Date(Date.now() + 5.5 * 60 * 60 * 1000);

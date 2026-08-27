@@ -168,7 +168,7 @@ const createEmergency = async (req, res) => {
           guardUser.fcm_token,
           alertTitle,
           alertBody,
-          { route: "/guard/emergency" }
+          { route: "/guard/emergency", type: "EMERGENCY", alertId: String(emergency.id) }
         ).catch(err => console.error("Push Error:", err));
       }
     }
@@ -203,7 +203,7 @@ const createEmergency = async (req, res) => {
           admin.fcm_token,
           alertTitle,
           alertBody,
-          { route: "/admin/emergency" }
+          { route: "/admin/emergency", type: "EMERGENCY", alertId: String(emergency.id) }
         ).catch(err => console.error("Push Error:", err));
       }
     }
@@ -242,7 +242,7 @@ const createEmergency = async (req, res) => {
             neighbor.fcm_token,
             alertTitle,
             neighborBody,
-            { route: "/resident/emergency" }
+            { route: "/resident/emergency", type: "EMERGENCY", alertId: String(emergency.id) }
           ).catch(err => console.error("Push Error:", err));
         }
       }
@@ -266,7 +266,8 @@ const getEmergencyAlerts = async (req, res) => {
     const where = { society_id: req.user.society_id };
 
     if (req.user.role === "GUARD") {
-      where.guard_id = req.user.id;
+      // Guard sees own alerts + any alert with no assigned on-shift guard
+      where[Op.or] = [{ guard_id: req.user.id }, { guard_id: null }];
     }
 
     const alerts = await EmergencyAlert.findAll({
@@ -298,7 +299,8 @@ const getActiveEmergencies = async (req, res) => {
     };
 
     if (req.user.role === "GUARD") {
-      where.guard_id = req.user.id;
+      // Guard sees own alerts + any alert with no assigned on-shift guard
+      where[Op.or] = [{ guard_id: req.user.id }, { guard_id: null }];
     }
 
     const alerts = await EmergencyAlert.findAll({
@@ -369,7 +371,7 @@ const resolveEmergency = async (req, res) => {
           resident.fcm_token,
           title,
           message,
-          { route: "/resident/emergency" }
+          { route: "/resident/emergency", type: "EMERGENCY_RESOLVED", alertId: String(alert.id) }
         ).catch(err => console.error("Push Error:", err));
       }
     }

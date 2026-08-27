@@ -25,6 +25,7 @@ const Flat = sequelize.define("Flat", {
     allowNull: true 
   },
 
+
   resident_id: { 
     type: DataTypes.INTEGER, 
     allowNull: true 

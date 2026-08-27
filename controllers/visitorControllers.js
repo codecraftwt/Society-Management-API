@@ -42,12 +42,10 @@ const getCurrentShiftType = () => {
 
 const getActiveShiftForGuard = async (guardId, societyId) => {
   const today     = getTodayIST();
-  const shiftType = getCurrentShiftType();
   return await GuardShift.findOne({
     where: {
       guard_id:   guardId,
       society_id: societyId,
-      shift_type: shiftType,
       start_date: { [Op.lte]: today },
       end_date:   { [Op.gte]: today },
     },

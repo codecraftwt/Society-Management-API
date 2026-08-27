@@ -34,7 +34,7 @@ const getCurrentShiftType = () => {
   return "NIGHT";
 };
 
-/* ── Check guard is on active shift ── */
+/* ── Check guard is on active shift (matches current shift type) ── */
 const getActiveShiftForGuard = async (guardId, societyId) => {
   const today     = getTodayIST();
   const shiftType = getCurrentShiftType();

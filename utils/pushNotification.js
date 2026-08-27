@@ -1,16 +1,48 @@
 
 const admin = require("firebase-admin");
-const serviceAccount = require("../config/serviceAccountKey.json");
 const User = require("../models/User");
+const path = require("path");
+const fs = require("fs");
+
+const resolveServiceAccountPath = () => {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+    return path.isAbsolute(process.env.FIREBASE_SERVICE_ACCOUNT_PATH)
+      ? process.env.FIREBASE_SERVICE_ACCOUNT_PATH
+      : path.join(__dirname, "..", process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
+  }
+  return path.join(__dirname, "..", "config", "serviceAccountKey.json");
+};
 
 if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
+  const serviceAccountPath = resolveServiceAccountPath();
+  if (fs.existsSync(serviceAccountPath)) {
+    try {
+      const serviceAccount = require(serviceAccountPath);
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+      console.log("✅ Firebase Admin initialized");
+    } catch (err) {
+      console.error("❌ Failed to initialize Firebase Admin:", err.message);
+    }
+  } else {
+    console.warn(
+      "⚠️  Push notifications DISABLED — service account not found.\n" +
+      `   Expected at: ${serviceAccountPath}\n` +
+      "   Or set FIREBASE_SERVICE_ACCOUNT_PATH in .env\n" +
+      "   Download the key from: Firebase Console → Project Settings → Service Accounts"
+    );
+  }
 }
+
+const isPushEnabled = () => admin.apps.length > 0;
 
 const sendPushNotification = async (fcmToken, title, body, data = {}) => {
   if (!fcmToken) return;
+  if (!isPushEnabled()) {
+    console.warn(`⚠️  Push skipped (no service account): "${title}"`);
+    return;
+  }
 
   const stringifiedData = {};
   for (const key in data) {
@@ -54,4 +86,4 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
   }
 };
 
-module.exports = { sendPushNotification };
+module.exports = { sendPushNotification, isPushEnabled };

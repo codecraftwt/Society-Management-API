@@ -12,7 +12,7 @@ const {
   getMyFlat, createAccountant, getAccountant,
   updateAccountant, getMyProfile, updateMyProfile,
   forgotPassword, resetPassword,updateFCMToken,promoteToCommittee, removeCommittee, addTenantByOwner,
-  removeTenantByOwner, getPendingResidents, approveResident, renewTenantLease, deleteAccountant
+  removeTenantByOwner, getPendingResidents, renewTenantLease, deleteAccountant
 } = require("../controllers/userControllers");
 
 // Allow Super Admin to view unassigned residents too
@@ -62,14 +62,6 @@ router.get(
   auth, 
   role("SUPER_ADMIN", "SOCIETY_ADMIN"), 
   getPendingResidents
-);
-
-// Route to approve a specific resident
-router.put(
-  "/resident/:userId/approve", 
-  auth, 
-  role("SUPER_ADMIN", "SOCIETY_ADMIN"), 
-  approveResident
 );
 
 module.exports = router;

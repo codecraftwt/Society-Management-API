@@ -15,75 +15,150 @@ const getCurrentShiftType = () => {
     }),
     10
   );
-  if (hour >= 8 && hour < 16)  return "MORNING";    // 8–16
-  if (hour >= 16 && hour < 24) return "AFTERNOON";  // 16–24
-  return "NIGHT";                                   // 0–8
+  if (hour >= 8 && hour < 16)  return "MORNING";
+  if (hour >= 16 && hour < 24) return "AFTERNOON";
+  return "NIGHT";
 };
 
-/* === CREATE SHIFT === */
-const createShift = async (req, res) => {
+/* ── Date overlap check: true if [aStart..aEnd] overlaps [bStart..bEnd] ── */
+const datesOverlap = (aStart, aEnd, bStart, bEnd) =>
+  aStart <= bEnd && aEnd >= bStart;
+
+/* === UPSERT SHIFT (create or update — overlap validation) === */
+const upsertShift = async (req, res) => {
   try {
-    const shift = await GuardShift.create({
-      guard_id:   req.body.guard_id,
-      society_id: req.user.society_id,
-      shift_type: req.body.shift_type,
-      start_date: req.body.start_date,
-      end_date:   req.body.end_date,
+    const { guard_id, shift_type, start_date, end_date } = req.body;
+    const society_id = req.user.society_id;
+
+    if (!guard_id || !shift_type || !start_date || !end_date) {
+      return res.status(400).json({ message: "guard_id, shift_type, start_date, and end_date are required" });
+    }
+
+    if (start_date > end_date) {
+      return res.status(400).json({ message: "start_date must be on or before end_date" });
+    }
+
+    /* Find ALL existing shifts of the same type for this guard in this society */
+    const existingShifts = await GuardShift.findAll({
+      where: { guard_id, society_id, shift_type },
     });
+
+    /* Check each for date overlap */
+    const overlapping = existingShifts.find(s =>
+      datesOverlap(s.start_date, s.end_date, start_date, end_date)
+    );
+
+    if (overlapping) {
+      return res.status(409).json({
+        message: `A ${shift_type} shift already exists from ${overlapping.start_date} to ${overlapping.end_date}. Update it instead.`,
+        existingShift: overlapping,
+      });
+    }
+
+    /* No overlap — create new record */
+    const shift = await GuardShift.create({
+      guard_id,
+      society_id,
+      shift_type,
+      start_date,
+      end_date,
+    });
+
     res.json(shift);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
 
-/* === UPSERT SHIFT (create or update — one row per guard) === */
-const upsertShift = async (req, res) => {
+/* === UPDATE SHIFT BY ID (direct update — also checks overlap excluding self) === */
+const updateShift = async (req, res) => {
   try {
-    const { guard_id, shift_type, start_date, end_date } = req.body;
+    const shift = await GuardShift.findByPk(req.params.id);
 
+    if (!shift) {
+      return res.status(404).json({ message: "Shift not found" });
+    }
+
+    const { shift_type, start_date, end_date } = req.body;
+    const newType  = shift_type || shift.shift_type;
+    const newStart = start_date || shift.start_date;
+    const newEnd   = end_date   || shift.end_date;
+
+    if (newStart > newEnd) {
+      return res.status(400).json({ message: "start_date must be on or before end_date" });
+    }
+
+    /* Check overlap with OTHER shifts of same type for same guard+ society */
+    const otherShifts = await GuardShift.findAll({
+      where: {
+        guard_id:   shift.guard_id,
+        society_id: shift.society_id,
+        shift_type: newType,
+        id: { [Op.ne]: shift.id },
+      },
+    });
+
+    const overlapping = otherShifts.find(s =>
+      datesOverlap(s.start_date, s.end_date, newStart, newEnd)
+    );
+
+    if (overlapping) {
+      return res.status(409).json({
+        message: `A ${newType} shift already exists from ${overlapping.start_date} to ${overlapping.end_date}. Update it instead.`,
+        existingShift: overlapping,
+      });
+    }
+
+    await shift.update({ shift_type: newType, start_date: newStart, end_date: newEnd });
+    res.json(shift);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/* === GET MY SHIFT (guard's own active shift with isOnDuty status) === */
+const getMyShift = async (req, res) => {
+  try {
+    const today = getTodayIST();
+    const currentShiftType = getCurrentShiftType();
+
+    /* First: try to find the currently active shift type */
     let shift = await GuardShift.findOne({
       where: {
-        guard_id,
+        guard_id:   req.user.id,
         society_id: req.user.society_id,
+        shift_type: currentShiftType,
+        start_date: { [Op.lte]: today },
+        end_date:   { [Op.gte]: today },
       },
     });
 
     if (shift) {
-      await shift.update({ shift_type, start_date, end_date });
-    } else {
-      shift = await GuardShift.create({
-        guard_id,
-        society_id: req.user.society_id,
-        shift_type,
-        start_date,
-        end_date,
+      return res.json({
+        ...shift.toJSON(),
+        isOnDuty: true,
       });
     }
 
-    res.json(shift);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-};
-
-/* === GET MY SHIFT (guard's own active shift for the CURRENT shift window) ===
-   This is the only place where shift_type filtering makes sense:
-   a guard checking "am I on duty right now?" should only see a shift
-   that matches the current time window AND is within the date range.        */
-const getMyShift = async (req, res) => {
-  try {
-    const today = getTodayIST();
-
-    const shift = await GuardShift.findOne({
+    /* Fallback: find ANY shift covering today (different type) */
+    shift = await GuardShift.findOne({
       where: {
-        guard_id: req.user.id,
+        guard_id:   req.user.id,
+        society_id: req.user.society_id,
         start_date: { [Op.lte]: today },
-        end_date: { [Op.gte]: today },
+        end_date:   { [Op.gte]: today },
       },
-      order: [["updatedAt", "DESC"]], // optional but good
+      order: [["updatedAt", "DESC"]],
     });
 
-    res.json(shift || null);
+    if (shift) {
+      return res.json({
+        ...shift.toJSON(),
+        isOnDuty: false,
+      });
+    }
+
+    res.json(null);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -102,32 +177,25 @@ const getSocietyShifts = async (req, res) => {
   }
 };
 
-/* === GET SHIFT BY GUARD ID (admin — any assigned shift, not time-restricted) ===
-   ✅ FIX: Removed shift_type: currentShift filter.
-   The admin needs to see whatever shift is assigned to this guard regardless
-   of whether it matches the current time of day. Filtering by current shift
-   was causing the Edit button to silently return null and the modal to appear
-   blank, making updates impossible outside the assigned shift window.        */
+/* === GET SHIFTS BY GUARD ID (admin — all shifts for a guard) === */
 const getGuardShiftByGuard = async (req, res) => {
   try {
-    const shift = await GuardShift.findOne({
+    const shifts = await GuardShift.findAll({
       where: {
         guard_id:   req.params.guardId,
         society_id: req.user.society_id,
-        // ✅ No shift_type filter — admin can view/edit any shift at any time
-        // ✅ No date filter either — show the assigned shift even if it's future/past
       },
-      order: [["updatedAt", "DESC"]], // most recently updated row wins
+      order: [["shift_type", "ASC"]],
     });
 
-    res.json(shift || null);
+    res.json(shifts);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
 
-/* === UPDATE SHIFT BY ID === */
-const updateShift = async (req, res) => {
+/* === DELETE SHIFT BY ID === */
+const deleteShift = async (req, res) => {
   try {
     const shift = await GuardShift.findByPk(req.params.id);
 
@@ -135,18 +203,19 @@ const updateShift = async (req, res) => {
       return res.status(404).json({ message: "Shift not found" });
     }
 
-    await shift.update(req.body);
-    res.json(shift);
+    await shift.destroy();
+    res.json({ message: "Shift deleted" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
 
+
 module.exports = {
-  createShift,
   upsertShift,
+  updateShift,
+  deleteShift,
   getMyShift,
   getSocietyShifts,
   getGuardShiftByGuard,
-  updateShift,
 };

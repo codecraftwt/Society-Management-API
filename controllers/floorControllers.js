@@ -18,4 +18,17 @@ const getFloorsByBlock = async (req, res) => {
   }
 };
 
-module.exports = { getFloorsByBlock };
+
+/* === GET FLOOR DETAIL === */
+const getFloorDetail = async (req, res) => {
+  try {
+    const { floorId } = req.params;
+    const floor = await Floor.findByPk(floorId);
+    if (!floor) return res.status(404).json({ message: 'Floor not found' });
+    res.status(200).json(floor);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { getFloorsByBlock, getFloorDetail };

@@ -1,33 +1,19 @@
 const User = require("../models/User");
 const Notification = require("../models/Notification");
 const Society = require("../models/Society");
-const nodemailer = require("nodemailer");
 const Flat = require("../models/Flat");
 const FlatMembership = require("../models/FlatMembership");
 const ResidentHistory = require("../models/ResidentHistory");
-const sequelize = require("../config/db"); // Required for transactions
-
-/* =====
-    MAIL TRANSPORTER (same config as authController)
-    ===== */
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 465,
-  secure: true,
-  pool: true,
-  maxConnections: 5,
-  maxMessages: 100,
-  auth: {
-    user: process.env.MAIL_USER,
-    pass: process.env.MAIL_PASS,
-  },
-  tls: { rejectUnauthorized: false },
-});
+const Block = require("../models/Block");
+const Floor = require("../models/Floor");
+const sequelize = require("../config/db");
+const transporter = require("../utils/mailer");
 
 /* =====
     EMAIL HELPERS
     ===== */
 async function sendApprovalEmail(toEmail, userName, societyName) {
+  if (!transporter) return;
   const appName = process.env.APP_NAME || "SocietyApp";
 
   await transporter.sendMail({
@@ -129,6 +115,7 @@ async function sendApprovalEmail(toEmail, userName, societyName) {
 }
 
 async function sendRejectionEmail(toEmail, userName, societyName, reason) {
+  if (!transporter) return;
   const appName = process.env.APP_NAME || "SocietyApp";
 
   await transporter.sendMail({
@@ -301,6 +288,27 @@ exports.approveResident = async (req, res) => {
       receiver_user_id: resident.id,
     }, { transaction });
 
+    // 3b. Notify the OWNER that their tenant was approved
+    let ownerNotification = null;
+    if (pendingMembership && resident.resident_type === "TENANT") {
+      const ownerMembership = await FlatMembership.findOne({
+        where: { flat_id: pendingMembership.flat_id, role: "OWNER", is_current: true },
+        transaction,
+      });
+      if (ownerMembership) {
+        const flat = await Flat.findByPk(pendingMembership.flat_id, { attributes: ["flat_number"], transaction });
+        ownerNotification = await Notification.create({
+          title:            "Tenant Approved ✅",
+          message:          `Your tenant ${resident.name} for Flat ${flat?.flat_number || pendingMembership.flat_id} has been approved by the admin.`,
+          type:             "SYSTEM",
+          society_id:       resident.society_id,
+          user_id:          ownerMembership.user_id,
+          receiver_role:    "RESIDENT",
+          receiver_user_id: ownerMembership.user_id,
+        }, { transaction });
+      }
+    }
+
     // Commit the transaction
     await transaction.commit();
 
@@ -311,6 +319,9 @@ exports.approveResident = async (req, res) => {
         message:          "Your registration has been approved. You can now login.",
       });
       global.io.to(`user_${resident.id}`).emit("new_notification", notification);
+      if (ownerNotification) {
+        global.io.to(`user_${ownerNotification.receiver_user_id}`).emit("new_notification", ownerNotification);
+      }
     }
 
     const society = await Society.findByPk(resident.society_id);
@@ -343,6 +354,9 @@ exports.rejectResident = async (req, res) => {
     // 2. Find any FlatMembership for this user
     const pendingMembership = await FlatMembership.findOne({ where: { user_id: userId } });
 
+    let ownerId = null;
+    let flatNumber = null;
+
     if (pendingMembership) {
       const flatId = pendingMembership.flat_id;
       
@@ -350,12 +364,17 @@ exports.rejectResident = async (req, res) => {
       await FlatMembership.destroy({ where: { user_id: userId } });
       await ResidentHistory.destroy({ where: { user_id: userId } });
 
+      // Get flat number for notification
+      const flat = await Flat.findByPk(flatId, { attributes: ["flat_number"] });
+      flatNumber = flat?.flat_number || flatId;
+
       // Find the owner of this flat to revert back to them
       const ownerMembership = await FlatMembership.findOne({
         where: { flat_id: flatId, role: "OWNER", is_current: true }
       });
 
       if (ownerMembership) {
+        ownerId = ownerMembership.user_id;
         await ownerMembership.update({ is_staying: true });
         await Flat.update(
           { resident_id: ownerMembership.user_id, occupancy_status: "OWNER_OCCUPIED" },
@@ -375,9 +394,177 @@ exports.rejectResident = async (req, res) => {
       );
     }
 
+    // 3. Notify the OWNER that their tenant was rejected
+    if (ownerId && user.resident_type === "TENANT") {
+      const ownerNotification = await Notification.create({
+        title:            "Tenant Rejected ❌",
+        message:          `Your tenant ${user.name} for Flat ${flatNumber} has been rejected by the admin.`,
+        type:             "SYSTEM",
+        society_id:       user.society_id,
+        user_id:          ownerId,
+        receiver_role:    "RESIDENT",
+        receiver_user_id: ownerId,
+      });
+
+      if (global.io) {
+        global.io.to(`user_${ownerId}`).emit("new_notification", ownerNotification);
+      }
+    }
+
     res.status(200).json({ message: "Tenant verification rejected and successfully wiped from the flat history." });
   } catch (error) {
     console.error("Error in rejectResident:", error);
     res.status(500).json({ error: "Internal Server Error while rejecting resident." });
+  }
+};
+
+
+/* =====
+    TENANT HISTORY — Full list of tenants (current + past) for society
+    GET /admin/tenant-history?status=living|removed|expired|all
+    ===== */
+exports.getTenantHistory = async (req, res) => {
+  try {
+    const { Op } = require("sequelize");
+    const status = req.query.status || "all"; // all, living, removed, expired, pending, approved, rejected
+    const societyId = req.user.society_id;
+
+    // 1. Fetch ALL tenant FlatMemberships for this society
+    const memberships = await FlatMembership.findAll({
+      where: { role: "TENANT" },
+      include: [
+        {
+          model: User,
+          attributes: ["id", "name", "email", "phone", "approval_status", "status", "resident_type"],
+          where: { society_id: societyId },
+        },
+        {
+          model: Flat,
+          attributes: ["id", "flat_number", "flat_type", "occupancy_status"],
+          include: [
+            { model: Floor, attributes: ["id", "floor_number"], required: false,
+              include: [{ model: Block, attributes: ["id", "name"], required: false }]
+            },
+            { model: Block, attributes: ["id", "name"], required: false },
+          ],
+        },
+      ],
+      order: [["createdAt", "DESC"]],
+    });
+
+    // 2. Fetch owner info for each flat
+    const flatIds = [...new Set(memberships.map(m => m.flat_id))];
+    const ownerMemberships = flatIds.length > 0
+      ? await FlatMembership.findAll({
+          where: { flat_id: { [Op.in]: flatIds }, role: "OWNER", is_current: true },
+          include: [{ model: User, attributes: ["id", "name", "email"] }],
+        })
+      : [];
+
+    const ownerMap = {};
+    for (const om of ownerMemberships) {
+      if (!ownerMap[om.flat_id]) {
+        ownerMap[om.flat_id] = { id: om.User.id, name: om.User.name, email: om.User.email };
+      }
+    }
+
+    // 3. For rejected tenants, also find users who have a rejected approval_status
+    //    but whose FlatMembership was destroyed (rejectResident destroys memberships)
+    const rejectedUsers = await User.findAll({
+      where: {
+        society_id: societyId,
+        resident_type: "TENANT",
+        approval_status: "REJECTED",
+      },
+      attributes: ["id", "name", "email", "phone", "approval_status", "status", "resident_type"],
+    });
+
+    const rejectedUserIds = rejectedUsers.map(u => u.id);
+
+    // 3. Build the full tenant list
+    let results = [];
+
+    for (const m of memberships) {
+      const user = m.User;
+      const flat = m.Flat;
+      const bName = flat?.Block?.name || flat?.Floor?.Block?.name || "";
+      const fNum = flat?.flat_number || "";
+      const flatLabel = bName ? `${fNum} - ${bName}` : fNum;
+
+      let statusLabel = "UNKNOWN";
+      if (user.approval_status === "PENDING") statusLabel = "PENDING";
+      else if (user.approval_status === "REJECTED") statusLabel = "REJECTED";
+      else if (m.is_current && (!m.move_out_date || new Date(m.move_out_date) > new Date())) statusLabel = "LIVING";
+      else if (m.is_current && m.move_out_date && new Date(m.move_out_date) <= new Date()) statusLabel = "EXPIRED";
+      else if (!m.is_current) statusLabel = "REMOVED";
+      else statusLabel = "APPROVED";
+
+      const owner = ownerMap[flat?.id] || null;
+
+      results.push({
+        tenant_id: user.id,
+        tenant_name: user.name,
+        tenant_email: user.email,
+        tenant_phone: user.phone,
+        approval_status: user.approval_status,
+        user_status: user.status,
+        resident_type: user.resident_type,
+        flat_id: flat?.id,
+        flat_number: fNum,
+        flat_label: flatLabel,
+        flat_type: flat?.flat_type || null,
+        block_name: bName,
+        occupancy_status: flat?.occupancy_status,
+        membership_role: m.role,
+        is_staying: m.is_staying,
+        is_current: m.is_current,
+        move_in_date: m.move_in_date,
+        move_out_date: m.move_out_date,
+        membership_created: m.created_at,
+        status_label: statusLabel,
+        owner_name: owner?.name || null,
+        owner_email: owner?.email || null,
+      });
+    }
+
+    // 4. Add rejected tenants whose memberships were destroyed
+    for (const u of rejectedUsers) {
+      // Skip if already in results (membership still exists)
+      if (results.some(r => r.tenant_id === u.id)) continue;
+
+      results.push({
+        tenant_id: u.id,
+        tenant_name: u.name,
+        tenant_email: u.email,
+        tenant_phone: u.phone,
+        approval_status: u.approval_status,
+        user_status: u.status,
+        resident_type: u.resident_type,
+        flat_id: null,
+        flat_number: null,
+        flat_label: null,
+        flat_type: null,
+        block_name: null,
+        occupancy_status: null,
+        membership_role: "TENANT",
+        is_staying: false,
+        is_current: false,
+        move_in_date: null,
+        move_out_date: null,
+        membership_created: null,
+        status_label: "REJECTED",
+      });
+    }
+
+    // 5. Apply status filter
+    if (status !== "all") {
+      const statusUpper = status.toUpperCase();
+      results = results.filter(r => r.status_label === statusUpper);
+    }
+
+    res.json({ data: results, total: results.length });
+  } catch (error) {
+    console.error("[getTenantHistory]", error);
+    res.status(500).json({ message: error.message });
   }
 };

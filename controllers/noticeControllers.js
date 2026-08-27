@@ -32,12 +32,12 @@ const createNotice = async (req, res) => {
         .emit("notice_created", notice);
     }
 
-    // ✅ Fetch RESIDENT + FAMILY_MEMBER + COMMITTEE_MEMBER
+    // ✅ Fetch RESIDENT + FAMILY_MEMBER + COMMITTEE_MEMBER + SOCIETY_ADMIN
     // ✅ Exclude the sender themselves
     const residents = await User.findAll({
       where: {
         society_id: req.user.society_id,
-        role:       { [Op.in]: ["RESIDENT", "FAMILY_MEMBER", "COMMITTEE_MEMBER"] },
+        role:       { [Op.in]: ["RESIDENT", "FAMILY_MEMBER", "COMMITTEE_MEMBER", "SOCIETY_ADMIN"] },
         status:     "ACTIVE",
         id:         { [Op.ne]: req.user.id }, // ✅ never notify the sender
       },
@@ -80,7 +80,7 @@ const createNotice = async (req, res) => {
             resident.fcm_token,
             "New Society Notice",
             `📢 "${title}" has been posted.`,
-            { route: "/resident/notices", noticeId: notice.id.toString() }
+            { route: "/resident/notices", type: "NOTICE", noticeId: notice.id.toString() }
           ).catch((err) => console.error("Push Error:", err));
         }
       }

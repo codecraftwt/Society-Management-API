@@ -15,8 +15,9 @@ router.get("/", auth, role("SOCIETY_ADMIN", "GUARD"), getEmergencyAlerts);
 // ✅ FAMILY_MEMBER can view active emergencies
 router.get("/active", auth, role("SOCIETY_ADMIN", "RESIDENT", "GUARD", "FAMILY_MEMBER", "COMMITTEE_MEMBER"), getActiveEmergencies);
 
-// Admin only — resolve
-router.patch("/:id/resolve", auth, role("SOCIETY_ADMIN"), resolveEmergency);
+// Admin / Guard — resolve
+router.patch("/:id/resolve", auth, role("SOCIETY_ADMIN", "GUARD"), resolveEmergency);
+router.put("/:id/resolve", auth, role("SOCIETY_ADMIN", "GUARD"), resolveEmergency);
 
 router.get("/mine", auth, role("RESIDENT", "FAMILY_MEMBER"), getMyEmergencies);
 

@@ -100,6 +100,20 @@ const seed = async () => {
 
     const existing = await Society.findOne({ where: { name: "Green Meadows Society" } });
     if (existing) {
+      const userCount = await User.count({ where: { society_id: existing.id } });
+      if (userCount > 0) {
+        console.log("ℹ️  Demo data already exists (Society id:", existing.id, "| Users:", userCount, "). Skipping seed.");
+        console.log("── LOGIN CREDENTIALS (password: Admin@123) ──");
+        console.log("Super Admin  → superadmin@society.com  (password: 123456)");
+        console.log("Admin        → admin@yopmail.com");
+        console.log("Committee    → committee@yopmail.com");
+        console.log("Guard        → guard@yopmail.com");
+        console.log("Guard 2      → guard2@yopmail.com");
+        console.log("Accountant   → accountant@yopmail.com");
+        console.log("Residents    → resident1@yopmail.com ... resident8@yopmail.com");
+        console.log("OTP for all logins: 123456");
+        process.exit(0);
+      }
       await cleanupSociety(existing.id);
     }
 
@@ -438,9 +452,9 @@ const seed = async () => {
     /* ════════════════════════════════════════════════
        9. GUARD SHIFTS + LOGS
     ════════════════════════════════════════════════ */
-    await GuardShift.create({ guard_id: guard1.id, society_id: society.id, shift_type: "MORNING", start_date: daysFromNow(-7), end_date: daysFromNow(0) });
-    await GuardShift.create({ guard_id: guard1.id, society_id: society.id, shift_type: "NIGHT", start_date: daysFromNow(1), end_date: daysFromNow(7) });
-    await GuardShift.create({ guard_id: guard2.id, society_id: society.id, shift_type: "AFTERNOON", start_date: daysFromNow(-7), end_date: daysFromNow(0) });
+    await GuardShift.create({ guard_id: guard1.id, society_id: society.id, shift_type: "MORNING", start_date: daysFromNow(-7), end_date: daysFromNow(30) });
+    await GuardShift.create({ guard_id: guard1.id, society_id: society.id, shift_type: "NIGHT", start_date: daysFromNow(1), end_date: daysFromNow(37) });
+    await GuardShift.create({ guard_id: guard2.id, society_id: society.id, shift_type: "AFTERNOON", start_date: daysFromNow(-7), end_date: daysFromNow(30) });
 
     await GuardLog.create({ text: "Night round completed at 2 AM. All gates secure.", is_important: false, guard_id: guard2.id, society_id: society.id });
     await GuardLog.create({ text: "Found a lost key near the main gate. Kept at security office.", is_important: true, guard_id: guard1.id, society_id: society.id });

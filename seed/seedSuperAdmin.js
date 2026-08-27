@@ -5,7 +5,14 @@ const User = require("../models/User");
 
 const seedSuperAdmin = async () => {
   try {
+    await sequelize.authenticate();
     await sequelize.sync();
+
+    const existing = await User.findOne({ where: { email: "superadmin@society.com" } });
+    if (existing) {
+      console.log("ℹ️  Super Admin already exists (id:", existing.id, "). Skipping seed.");
+      process.exit(0);
+    }
 
     const hashedPass = await bcrypt.hash("123456", 10);
 
@@ -13,21 +20,17 @@ const seedSuperAdmin = async () => {
       name: "Super Admin",
       email: "superadmin@society.com",
       password: hashedPass,
-
-      // 🔥 OLD FIELD (keep if used)
       role: "SUPER_ADMIN",
-
-      // ✅ NEW FIELD (array)
       roles: ["SUPER_ADMIN"],
-
       status: "ACTIVE",
       society_id: null,
     });
 
-    console.log("Super Admin seeded:", superAdmin.email);
-    process.exit();
+    console.log("✅ Super Admin seeded:", superAdmin.email, "(id:", superAdmin.id, ")");
+    process.exit(0);
   } catch (err) {
-    console.log(err);
+    console.error("❌ Seed failed:", err.message);
+    process.exit(1);
   }
 };
 

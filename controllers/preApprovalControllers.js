@@ -10,6 +10,7 @@ const GuardShift = require("../models/GuardShift");
 const ParkingRequest = require("../models/ParkingRequest"); // 🔥
 const ParkingSlot = require("../models/ParkingSlot"); // 🔥 was missing
 const User = require("../models/User"); // 🔥 REQUIRED
+const Society = require("../models/Society");
 // const VisitorPreApproval = require("../models/VisitorPreApproval");
 const FlatMembership = require("../models/FlatMembership");
 
@@ -59,7 +60,9 @@ const getOnDutyGuard = async (society_id) => {
   const today = getTodayIST();
   const shiftType = getCurrentShiftType();
 
-  return await GuardShift.findOne({
+  console.log(`[getOnDutyGuard] society_id=${society_id}, shift_type=${shiftType}, today=${today}`);
+
+  const shift = await GuardShift.findOne({
     where: {
       society_id,
       shift_type: shiftType,
@@ -67,6 +70,15 @@ const getOnDutyGuard = async (society_id) => {
       end_date: { [Op.gte]: today },
     },
   });
+
+  if (!shift) {
+    const allShifts = await GuardShift.findAll({ where: { society_id }, attributes: ["id", "guard_id", "shift_type", "start_date", "end_date"] });
+    console.log(`[getOnDutyGuard] No active shift found. All shifts for society:`, JSON.stringify(allShifts));
+  } else {
+    console.log(`[getOnDutyGuard] Found shift: guard_id=${shift.guard_id}, shift_type=${shift.shift_type}`);
+  }
+
+  return shift;
 };
 
 /* ── SEND NOTIFICATION (COMMON) ── */
@@ -76,14 +88,16 @@ const sendNotification = async ({
   title,
   message,
   actionRoute,
+  type = "PARKING",
+  actionType = "VIEW_PARKING",
 }) => {
   const notification = await Notification.create({
     society_id: societyId,
     receiver_user_id: userId,
     title,
     message,
-    type: "PARKING",
-    action_type: "VIEW_PARKING",
+    type,
+    action_type: actionType,
     action_route: actionRoute,
     is_read: false,
   });
@@ -198,9 +212,12 @@ const notifyOnDutyGuard = async (societyId, title, message, actionRoute) => {
       status: "PENDING",
     });
 
+    const society = await Society.findByPk(req.user.society_id, { attributes: ["id", "name"] });
+
     return res.status(201).json({
       message: "Pre-approval created successfully",
       GatePass: code,
+      society_name: society?.name || null,
       preApproval: newPreApproval,
     });
   } catch (error) {
@@ -220,11 +237,22 @@ const verifyGatePass = async (req, res) => {
   try {
     const { code, slot_number, vehicle_type } = req.body;
 
-    console.log("VERIFY BODY:", { code, slot_number, vehicle_type });
+    console.log("VERIFY BODY:", { code, slot_number, vehicle_type, guard_id: req.user.id, society_id: req.user.society_id });
 
-    const shift = await getOnDutyGuard(req.user.society_id);
-    if (!shift || Number(shift.guard_id) !== Number(req.user.id)) {
-      return res.status(403).json({ message: "You are not on duty" });
+    const today = getTodayIST();
+    const currentShiftType = getCurrentShiftType();
+    const myShift = await GuardShift.findOne({
+      where: {
+        guard_id: req.user.id,
+        society_id: req.user.society_id,
+        shift_type: currentShiftType,
+        start_date: { [Op.lte]: today },
+        end_date: { [Op.gte]: today },
+      },
+    });
+
+    if (!myShift) {
+      return res.status(403).json({ message: `No active ${currentShiftType} shift assigned to you for today. You are off duty.` });
     }
 
     const approval = await VisitorPreApproval.findOne({
@@ -236,14 +264,34 @@ const verifyGatePass = async (req, res) => {
     });
 
     if (!approval) {
+      // ✅ Pass may already be flagged EXPIRED earlier — give guard a clear reason
+      const expiredPass = await VisitorPreApproval.findOne({
+        where: {
+          otp: code,
+          society_id: req.user.society_id,
+          status: "EXPIRED",
+        },
+      });
+
+      if (expiredPass) {
+        return res.status(400).json({
+          message: "Gate pass expired",
+          expired: true,
+          visitor_name: expiredPass.visitor_name || null,
+        });
+      }
+
       return res.status(400).json({ message: "Invalid gate pass code" });
     }
 
-    const today = getTodayIST();
     if (approval.valid_date < today) {
       approval.status = "EXPIRED";
       await approval.save();
-      return res.status(400).json({ message: "Gate pass expired" });
+      return res.status(400).json({
+        message: "Gate pass expired",
+        expired: true,
+        visitor_name: approval.visitor_name || null,
+      });
     }
 
     const flat = await Flat.findOne({
@@ -319,8 +367,23 @@ const verifyGatePass = async (req, res) => {
     approval.status = "USED";
     await approval.save();
 
+    // ✅ Notify the resident that their guest has arrived
+    sendNotification({
+      societyId: req.user.society_id,
+      userId: approval.resident_id,
+      title: "Guest Arrived",
+      message: `${approval.visitor_name} has arrived at the gate${flat ? ` for Flat ${flat.flat_number}` : ""}. Guard: ${req.user.name}`,
+      actionRoute: "/resident/preapproval",
+      type: "VISITOR",
+      actionType: "VIEW_VISITOR",
+    }).catch(err => console.log("Guest arrival notification error:", err));
+
+    const society = await Society.findByPk(req.user.society_id, { attributes: ["id", "name"] });
+
     res.json({
       message: "Gate pass verified successfully",
+      society_name: society?.name || null,
+      visitor_name: approval.visitor_name,
       visitor,
       parkingRequest,
     });
@@ -372,7 +435,17 @@ const getMyGatePasses = async (req, res) => {
       order: [["createdAt", "DESC"]],
     });
 
-    res.json(passes);
+    // 4. Attach society names
+    const societyIds = [...new Set(passes.map((p) => p.society_id))];
+    const societies = await Society.findAll({ where: { id: societyIds }, attributes: ["id", "name"] });
+    const societyMap = Object.fromEntries(societies.map((s) => [s.id, s.name]));
+
+    const passesWithSociety = passes.map((p) => ({
+      ...p.toJSON(),
+      society_name: societyMap[p.society_id] || null,
+    }));
+
+    res.json(passesWithSociety);
   } catch (err) {
     console.error("❌ ERROR in getMyGatePasses:", err);
     res.status(500).json({ message: "Server Error" });

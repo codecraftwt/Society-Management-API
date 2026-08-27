@@ -36,7 +36,7 @@ const GuardShift = sequelize.define("GuardShift",{
 
 }, {
   tableName: "guard_shifts",
-  timestamps: true
+  timestamps: true,
 });
 
 module.exports = GuardShift;

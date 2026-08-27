@@ -1,4 +1,5 @@
 
+const { Op } = require("sequelize");
 const User = require("../models/User");
 const bcrypt = require("bcryptjs");
 const Society = require("../models/Society");
@@ -11,30 +12,14 @@ const Bill = require("../models/Bill");
 const ParkingRequest = require("../models/ParkingRequest");
 const ResidentHistory = require("../models/ResidentHistory");
 const jwt = require("jsonwebtoken");
-const nodemailer = require("nodemailer");
 const { sendEmail } = require("../services/emailService");
 const FlatMembership = require("../models/FlatMembership");
 const ParkingSlot = require("../models/ParkingSlot");
 const Vehicle = require("../models/Vehicle"); 
-
-/* =====
-   MAIL TRANSPORTER
-   ===== */
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 465,
-  secure: true,
-  pool: true,
-  maxConnections: 5,
-  maxMessages: 100,
-  auth: {
-    user: process.env.MAIL_USER,
-    pass: process.env.MAIL_PASS,
-  },
-  tls: { rejectUnauthorized: false },
-});
+const transporter = require("../utils/mailer");
 
 async function sendAccountantWelcomeEmail(toEmail, name, password, societyName) {
+  if (!transporter) return;
   const appName = process.env.APP_NAME || "SocietyApp";
 
   await transporter.sendMail({
@@ -901,33 +886,58 @@ const getResidents = async (req, res) => {
     let uniqueResidents = Array.from(emailMap.values());
     const userIds = uniqueResidents.map(u => u.id);
 
-    // Fetch flats for the matched residents
-    const allFlats = await Flat.findAll({
-      where: { resident_id: { [Op.in]: userIds } },
-      attributes: ["id", "flat_number", "flat_type", "floor_id", "resident_id"],
-      include: [
-        {
-          model: Floor,
-          attributes: ["id", "floor_number"],
-          required: false,
-          include: [{ model: Block, attributes: ["id", "name"], required: false }],
-        },
-        {
-          model: Block,
-          attributes: ["id", "name"],
-          required: false,
-        },
-      ],
+    // Fetch active FlatMemberships for the matched residents
+    const allMemberships = await FlatMembership.findAll({
+      where: { user_id: { [Op.in]: userIds }, is_current: true },
+      include: [{
+        model: Flat,
+        attributes: ["id", "flat_number", "flat_type", "floor_id", "occupancy_status"],
+        include: [
+          {
+            model: Floor,
+            attributes: ["id", "floor_number"],
+            required: false,
+            include: [{ model: Block, attributes: ["id", "name"], required: false }],
+          },
+          {
+            model: Block,
+            attributes: ["id", "name"],
+            required: false,
+          },
+        ],
+      }],
     });
+
+    // Find ALL active memberships for those flats (to identify co-occupants: owner + tenant)
+    const flatIds = [...new Set(allMemberships.map(m => m.flat_id))];
+    const allFlatMemberships = flatIds.length > 0
+      ? await FlatMembership.findAll({
+          where: { flat_id: { [Op.in]: flatIds }, is_current: true },
+          include: [{ model: User, attributes: ["id", "name", "email", "approval_status"] }],
+        })
+      : [];
+
+    // Build occupant map: flatId → { owner: User, tenant: User }
+    const flatOccupantMap = {};
+    for (const fm of allFlatMemberships) {
+      if (!flatOccupantMap[fm.flat_id]) flatOccupantMap[fm.flat_id] = { owner: null, tenant: null };
+      if (fm.role === "OWNER" && !flatOccupantMap[fm.flat_id].owner) {
+        flatOccupantMap[fm.flat_id].owner = fm.User;
+      }
+      if (fm.role === "TENANT" && !flatOccupantMap[fm.flat_id].tenant) {
+        flatOccupantMap[fm.flat_id].tenant = fm.User;
+      }
+    }
 
     // 3. Apply Cascading Filters (Block / Floor / Flat)
     if (block_id || floor_id || flat_id) {
       uniqueResidents = uniqueResidents.filter(user => {
-        const userFlats = allFlats.filter(f => String(f.resident_id) === String(user.id));
-        return userFlats.some(f => {
-          const fBlockId = f.Floor?.Block?.id || f.Block?.id;
-          const fFloorId = f.floor_id;
-          const fFlatId  = f.id;
+        const userMemberships = allMemberships.filter(m => m.user_id === user.id);
+        return userMemberships.some(m => {
+          const flat = m.Flat;
+          const fBlockId = flat?.Floor?.Block?.id || flat?.Block?.id;
+          const fFloorId = flat?.floor_id;
+          const fFlatId  = flat?.id;
 
           let match = true;
           if (block_id && String(fBlockId) !== String(block_id)) match = false;
@@ -943,23 +953,28 @@ const getResidents = async (req, res) => {
     const paginated = uniqueResidents.slice(offset, offset + limit);
 
     const data = paginated.map(user => {
-      const userFlats = allFlats
-        .filter(f => f.resident_id === user.id)
-        .map(f => ({
-          id:           f.id,
-          flat_id:      f.id,
-          flat_number:  f.flat_number,
-          flat_type:    f.flat_type,
-          floor_id:     f.floor_id,
-          Floor: f.Floor ? {
-            id:           f.Floor.id,
-            floor_number: f.Floor.floor_number,
-            Block: f.Floor.Block ? { id: f.Floor.Block.id, name: f.Floor.Block.name } : null,
+      const userMemberships = allMemberships.filter(m => m.user_id === user.id);
+      const userFlats = userMemberships.map(m => {
+        const flat = m.Flat;
+        const occupants = flatOccupantMap[flat.id] || {};
+        return {
+          id:           flat.id,
+          flat_id:      flat.id,
+          flat_number:  flat.flat_number,
+          flat_type:    flat.flat_type,
+          floor_id:     flat.floor_id,
+          Floor: flat.Floor ? {
+            id:           flat.Floor.id,
+            floor_number: flat.Floor.floor_number,
+            Block: flat.Floor.Block ? { id: flat.Floor.Block.id, name: flat.Floor.Block.name } : null,
           } : null,
-          Block: f.Block ? { id: f.Block.id, name: f.Block.name } : null,
-          floor_number: f.Floor?.floor_number ?? null,
-          block_name:   f.Floor?.Block?.name || f.Block?.name || null,
-        }));
+          Block: flat.Block ? { id: flat.Block.id, name: flat.Block.name } : null,
+          floor_number: flat.Floor?.floor_number ?? null,
+          block_name:   flat.Floor?.Block?.name || flat.Block?.name || null,
+          owner:  occupants.owner  ? { id: occupants.owner.id,  name: occupants.owner.name }  : null,
+          tenant: occupants.tenant ? { id: occupants.tenant.id, name: occupants.tenant.name, approval_status: occupants.tenant.approval_status } : null,
+        };
+      });
 
       return {
         id:                user.id,
@@ -1306,6 +1321,25 @@ const getMyFlat = async (req, res) => {
           });
           addedFlatIds.add(flat.id);
         }
+      }
+    }
+
+    // ===
+    // 4. ENRICH: Add tenant info for each flat
+    //    For each flat, find the active TENANT membership and include their details.
+    // ===
+    if (flatsList.length > 0) {
+      const allFlatIds = flatsList.map(f => f.flat_id);
+      const tenantMemberships = await FlatMembership.findAll({
+        where: { flat_id: { [Op.in]: allFlatIds }, role: "TENANT", is_current: true },
+        include: [{ model: User, attributes: ["id", "name", "email", "approval_status"] }],
+      });
+
+      for (const flat of flatsList) {
+        const tenantM = tenantMemberships.find(m => m.flat_id === flat.flat_id);
+        flat.tenant = tenantM
+          ? { id: tenantM.User.id, name: tenantM.User.name, email: tenantM.User.email, approval_status: tenantM.User.approval_status }
+          : null;
       }
     }
 
@@ -1666,6 +1700,35 @@ const addTenantByOwner = async (req, res) => {
       receiver_role: "SOCIETY_ADMIN",
     });
 
+    const admins = await User.findAll({
+      where: {
+        society_id: req.user.society_id,
+        approval_status: "APPROVED",
+        status: "ACTIVE",
+      },
+      attributes: ["id"],
+    });
+
+    const adminNotifications = await Promise.all(
+      admins.map((admin) =>
+        Notification.create({
+          title: "New Tenant Approval Required",
+          message: `Owner ${req.user.name} added tenant ${name} for Flat ${flat_id}. Please verify documents.`,
+          type: "SYSTEM",
+          society_id: req.user.society_id,
+          user_id: admin.id,
+          receiver_role: "SOCIETY_ADMIN",
+          receiver_user_id: admin.id,
+        })
+      )
+    );
+
+    if (global.io) {
+      adminNotifications.forEach((n) => {
+        global.io.to(`user_${n.receiver_user_id}`).emit("new_notification", n);
+      });
+    }
+
     res.status(201).json({ message: "Tenant added. Awaiting Admin approval.", tenant });
   } catch (err) {
     console.error("Add Tenant Error:", err);
@@ -1817,16 +1880,6 @@ const getPendingResidents = async (req, res) => {
   }
 };
 
-const approveResident = async (req, res) => {
-  try {
-    const { userId } = req.params;
-    await User.update({ approval_status: "APPROVED" }, { where: { id: userId } });
-    res.json({ message: "Resident approved successfully." });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-};
-
 /* =====
    EXPORTS
    ===== */
@@ -1856,6 +1909,5 @@ module.exports = {
   removeCommittee,
   addTenantByOwner,
   removeTenantByOwner,
-  approveResident,
   renewTenantLease,
 };

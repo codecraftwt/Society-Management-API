@@ -5,6 +5,8 @@ const Society = require("../models/Society");
 
 const { Op } = require("sequelize");
 
+const TYPE_MAP = { "Apartments": "APARTMENT", "Row Houses": "ROW_HOUSE", "Commercial": "COMMERCIAL" };
+
 const createBlock = async (req, res) => {
   try {
     const {
@@ -15,7 +17,7 @@ const createBlock = async (req, res) => {
       property_type,
     } = req.body;
 
-    const type = property_type || "APARTMENT";
+    const type = TYPE_MAP[property_type] || property_type || "APARTMENT";
 
     // ✅ VALIDATION
     if (type === "ROW_HOUSE" && floor_count) {
