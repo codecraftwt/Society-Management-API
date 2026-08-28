@@ -9,6 +9,10 @@ const razorpay = require("../utils/razorpay");
 
 const createOrder = async (req, res) => {
   try {
+    if (!razorpay) {
+      return res.status(503).json({ success: false, message: "Payment gateway not configured." });
+    }
+
     const { bill_id, type } = req.body;
 
     if (!bill_id) {

@@ -2,6 +2,7 @@
 const { Amenity, AmenityBooking, User, Flat, Notification } = require("../models");
 const { Op }                   = require("sequelize");
 const { sendPushNotification } = require("../utils/pushNotification");
+const { groupAmenityBookings } = require("../utils/groupAmenityBookings");
 
 /* ── Time helper ── */
 const addMinutes = (timeStr, minutes) => {
@@ -185,7 +186,11 @@ exports.getAllBookings = async (req, res) => {
       return plain;
     });
 
-    res.json({ success: true, data: enriched });
+    // Group full‑day amenity bookings so a multi‑day booking (e.g. 28–31)
+    // appears as ONE record with a from → to date range (and booking_ids).
+    const data = groupAmenityBookings(enriched);
+
+    res.json({ success: true, data });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
   }
@@ -207,7 +212,7 @@ exports.getPendingBookings = async (req, res) => {
       ],
       order: [["date", "ASC"]],
     });
-    res.json({ success: true, data: bookings });
+    res.json({ success: true, data: groupAmenityBookings(bookings) });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
   }
@@ -219,23 +224,30 @@ exports.getPendingBookings = async (req, res) => {
 ═══════════════════════════════════════ */
 exports.approveBooking = async (req, res) => {
   try {
-    const booking = await AmenityBooking.findOne({
-      where: { id: req.params.id, society_id: req.user.society_id },
+    const ids = (req.body && Array.isArray(req.body.booking_ids) && req.body.booking_ids.length)
+      ? req.body.booking_ids.map(Number).filter((n) => Number.isFinite(n) && n > 0)
+      : [Number(req.params.id)];
+
+    const bookings = await AmenityBooking.findAll({
+      where: { id: { [Op.in]: ids }, society_id: req.user.society_id },
       include: [
         { model: User,    attributes: ["id", "fcm_token"] },
         { model: Amenity, attributes: ["name"] },
       ],
     });
-    if (!booking) return res.status(404).json({ message: "Booking not found" });
-    if (booking.status !== "PENDING")
-      return res.status(400).json({ message: `Cannot approve a booking in '${booking.status}' status.` });
+    if (bookings.length === 0) return res.status(404).json({ message: "Booking not found" });
 
-    await booking.update({ status: "APPROVED" });
+    const invalid = bookings.filter((b) => b.status !== "PENDING");
+    if (invalid.length > 0)
+      return res.status(400).json({ message: `Cannot approve a booking in '${invalid[0].status}' status.` });
 
+    await Promise.all(bookings.map((b) => b.update({ status: "APPROVED" })));
+
+    const first = bookings[0];
     await notifyResident(
-      booking.user_id,
+      first.user_id,
       "Booking Approved ✅",
-      `✅ Your booking for ${booking.Amenity.name} on ${booking.date} has been approved.`,
+      `✅ Your booking for ${first.Amenity.name} on ${first.date} has been approved.`,
       req.user.society_id
     );
 
@@ -250,23 +262,30 @@ exports.approveBooking = async (req, res) => {
 ═══════════════════════════════════════ */
 exports.rejectBooking = async (req, res) => {
   try {
-    const booking = await AmenityBooking.findOne({
-      where: { id: req.params.id, society_id: req.user.society_id },
+    const ids = (req.body && Array.isArray(req.body.booking_ids) && req.body.booking_ids.length)
+      ? req.body.booking_ids.map(Number).filter((n) => Number.isFinite(n) && n > 0)
+      : [Number(req.params.id)];
+
+    const bookings = await AmenityBooking.findAll({
+      where: { id: { [Op.in]: ids }, society_id: req.user.society_id },
       include: [
         { model: User,    attributes: ["id", "fcm_token"] },
         { model: Amenity, attributes: ["name"] },
       ],
     });
-    if (!booking) return res.status(404).json({ message: "Booking not found" });
-    if (booking.status !== "PENDING")
-      return res.status(400).json({ message: `Cannot reject a booking in '${booking.status}' status.` });
+    if (bookings.length === 0) return res.status(404).json({ message: "Booking not found" });
 
-    await booking.update({ status: "REJECTED" });
+    const invalid = bookings.filter((b) => b.status !== "PENDING");
+    if (invalid.length > 0)
+      return res.status(400).json({ message: `Cannot reject a booking in '${invalid[0].status}' status.` });
 
+    await Promise.all(bookings.map((b) => b.update({ status: "REJECTED" })));
+
+    const first = bookings[0];
     await notifyResident(
-      booking.user_id,
+      first.user_id,
       "Booking Rejected",
-      `❌ Your booking for ${booking.Amenity.name} on ${booking.date} has been rejected.`,
+      `❌ Your booking for ${first.Amenity.name} on ${first.date} has been rejected.`,
       req.user.society_id
     );
 
@@ -281,24 +300,26 @@ exports.rejectBooking = async (req, res) => {
 ═══════════════════════════════════════ */
 exports.cancelBooking = async (req, res) => {
   try {
-    const booking = await AmenityBooking.findOne({
-      where: { id: req.params.id, society_id: req.user.society_id },
+    const ids = (req.body && Array.isArray(req.body.booking_ids) && req.body.booking_ids.length)
+      ? req.body.booking_ids.map(Number).filter((n) => Number.isFinite(n) && n > 0)
+      : [Number(req.params.id)];
+
+    const bookings = await AmenityBooking.findAll({
+      where: { id: { [Op.in]: ids }, society_id: req.user.society_id },
       include: [
         { model: User,    attributes: ["id", "fcm_token"] },
         { model: Amenity, attributes: ["name"] },
       ],
     });
-    if (!booking) return res.status(404).json({ message: "Booking not found" });
+    if (bookings.length === 0) return res.status(404).json({ message: "Booking not found" });
 
-    await booking.update({
-      status:             "CANCELLED",
-      payment_expires_at: null,
-    });
+    await Promise.all(bookings.map((b) => b.update({ status: "CANCELLED", payment_expires_at: null })));
 
+    const first = bookings[0];
     await notifyResident(
-      booking.user_id,
+      first.user_id,
       "Booking Cancelled",
-      `⚠️ Your booking for ${booking.Amenity.name} on ${booking.date} has been cancelled by the admin.`,
+      `⚠️ Your booking for ${first.Amenity.name} on ${first.date} has been cancelled by the admin.`,
       req.user.society_id
     );
 

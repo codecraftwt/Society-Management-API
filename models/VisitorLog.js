@@ -63,6 +63,11 @@ const VisitorLog = sequelize.define(
       type: DataTypes.DATE,
       allowNull: true,
     },
+
+    preapproval_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
   },
   {
     tableName: "visitorlogs",

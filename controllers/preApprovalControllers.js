@@ -259,7 +259,7 @@ const verifyGatePass = async (req, res) => {
       where: {
         otp: code,
         society_id: req.user.society_id,
-        status: "PENDING",
+        status: { [Op.in]: ["PENDING", "USED"] },
       },
     });
 
@@ -291,6 +291,66 @@ const verifyGatePass = async (req, res) => {
         message: "Gate pass expired",
         expired: true,
         visitor_name: approval.visitor_name || null,
+      });
+    }
+
+    // ✅ SECOND SCAN = EXIT (pass was already used for entry)
+    if (approval.status === "USED") {
+      const openLog = await VisitorLog.findOne({
+        where: {
+          preapproval_id: approval.id,
+          exit_time: null,
+        },
+        order: [["entry_time", "DESC"]],
+      });
+
+      if (!openLog) {
+        return res.status(400).json({
+          message: "Gate pass already scanned out. Visitor has already exited.",
+          alreadyExited: true,
+          visitor_name: approval.visitor_name || null,
+        });
+      }
+
+      openLog.exit_time = new Date();
+      await openLog.save();
+
+      // ✅ Free visitor parking if it existed (mirrors visitor markExit)
+      if (openLog.vehicle_number) {
+        const parkingReq = await ParkingRequest.findOne({
+          where: {
+            society_id:     openLog.society_id,
+            flat_id:        openLog.flat_id,
+            vehicle_number: openLog.vehicle_number.toUpperCase(),
+            parking_type:   "VISITOR",
+            status:         "APPROVED",
+          },
+          order: [["createdAt", "DESC"]],
+        });
+
+        if (parkingReq) {
+          await parkingReq.update({ status: "COMPLETED" });
+
+          if (parkingReq.assigned_spot) {
+            const slot = await ParkingSlot.findOne({
+              where: {
+                slot_number: parkingReq.assigned_spot,
+                society_id:  openLog.society_id,
+              },
+            });
+            if (slot && !slot.flat_id) {
+              await slot.update({ status: "AVAILABLE" });
+            }
+          }
+        }
+      }
+
+      return res.json({
+        scan_type: "exit",
+        scan_label: "EXIT",
+        message: "Visitor exit recorded successfully",
+        visitor_name: openLog.visitor_name,
+        visitor: openLog,
       });
     }
 
@@ -381,6 +441,8 @@ const verifyGatePass = async (req, res) => {
     const society = await Society.findByPk(req.user.society_id, { attributes: ["id", "name"] });
 
     res.json({
+      scan_type: "entry",
+      scan_label: "ENTRY",
       message: "Gate pass verified successfully",
       society_name: society?.name || null,
       visitor_name: approval.visitor_name,
