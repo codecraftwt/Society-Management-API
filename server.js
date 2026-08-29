@@ -189,60 +189,20 @@
 //   console.log(`Server running on port ${PORT}`);
 // });
 
-const express = require("express");
-const cors = require("cors");
 require("dotenv").config();
 
 const http = require("http");
 const { Server } = require("socket.io");
 
+const app = require("./app");
 const db = require("./models");
 const sequelize = db.sequelize;
-
-const authRoutes           = require("./routes/authRoutes.js");
-const societyRoutes        = require("./routes/societyRoutes.js");
-const userRoutes           = require("./routes/userRoutes.js");
-const blockRoutes          = require("./routes/blockRoutes.js");
-const flatRoutes           = require("./routes/flatRoutes.js");
-const noticeRoutes         = require("./routes/noticeRoutes.js");
-const complaintRoutes      = require("./routes/complaintRoutes.js");
-const committeeRoutes      = require("./routes/committeeRoutes.js");
-const billingRuleRoutes    = require("./routes/billingRuleRoutes.js");
-const infoRoutes           = require("./routes/infoRoutes.js");
-const billRoutes           = require("./routes/billRoutes.js");
-const paymentRoutes        = require("./routes/paymentRoutes.js");
-const visitorRoutes        = require("./routes/visitorRoutes.js");
-const householdRoutes      = require("./routes/householdRoutes.js");
-const emergencyRoutes      = require("./routes/emergencyRoutes");
-const preApprovalRoutes    = require("./routes/preApprovalRoutes");
-const guardShiftRoutes     = require("./routes/guardShiftRoutes");
-const publicRoutes         = require("./routes/publicRoutes");
-const notificationRoutes   = require("./routes/notificationRoutes");
-const adminRoutes          = require("./routes/adminRoutes");
-const vehicleRoutes        = require("./routes/vehicleRoutes");
-const reportRoutes         = require("./routes/reportRoutes");
-const residentReportRoutes = require("./routes/residentReportRoutes");
-const accountantRoutes     = require("./routes/accountantRoutes");
-const parkingRoutes        = require("./routes/parkingRoutes");
-const parkingSlotRoutes    = require("./routes/parkingSlotRoutes");
-const amenityRoutes        = require("./routes/amenityRoutes");
-const adminAmenityRoutes   = require("./routes/adminAmenityRoutes");
-const settingRoutes        = require("./routes/settingRoutes.js");
-const documentRoutes       = require("./routes/documentRoutes");
-const guardLogRoutes       = require("./routes/guardLogRoutes.js");
-const flatHistoryRoutes    = require("./routes/flatHistoryRoutes");
-const floorRoutes          = require("./routes/floorRoutes.js");
-const userDocumentRoutes   = require("./routes/uploadDocumentRoutes");
-const membershipRoutes     = require("./routes/memberShipRoutes");
-const downloadRoute        = require("./routes/downloadRoute");
 
 // OTP cleanup job
 const { startOtpCleanup } = require("./controllers/authControllers");
 
 // Payment expiry job
 require("./utils/paymentExpiryJob");
-
-const app = express();
 
 /* ─────────────────────────────────────────────
    SOCKET SERVER
@@ -299,62 +259,6 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     console.log("User disconnected:", socket.id);
   });
-});
-
-/* ─────────────────────────────────────────────
-   MIDDLEWARE
-───────────────────────────────────────────── */
-app.use(cors());
-app.use(express.json());
-
-/* ─────────────────────────────────────────────
-   ROUTES
-───────────────────────────────────────────── */
-app.use("/api/auth",           authRoutes);
-app.use("/api/societies",      societyRoutes);
-app.use("/api/users",          userRoutes);
-app.use("/api/blocks",         blockRoutes);
-app.use("/api/flats",          flatRoutes);
-app.use("/api/notices",        noticeRoutes);
-app.use("/api/complaints",     complaintRoutes);
-app.use("/api/committee",      committeeRoutes);
-app.use("/api/billing-rules",  billingRuleRoutes);
-app.use("/api/dashboard",      infoRoutes);
-app.use("/api/bills",          billRoutes);
-app.use("/api/payments",       paymentRoutes);
-app.use("/api/visitors",       visitorRoutes);
-app.use("/api/household",      householdRoutes);
-app.use("/api/emergency",      emergencyRoutes);
-app.use("/api/preapproval",    preApprovalRoutes);
-app.use("/api/public",         publicRoutes);
-app.use("/api/guard-shift",    guardShiftRoutes);
-app.use("/api/notifications",  notificationRoutes);
-app.use("/api/vehicles",       vehicleRoutes);
-app.use("/api/admin",          adminRoutes);
-app.use("/api/reports",        reportRoutes);
-app.use("/api/resident",       residentReportRoutes);
-app.use("/api/accountant",     accountantRoutes);
-app.use("/api/parking",        parkingRoutes);
-app.use("/api/parcels",        require("./routes/parcelRoutes"));
-app.use("/api/parking-slots",  parkingSlotRoutes);
-app.use("/api/settings",       settingRoutes);
-app.use("/api/guard-logs",     guardLogRoutes);
-app.use("/api/amenities",      amenityRoutes);
-app.use("/api/admin/amenities", adminAmenityRoutes);
-app.use("/api/documents",      documentRoutes);
-app.use("/api/contacts",       require("./routes/contactRoutes"));
-app.use("/api/floors",         floorRoutes);
-app.use("/api",                membershipRoutes);
-app.use("/api/flat-history",   flatHistoryRoutes);
-app.use("/api/download",       downloadRoute);
-app.use("/api/user-documents", userDocumentRoutes);
-app.use("/uploads",            express.static("uploads"));
-
-/* ─────────────────────────────────────────────
-   ROOT
-───────────────────────────────────────────── */
-app.get("/", (req, res) => {
-  res.send("API is running..");
 });
 
 /* ─────────────────────────────────────────────
