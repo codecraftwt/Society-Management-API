@@ -202,4 +202,32 @@ describe("Accountant API", () => {
     const res = await request(app).get("/api/accountant/payments/summary").set(headers);
     expectOk(res);
   });
+
+  it("GET /api/accountant/dashboard-stats succeeds for accountant", async () => {
+    const { headers } = await login("accountant");
+    const res = await request(app).get("/api/accountant/dashboard-stats").set(headers);
+    expectOk(res);
+    expect(typeof res.body.totalBills).toBe("number");
+    expect(typeof res.body.paidBills).toBe("number");
+    expect(typeof res.body.pendingBills).toBe("number");
+    expect(typeof res.body.totalCollected).toBe("number");
+    expect(typeof res.body.totalDue).toBe("number");
+  });
+
+  it("GET /api/accountant/dashboard-stats requires authentication", async () => {
+    const res = await request(app).get("/api/accountant/dashboard-stats");
+    expectUnauthorized(res);
+  });
+
+  it("GET /api/accountant/dashboard-stats is forbidden for a resident", async () => {
+    const { headers } = await login("resident");
+    const res = await request(app).get("/api/accountant/dashboard-stats").set(headers);
+    expectForbidden(res);
+  });
+
+  it("GET /api/reports/financial succeeds for accountant", async () => {
+    const { headers } = await login("accountant");
+    const res = await request(app).get("/api/reports/financial").set(headers);
+    expectOk(res);
+  });
 });

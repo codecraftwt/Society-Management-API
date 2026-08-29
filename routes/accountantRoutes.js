@@ -8,8 +8,10 @@ const {
   getSocietyBills,
   getPayments,
   monthlyCollection,
+  getDashboardStats,
 } = require("../controllers/accountantControllers");
 
+router.get("/dashboard-stats", auth, role("ACCOUNTANT"), getDashboardStats);
 router.get("/bills", auth, role("ACCOUNTANT"), getSocietyBills);
 router.get("/payments", auth, role("ACCOUNTANT"), getPayments);
 router.get("/payments/summary", auth, role("ACCOUNTANT"), monthlyCollection);
