@@ -364,8 +364,14 @@ const PORT = process.env.PORT || 5000;
 
 sequelize
   .authenticate()
-  .then(() => {
+  .then(async () => {
     console.log("DB connected");
+    try {
+      await sequelize.query("ALTER TABLE bills MODIFY COLUMN status VARCHAR(50) NOT NULL DEFAULT 'PENDING'");
+      console.log("[DB Migration] Updated bills.status column to VARCHAR(50)");
+    } catch (err) {
+      console.log("[DB Migration] Note on bills status column:", err.message);
+    }
     return sequelize.sync();
   })
   .then(() => {

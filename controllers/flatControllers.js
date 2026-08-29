@@ -90,6 +90,20 @@ const assignFlatToResident = async (req, res) => {
       is_current: true,
     });
 
+    await FlatMembership.update(
+      { is_current: false, move_out_date: new Date() },
+      { where: { flat_id: flatId, is_current: true } }
+    );
+    await FlatMembership.create({
+      flat_id:          flatId,
+      user_id:          resident_id,
+      role:             "OWNER",
+      is_staying:       true,
+      pays_maintenance: true,
+      move_in_date:     new Date(),
+      is_current:       true,
+    });
+
     const flatUpdate = { resident_id };
     if (flat_type) flatUpdate.flat_type = flat_type;
     await flat.update(flatUpdate);
@@ -102,12 +116,16 @@ const assignFlatToResident = async (req, res) => {
 
 const getAllFlats = async (req, res) => {
   try {
-    console.log("getAllFlats called for society_id:", req.user.society_id);
+    const targetSocietyId = (req.user?.activeRole === "SUPER_ADMIN" && req.headers["x-society-id"])
+      ? req.headers["x-society-id"]
+      : req.user?.society_id;
+
+    const blockWhere = targetSocietyId ? { society_id: targetSocietyId } : {};
+
     const blocks = await Block.findAll({
-      where: { society_id: req.user.society_id },
+      where: blockWhere,
       attributes: ["id"],
     });
-    console.log("Found blocks count:", blocks.length);
     const blockIds = blocks.map((b) => b.id);
 
     const flats = await Flat.findAll({

@@ -7,6 +7,8 @@ const role = require("../middlewares/roleMiddleware");
 const {
   createOrder,
   verifyPayment,
+  createDemoUpi,
+  verifyDemoPayment,
 } = require("../controllers/paymentControllers");
 
 /* === RAZORPAY === */
@@ -14,6 +16,12 @@ const {
 router.post("/create-order", auth, role("RESIDENT"), createOrder);
 
 router.post("/verify", auth, role("RESIDENT"), verifyPayment);
+
+/* === DEMO UPI === */
+
+router.post("/demo-upi", auth, role("RESIDENT"), createDemoUpi);
+
+router.post("/demo-verify", auth, role("RESIDENT"), verifyDemoPayment);
 
 /* === DEBUG === */
 

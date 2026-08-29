@@ -3,7 +3,7 @@ const router = express.Router();
 const auth = require("../middlewares/authMiddleware");
 const role = require("../middlewares/roleMiddleware");
 const attachFlatId = require("../middlewares/flatAccessMiddleware");
-const { createBill, getSocietyBills, getResidentBills, deleteBill } = require("../controllers/billControllers");
+const { createBill, getSocietyBills, getResidentBills, confirmPayment, deleteBill } = require("../controllers/billControllers");
 
 // Admin / Accountant — create
 router.post("/", auth, role("SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), createBill);
@@ -13,6 +13,9 @@ router.get("/society", auth, role("SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTA
 
 // ✅ FAMILY_MEMBER can view their flat's bills (read only)
 router.get("/resident", auth, role("RESIDENT", "ACCOUNTANT", "FAMILY_MEMBER"), attachFlatId, getResidentBills);
+
+// Admin / Accountant — confirm payment
+router.put("/confirm/:id", auth, role("SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), confirmPayment);
 
 // Admin / Accountant — delete
 router.delete("/:id", auth, role("SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), deleteBill);

@@ -1,5 +1,5 @@
 
-const { ParkingSlot, Flat, Block, Floor, HouseHoldMember } = require("../models");
+const { ParkingSlot, Flat, Block, Floor, HouseHoldMember, User } = require("../models");
 const FlatMembership = require("../models/FlatMembership");
 const Vehicle        = require("../models/Vehicle");
 const { Op }         = require("sequelize");
@@ -73,24 +73,62 @@ const createParkingSlots = async (req, res) => {
 ═══════════════════════════════════════════ */
 const getParkingSlots = async (req, res) => {
   try {
-    const page        = Math.max(1,   parseInt(req.query.page)   || 1);
-    const limit       = Math.min(100, parseInt(req.query.limit)  || 20);
-    const offset      = (page - 1) * limit;
-    const search      = req.query.search?.trim() || "";
-    const vehicleType = req.query.vehicle_type   || "ALL";
+    const page         = Math.max(1,   parseInt(req.query.page)   || 1);
+    const limit        = Math.min(100, parseInt(req.query.limit)  || 20);
+    const offset       = (page - 1) * limit;
+    const search       = req.query.search?.trim() || "";
+    const vehicleType  = req.query.vehicle_type  || "ALL";
+    const statusFilter = req.query.status        || "ALL";
+    const parkingType  = req.query.parking_type || "ALL";
 
     const baseWhere = { society_id: req.user.society_id };
     const where     = { ...baseWhere };
 
     if (vehicleType !== "ALL") where.vehicle_type = vehicleType;
-    if (search) where.slot_number = { [Op.like]: `%${search}%` };
+    if (statusFilter !== "ALL") where.status = statusFilter;
+    if (parkingType !== "ALL") where.parking_type = parkingType;
+    if (search) {
+      where[Op.or] = [
+        { slot_number:       { [Op.like]: `%${search}%` } },
+        { "$Flat.flat_number$":       { [Op.like]: `%${search}%` } },
+        { "$resident.name$":          { [Op.like]: `%${search}%` } },
+        { "$Vehicle.vehicle_number$": { [Op.like]: `%${search}%` } },
+      ];
+    }
+
+    const include = [
+      { model: Flat,    as: "Flat",     attributes: ["id", "flat_number"], required: false },
+      { model: User,    as: "resident", attributes: ["id", "name", "email", "phone"], required: false },
+      { model: Vehicle, as: "Vehicle",  attributes: ["id", "vehicle_number", "vehicle_name", "vehicle_type"], required: false },
+    ];
 
     const { count, rows: slots } = await ParkingSlot.findAndCountAll({
       where,
+      include,
       order:  [["slot_number", "ASC"]],
       limit,
       offset,
     });
+
+    const mapSlot = (s) => {
+      const j = s.toJSON();
+      return {
+        id:             j.id,
+        society_id:     j.society_id,
+        slot_number:    j.slot_number,
+        parking_floor:  j.parking_floor,
+        vehicle_type:   j.vehicle_type,
+        status:         j.status,
+        parking_type:   j.parking_type,
+        flat_id:        j.flat_id,
+        resident_id:    j.resident_id,
+        flat_number:    j.Flat?.flat_number || null,
+        resident:       j.resident ? { id: j.resident.id, name: j.resident.name, email: j.resident.email, phone: j.resident.phone } : null,
+        vehicle:        j.Vehicle
+          ? { id: j.Vehicle.id, vehicle_number: j.Vehicle.vehicle_number, vehicle_name: j.Vehicle.vehicle_name, vehicle_type: j.Vehicle.vehicle_type }
+          : null,
+      };
+    };
 
     const [
       totalAll,
@@ -107,7 +145,7 @@ const getParkingSlots = async (req, res) => {
     ]);
 
     res.json({
-      data: slots,
+      data: slots.map(mapSlot),
       pagination: {
         currentPage: page,
         totalPages:  Math.ceil(count / limit),

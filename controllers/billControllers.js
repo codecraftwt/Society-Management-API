@@ -199,8 +199,9 @@ const getSocietyBills = async (req, res) => {
 
     // ── Status WHERE ──
     const billWhere = {};
-    if (filter === "PAID")    billWhere.status = "PAID";
-    if (filter === "PENDING") billWhere.status = { [Op.ne]: "PAID" };
+    if (filter === "PAID") billWhere.status = "PAID";
+    else if (filter === "PENDING") billWhere.status = "PENDING";
+    else if (filter === "PENDING_VERIFICATION") billWhere.status = "PENDING_VERIFICATION";
 
     // ── Search: title or billing_month ──
     if (search) {
@@ -247,12 +248,18 @@ const getSocietyBills = async (req, res) => {
       }],
     });
 
-    const totalAll     = allBillsForCounts.length;
-    const totalPaid    = allBillsForCounts.filter(b => b.status === "PAID").length;
-    const totalPending = allBillsForCounts.filter(b => b.status !== "PAID").length;
-    const totalRevenue = allBillsForCounts
+    const totalAll                 = allBillsForCounts.length;
+    const totalPaid                = allBillsForCounts.filter(b => b.status === "PAID").length;
+    const totalPending             = allBillsForCounts.filter(b => b.status === "PENDING").length;
+    const totalPendingVerification = allBillsForCounts.filter(b => b.status === "PENDING_VERIFICATION").length;
+    const totalRevenue             = allBillsForCounts
       .filter(b => b.status === "PAID")
-      .reduce((s, b) => s + Number(b.amount), 0);
+      .reduce((s, b) => s + Number(b.amount || 0), 0);
+    const totalPendingAmount       = allBillsForCounts
+      .filter(b => b.status !== "PAID")
+      .reduce((s, b) => s + Number(b.amount || 0), 0);
+    const totalAllAmount           = allBillsForCounts
+      .reduce((s, b) => s + Number(b.amount || 0), 0);
 
     res.status(200).json({
       data: bills,
@@ -263,10 +270,13 @@ const getSocietyBills = async (req, res) => {
         limit,
       },
       counts: {
-        total:   totalAll,
-        paid:    totalPaid,
-        pending: totalPending,
-        revenue: totalRevenue,
+        total:               totalAll,
+        paid:                totalPaid,
+        pending:             totalPending,
+        pendingVerification: totalPendingVerification,
+        revenue:             totalRevenue,
+        pendingAmount:       totalPendingAmount,
+        totalAmount:         totalAllAmount,
       },
     });
   } catch (err) {
@@ -341,18 +351,19 @@ const getResidentBills = async (req, res) => {
     });
 
     // ── Tab counts ──
-    const [totalAll, totalPaid, totalPending] = await Promise.all([
+    const [totalAll, totalPaid, totalPending, totalPendingVerification] = await Promise.all([
       Bill.count({ where: { flat_id: { [Op.in]: myFlatIds } } }),
       Bill.count({ where: { flat_id: { [Op.in]: myFlatIds }, status: "PAID" } }),
-      Bill.count({ where: { flat_id: { [Op.in]: myFlatIds }, status: { [Op.ne]: "PAID" } } }),
+      Bill.count({ where: { flat_id: { [Op.in]: myFlatIds }, status: "PENDING" } }),
+      Bill.count({ where: { flat_id: { [Op.in]: myFlatIds }, status: "PENDING_VERIFICATION" } }),
     ]);
 
-    // ── Due amount (pending bills total, for stat card) ──
-    const pendingBills = await Bill.findAll({
-      where:      { flat_id: { [Op.in]: myFlatIds }, status: { [Op.ne]: "PAID" } },
+    // ── Due amount (only unpaid PENDING bills total, excluding PENDING_VERIFICATION) ──
+    const pendingUnpaidBills = await Bill.findAll({
+      where:      { flat_id: { [Op.in]: myFlatIds }, status: "PENDING" },
       attributes: ["amount"],
     });
-    const totalDue = pendingBills.reduce((sum, b) => sum + Number(b.amount), 0);
+    const totalDue = pendingUnpaidBills.reduce((sum, b) => sum + Number(b.amount || 0), 0);
 
     res.status(200).json({
       data: bills,
@@ -363,10 +374,11 @@ const getResidentBills = async (req, res) => {
         limit,
       },
       counts: {
-        total:   totalAll,
-        paid:    totalPaid,
-        pending: totalPending,
-        due:     totalDue,
+        total:               totalAll,
+        paid:                totalPaid,
+        pending:             totalPending,
+        pendingVerification: totalPendingVerification,
+        due:                 totalDue,
       },
     });
 
@@ -402,9 +414,105 @@ const deleteBill = async (req, res) => {
 };
 
 
+/* =====
+   CONFIRM BILL PAYMENT (ADMIN / ACCOUNTANT / COMMITTEE)
+===== */
+const confirmPayment = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const bill = await Bill.findByPk(id, {
+      include: [{ model: Flat }],
+    });
+
+    if (!bill) {
+      return res.status(404).json({ success: false, message: "Bill not found" });
+    }
+
+    if (bill.status === "PAID") {
+      return res.status(400).json({ success: false, message: "Bill is already marked as PAID" });
+    }
+
+    if (bill.status !== "PENDING_VERIFICATION") {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot confirm payment. The resident has not submitted payment for this bill yet.",
+      });
+    }
+
+    // Update Bill status to PAID
+    await bill.update({ status: "PAID" });
+
+    // Update Payment record if exists
+    const Payment = require("../models/Payment");
+    const payment = await Payment.findOne({ where: { bill_id: bill.id } });
+    if (payment) {
+      await payment.update({ status: "SUCCESS" });
+    }
+
+    // Find resident to notify (Web + Mobile Push)
+    const userIdsToNotify = new Set();
+    if (bill.resident_id) userIdsToNotify.add(bill.resident_id);
+    if (bill.Flat?.resident_id) userIdsToNotify.add(bill.Flat.resident_id);
+
+    const adminMembers = await HouseHoldMember.findAll({
+      where: { flat_id: bill.flat_id, isAdmin: true },
+    });
+    for (let member of adminMembers) {
+      if (member.user_id) userIdsToNotify.add(member.user_id);
+    }
+
+    const usersToNotify = await User.findAll({
+      where: { id: { [Op.in]: Array.from(userIdsToNotify) } },
+      attributes: ["id", "fcm_token"],
+    });
+
+    for (const user of usersToNotify) {
+      const settings = await UserSetting.findOne({ where: { user_id: user.id } });
+      if (!settings || settings.payment_updates !== false) {
+        const notification = await Notification.create({
+          title: "Bill Payment Confirmed",
+          message: `✅ Your payment of ₹${bill.amount} for "${bill.title}" has been confirmed by Admin.`,
+          type: "BILL",
+          action_type: "BILL_CONFIRMED",
+          action_route: "/resident/bills",
+          society_id: req.user.society_id || bill.Flat?.society_id,
+          receiver_user_id: user.id,
+        });
+
+        // 1. Web Socket real-time notification
+        if (global.io) {
+          global.io.to(`user_${user.id}`).emit("new_notification", notification);
+        }
+
+        // 2. Mobile FCM Push notification
+        if (user.fcm_token) {
+          sendPushNotification(
+            user.fcm_token,
+            "✅ Payment Confirmed",
+            `Your payment of ₹${bill.amount} for ${bill.title} was confirmed by Admin.`,
+            { route: "/resident/bills", billId: bill.id.toString(), status: "PAID" }
+          ).catch((err) => console.error("[confirmPayment] Push Error:", err.message));
+        }
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Payment confirmed successfully and notification sent to resident.",
+      bill,
+    });
+  } catch (err) {
+    console.error("Confirm Payment Error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+
 module.exports = {
   createBill,
   getSocietyBills,
   getResidentBills,
+  confirmPayment,
   deleteBill,
 };

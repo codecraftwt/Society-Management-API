@@ -232,6 +232,9 @@ Society.hasMany(ParkingSlot, { foreignKey: "society_id" });
 ParkingSlot.belongsTo(Flat, { foreignKey: "flat_id" });
 Flat.hasMany(ParkingSlot, { foreignKey: "flat_id" });
 
+ParkingSlot.belongsTo(User, { foreignKey: "resident_id", as: "resident" });
+User.hasMany(ParkingSlot, { foreignKey: "resident_id", as: "parkingSlots" });
+
 Society.hasMany(Amenity, { foreignKey: "society_id" });
 Amenity.belongsTo(Society, { foreignKey: "society_id" });
 

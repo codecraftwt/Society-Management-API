@@ -8,7 +8,7 @@ const Bill = sequelize.define("Bill", {
   amount: { type: DataTypes.DECIMAL(10,2), allowNull: false },
   billing_month: { type: DataTypes.STRING },
   due_date: { type: DataTypes.DATE },
-  status: { type: DataTypes.ENUM('PENDING','PAID'), defaultValue: 'PENDING' }
+  status: { type: DataTypes.STRING(50), defaultValue: 'PENDING' }
 }, {
   tableName: "bills",
   timestamps: true,

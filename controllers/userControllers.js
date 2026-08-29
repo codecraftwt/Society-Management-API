@@ -908,8 +908,30 @@ const getResidents = async (req, res) => {
       }],
     });
 
+    // Fallback: Fetch flats directly assigned via Flat.resident_id (e.g. legacy/direct assignments)
+    const directFlats = userIds.length > 0 ? await Flat.findAll({
+      where: { resident_id: { [Op.in]: userIds } },
+      attributes: ["id", "flat_number", "flat_type", "floor_id", "occupancy_status", "resident_id"],
+      include: [
+        {
+          model: Floor,
+          attributes: ["id", "floor_number"],
+          required: false,
+          include: [{ model: Block, attributes: ["id", "name"], required: false }],
+        },
+        {
+          model: Block,
+          attributes: ["id", "name"],
+          required: false,
+        },
+      ],
+    }) : [];
+
     // Find ALL active memberships for those flats (to identify co-occupants: owner + tenant)
-    const flatIds = [...new Set(allMemberships.map(m => m.flat_id))];
+    const membershipFlatIds = allMemberships.map(m => m.flat_id);
+    const directFlatIds = directFlats.map(f => f.id);
+    const flatIds = [...new Set([...membershipFlatIds, ...directFlatIds])];
+
     const allFlatMemberships = flatIds.length > 0
       ? await FlatMembership.findAll({
           where: { flat_id: { [Op.in]: flatIds }, is_current: true },
@@ -933,8 +955,13 @@ const getResidents = async (req, res) => {
     if (block_id || floor_id || flat_id) {
       uniqueResidents = uniqueResidents.filter(user => {
         const userMemberships = allMemberships.filter(m => m.user_id === user.id);
-        return userMemberships.some(m => {
-          const flat = m.Flat;
+        const userDirectFlats = directFlats.filter(f => f.resident_id === user.id);
+        const allUserFlats = [
+          ...userMemberships.map(m => m.Flat),
+          ...userDirectFlats
+        ].filter(Boolean);
+
+        return allUserFlats.some(flat => {
           const fBlockId = flat?.Floor?.Block?.id || flat?.Block?.id;
           const fFloorId = flat?.floor_id;
           const fFlatId  = flat?.id;
@@ -974,6 +1001,31 @@ const getResidents = async (req, res) => {
           owner:  occupants.owner  ? { id: occupants.owner.id,  name: occupants.owner.name }  : null,
           tenant: occupants.tenant ? { id: occupants.tenant.id, name: occupants.tenant.name, approval_status: occupants.tenant.approval_status } : null,
         };
+      });
+
+      // Fallback: Append direct flats if not already in userMemberships
+      const existingFlatIds = new Set(userFlats.map(f => f.id));
+      directFlats.filter(f => f.resident_id === user.id).forEach(flat => {
+        if (!existingFlatIds.has(flat.id)) {
+          userFlats.push({
+            id:           flat.id,
+            flat_id:      flat.id,
+            flat_number:  flat.flat_number,
+            flat_type:    flat.flat_type,
+            floor_id:     flat.floor_id,
+            Floor: flat.Floor ? {
+              id:           flat.Floor.id,
+              floor_number: flat.Floor.floor_number,
+              Block: flat.Floor.Block ? { id: flat.Floor.Block.id, name: flat.Floor.Block.name } : null,
+            } : null,
+            Block: flat.Block ? { id: flat.Block.id, name: flat.Block.name } : null,
+            floor_number: flat.Floor?.floor_number ?? null,
+            block_name:   flat.Floor?.Block?.name || flat.Block?.name || null,
+            owner:        { id: user.id, name: user.name },
+            tenant:       null,
+          });
+          existingFlatIds.add(flat.id);
+        }
       });
 
       return {
