@@ -223,37 +223,59 @@ global.io = io;
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
 
-  // Join personal + role + society rooms
-  socket.on("join", ({ userId, role, societyId }) => {
-    socket.join(`user_${userId}`);
-    socket.join(`role_${role}`);
-    socket.join(`society_${societyId}`);
-    console.log(
-      `User ${userId} joined → user_${userId}, role_${role}, society_${societyId}`
-    );
+  // Join personal + role + society rooms (safely guarded)
+  socket.on("join", (data) => {
+    try {
+      if (!data || typeof data !== "object") return;
+      const { userId, role, societyId } = data;
+      if (userId) socket.join(`user_${userId}`);
+      if (role) socket.join(`role_${role}`);
+      if (societyId) socket.join(`society_${societyId}`);
+      console.log(
+        `User ${userId} joined → user_${userId}, role_${role}, society_${societyId}`
+      );
+    } catch (err) {
+      console.error("Socket join error:", err.message);
+    }
   });
 
   socket.on("join_society", (id) => {
-    if (id) {
-      socket.join(`society_${id}`);
-      console.log(`Joined society_${id}`);
+    try {
+      if (id) {
+        socket.join(`society_${id}`);
+        console.log(`Joined society_${id}`);
+      }
+    } catch (err) {
+      console.error("Socket join_society error:", err.message);
     }
   });
 
   socket.on("leave_society", (id) => {
-    if (id) {
-      socket.leave(`society_${id}`);
-      console.log(`Left society_${id}`);
+    try {
+      if (id) {
+        socket.leave(`society_${id}`);
+        console.log(`Left society_${id}`);
+      }
+    } catch (err) {
+      console.error("Socket leave_society error:", err.message);
     }
   });
 
   // Complaint rooms
   socket.on("join_complaint", (complaintId) => {
-    socket.join(`complaint_${complaintId}`);
+    try {
+      if (complaintId) socket.join(`complaint_${complaintId}`);
+    } catch (err) {
+      console.error("Socket join_complaint error:", err.message);
+    }
   });
 
   socket.on("leave_complaint", (complaintId) => {
-    socket.leave(`complaint_${complaintId}`);
+    try {
+      if (complaintId) socket.leave(`complaint_${complaintId}`);
+    } catch (err) {
+      console.error("Socket leave_complaint error:", err.message);
+    }
   });
 
   socket.on("disconnect", () => {
@@ -275,6 +297,12 @@ sequelize
       console.log("[DB Migration] Updated bills.status column to VARCHAR(50)");
     } catch (err) {
       console.log("[DB Migration] Note on bills status column:", err.message);
+    }
+    try {
+      await sequelize.query("ALTER TABLE guard_shifts DROP INDEX guard_shifts_guard_id_society_id_shift_type");
+      console.log("[DB Migration] Removed guard_shifts unique constraint on (guard_id, society_id, shift_type)");
+    } catch (err) {
+      console.log("[DB Migration] Note on guard_shifts unique constraint:", err.message);
     }
     return sequelize.sync();
   })
@@ -301,3 +329,14 @@ sequelize
     });
   })
   .catch((err) => console.error("DB Sync Error:", err));
+
+/* ─────────────────────────────────────────────
+   GLOBAL ERROR HANDLERS (PREVENT NODEMON CRASHES)
+───────────────────────────────────────────── */
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("[Process Error] Unhandled Rejection at:", promise, "reason:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[Process Error] Uncaught Exception thrown:", err);
+});

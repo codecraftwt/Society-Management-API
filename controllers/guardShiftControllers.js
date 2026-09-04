@@ -66,6 +66,11 @@ const upsertShift = async (req, res) => {
 
     res.json(shift);
   } catch (err) {
+    if (err.name === "SequelizeUniqueConstraintError") {
+      return res.status(409).json({
+        message: "A shift with this shift type already exists for this guard. Update the existing shift instead.",
+      });
+    }
     res.status(500).json({ message: err.message });
   }
 };
@@ -112,6 +117,11 @@ const updateShift = async (req, res) => {
     await shift.update({ shift_type: newType, start_date: newStart, end_date: newEnd });
     res.json(shift);
   } catch (err) {
+    if (err.name === "SequelizeUniqueConstraintError") {
+      return res.status(409).json({
+        message: "A shift with this shift type already exists for this guard. Update the existing shift instead.",
+      });
+    }
     res.status(500).json({ message: err.message });
   }
 };

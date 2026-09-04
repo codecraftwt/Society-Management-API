@@ -15,22 +15,43 @@ const transporter = require("../utils/mailer");
     HELPERS
     ===== */
 function generateOtp() {
-  return "123456";
-  // return crypto.randomInt(100000, 999999).toString();
+  // Real random 6-digit OTP for all environments.
+  // In test mode, keep it deterministic so the test suite can log in.
+  if (process.env.NODE_ENV === "test") return "123456";
+  return crypto.randomInt(100000, 999999).toString();
 }
 
 async function sendOtpEmail(toEmail, otp, userName) {
   if (!transporter) return;
+  if (process.env.NODE_ENV === "test") {
+    console.log(`[Mailer] Test mode — skipping email to ${toEmail}`);
+    return;
+  }
   const appName = process.env.APP_NAME || "SocietyApp";
 
-  const istNow = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
-  const sentAt =
-    istNow.toISOString().replace("T", " ").substring(0, 16) + " IST";
-  const expiresAt =
-    new Date(istNow.getTime() + 2 * 60 * 1000)
-      .toISOString()
-      .replace("T", " ")
-      .substring(0, 16) + " IST";
+  const istIntl = new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+  const sentAt = istIntl.format(new Date());
+  const expiresAt = istIntl.format(new Date(Date.now() + 2 * 60 * 1000));
+
+  const digits = otp.split("").map(
+    (d) => `<td align="center" style="width:44px;height:56px;padding:2px;">
+      <table width="44" cellpadding="0" cellspacing="0" style="width:44px;">
+        <tr>
+          <td style="height:52px;width:44px;border-radius:12px;background:linear-gradient(160deg,#ffffff,#eef2ff);border:1.5px solid rgba(99,102,241,0.35);box-shadow:0 3px 8px rgba(99,102,241,0.12);font-size:30px;font-weight:800;color:#312e81;font-family:'Courier New',monospace;letter-spacing:0;text-align:center;">
+            ${d}
+          </td>
+        </tr>
+      </table>
+    </td>`
+  );
 
   await transporter.sendMail({
     from: `"${appName}" <${process.env.MAIL_USER}>`,
@@ -39,48 +60,91 @@ async function sendOtpEmail(toEmail, otp, userName) {
     html: `
   <!DOCTYPE html>
   <html lang="en">
-  <head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/></head>
-  <body style="margin:0;padding:0;background:#f4f6fb;font-family:'Inter',Arial,sans-serif;">
-    <table width="100%" cellpadding="0" cellspacing="0" style="padding:40px 16px;">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>${appName} OTP</title>
+  </head>
+  <body style="margin:0;padding:0;background:#eef2f7;font-family:'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;-webkit-font-smoothing:antialiased;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="padding:32px 16px;">
       <tr><td align="center">
-        <table width="100%" style="max-width:480px;background:#ffffff;border-radius:20px;overflow:hidden;box-shadow:0 4px 24px rgba(15,23,42,0.08);">
-          <tr><td style="height:4px;background:linear-gradient(90deg,#3b82f6,#6366f1,#8b5cf6);"></td></tr>
-          <tr><td style="padding:36px 36px 28px;">
-            <div style="text-align:center;margin-bottom:24px;">
-              <div style="display:inline-block;width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,#eff6ff,#dbeafe);border:1.5px solid rgba(59,130,246,0.3);line-height:64px;font-size:28px;text-align:center;">
+        <table width="100%" style="max-width:520px;" cellpadding="0" cellspacing="0">
+          <tr>
+            <td style="background:linear-gradient(135deg,#4f46e5 0%,#6366f1 45%,#8b5cf6 100%);border-radius:22px 22px 0 0;padding:30px 32px 26px;text-align:center;">
+              <div style="display:inline-block;width:62px;height:62px;border-radius:50%;background:rgba(255,255,255,0.16);border:1.5px solid rgba(255,255,255,0.35);line-height:62px;font-size:28px;text-align:center;margin-bottom:12px;">
                 🔐
               </div>
-            </div>
-            <h2 style="margin:0 0 8px;text-align:center;font-size:22px;font-weight:700;color:#0f172a;letter-spacing:-0.02em;">
-              Verify Your Login
-            </h2>
-            <p style="margin:0 0 24px;text-align:center;color:#64748b;font-size:14px;line-height:1.6;">
-              Hi <strong>${userName || "there"}</strong>, use the one-time code below to sign in to <strong>${appName}</strong>.
-            </p>
-            <div style="background:linear-gradient(135deg,#eff6ff,#eef2ff);border:1.5px solid rgba(99,102,241,0.25);border-radius:16px;padding:28px 24px;text-align:center;margin-bottom:24px;">
-              <p style="margin:0 0 8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.12em;color:#64748b;">
+              <h2 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#ffffff;letter-spacing:-0.02em;">
+                Verify Your Login
+              </h2>
+              <p style="margin:0;font-size:14px;color:rgba(255,255,255,0.85);line-height:1.5;">
+                One more step to get you signed in
+              </p>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="background:#ffffff;padding:32px 32px 24px;">
+              <p style="margin:0 0 20px;font-size:15px;color:#334155;line-height:1.65;">
+                Hi <strong style="color:#0f172a;">${userName || "there"}</strong>,
+                <br/>
+                use the one-time code below to complete your sign in to <strong style="color:#4f46e5;">${appName}</strong>.
+              </p>
+
+              <p style="margin:0 0 14px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.16em;color:#94a3b8;text-align:center;">
                 One-Time Password
               </p>
-              <p style="margin:0;font-size:44px;font-weight:800;letter-spacing:0.22em;color:#1e40af;font-family:'Courier New',monospace;">
-                ${otp}
+
+              <table cellpadding="0" cellspacing="0" align="center" style="margin:0 auto 6px;">
+                <tr>${digits.join("")}</tr>
+              </table>
+
+              <p style="margin:0 0 22px;font-size:12px;color:#94a3b8;text-align:center;">
+                This code expires in <strong style="color:#6366f1;">2 minutes</strong>
               </p>
-            </div>
-            <div style="background:#fefce8;border:1px solid rgba(234,179,8,0.3);border-radius:10px;padding:12px 16px;margin-bottom:20px;">
-              <p style="margin:0;font-size:13px;color:#92400e;line-height:1.5;">
-                Sent at: <strong>${sentAt}</strong><br/>
-                Expires at: <strong>${expiresAt}</strong><br/>
-                Do not share this OTP with anyone.
+
+              <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px;">
+                <tr>
+                  <td style="padding:14px 18px;">
+                    <table cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td style="font-size:13px;color:#64748b;padding:4px 0;width:90px;">Sent at</td>
+                        <td style="font-size:13px;color:#0f172a;font-weight:600;padding:4px 0;">${sentAt} IST</td>
+                      </tr>
+                      <tr>
+                        <td style="font-size:13px;color:#64748b;padding:4px 0;width:90px;">Expires at</td>
+                        <td style="font-size:13px;color:#0f172a;font-weight:600;padding:4px 0;">${expiresAt} IST</td>
+                      </tr>
+                      <tr>
+                        <td style="font-size:13px;color:#64748b;padding:4px 0;width:90px;">Validity</td>
+                        <td style="font-size:13px;color:#059669;font-weight:600;padding:4px 0;">2 minutes</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:18px;background:#fffbeb;border:1px solid #fde68a;border-radius:14px;">
+                <tr>
+                  <td style="padding:12px 16px;font-size:13px;color:#b45309;line-height:1.55;">
+                    🛡️ &nbsp;<strong>Security tip:</strong> Do not share this OTP with anyone. Our team will never ask for it.
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="background:#0f172a;border-radius:0 0 22px 22px;padding:22px 32px;text-align:center;">
+              <p style="margin:0 0 6px;font-size:12px;color:#94a3b8;line-height:1.6;">
+                If you didn't request this code, no action is needed —<br/>
+                you can safely ignore this email.
               </p>
-            </div>
-            <p style="margin:0;font-size:12px;color:#94a3b8;text-align:center;line-height:1.6;">
-              If you did not attempt to log in, please ignore this email.
-            </p>
-          </td></tr>
-          <tr><td style="padding:16px 36px;border-top:1px solid #f1f5f9;text-align:center;">
-            <p style="margin:0;font-size:11px;color:#cbd5e1;">
-              &copy; ${new Date().getFullYear()} ${appName}. All rights reserved.
-            </p>
-          </td></tr>
+              <p style="margin:0;font-size:11px;color:#475569;">
+                &copy; ${new Date().getFullYear()} ${appName} &middot; All rights reserved
+              </p>
+            </td>
+          </tr>
         </table>
       </td></tr>
     </table>
@@ -162,20 +226,18 @@ exports.login = async (req, res) => {
     if (!isMatch)
       return res.status(400).json({ message: "Invalid credentials" });
 
-    // ✅ Run OTP generation + DB ops in parallel
+    // ✅ Generate OTP + clear old records in parallel
     const otp = generateOtp();
     const [otp_hash] = await Promise.all([
       bcrypt.hash(otp, 8), // ✅ rounds=8 instead of 10 (faster, still safe for short-lived OTPs)
       OtpVerification.destroy({ where: { email } }),
     ]);
 
-    const expires_at = new Date(Date.now() + 10 * 60 * 1000);
-    await OtpVerification.create({ email, otp_hash, expires_at });
+    // ✅ Await the email so the client timer only starts after dispatch
+    await sendOtpEmail(email, otp, user.name);
 
-    // ✅ Fire-and-forget: don't await email — respond to client immediately
-    sendOtpEmail(email, otp, user.name).catch((err) =>
-      console.error("[Mailer] OTP email failed:", err.message)
-    );
+    const expires_at = new Date(Date.now() + 2 * 60 * 1000);
+    await OtpVerification.create({ email, otp_hash, expires_at });
 
     let roles = user.roles;
     if (!roles || roles.length === 0) {
@@ -361,13 +423,11 @@ exports.resendOtp = async (req, res) => {
       OtpVerification.destroy({ where: { email } }),
     ]);
 
+    // ✅ Await the email so the resend timer only restarts after dispatch
+    await sendOtpEmail(email, otp, user.name);
+
     const expires_at = new Date(Date.now() + 2 * 60 * 1000);
     await OtpVerification.create({ email, otp_hash, expires_at });
-
-    // ✅ Fire-and-forget
-    sendOtpEmail(email, otp, user.name).catch((err) =>
-      console.error("[Mailer] Resend OTP email failed:", err.message)
-    );
 
     return res.status(200).json({ message: "OTP resent successfully" });
   } catch (err) {

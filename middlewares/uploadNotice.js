@@ -29,6 +29,11 @@ const upload = (folder) => {
     "image/webp", "image/svg+xml",
   ]);
 
+  const ALLOWED_MIMES = new Set([
+    ...IMAGE_MIMES,
+    "application/pdf",
+  ]);
+
   const storage = new CloudinaryStorage({
     cloudinary,
     params: async (req, file) => {
@@ -52,7 +57,19 @@ const upload = (folder) => {
     },
   });
 
-  return multer({ storage });
+  const fileFilter = (req, file, cb) => {
+    if (ALLOWED_MIMES.has(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Invalid file type. Only PDF documents and Image files (JPG, PNG, WEBP, GIF, SVG) are allowed."), false);
+    }
+  };
+
+  return multer({
+    storage,
+    fileFilter,
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  });
 };
 
 module.exports = upload;

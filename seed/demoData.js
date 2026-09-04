@@ -104,14 +104,14 @@ const seed = async () => {
       if (userCount > 0) {
         console.log("ℹ️  Demo data already exists (Society id:", existing.id, "| Users:", userCount, "). Skipping seed.");
         console.log("── LOGIN CREDENTIALS (password: Admin@123) ──");
-        console.log("Super Admin  → superadmin@society.com  (password: 123456)");
-        console.log("Admin        → admin@yopmail.com");
+        console.log("Super Admin  → superadmin@yopmail.com  (password: 123456)");
+        console.log("Admin        → societyadmin32@yopmail.com");
         console.log("Committee    → committee@yopmail.com");
         console.log("Guard        → guard@yopmail.com");
         console.log("Guard 2      → guard2@yopmail.com");
         console.log("Accountant   → accountant@yopmail.com");
         console.log("Residents    → resident1@yopmail.com ... resident8@yopmail.com");
-        console.log("OTP for all logins: 123456");
+        console.log("OTP is sent to the registered email on login");
         process.exit(0);
       }
       await cleanupSociety(existing.id);
@@ -156,7 +156,7 @@ const seed = async () => {
     ════════════════════════════════════════════════ */
     const admin = await User.create({
       name: "Rohan Deshmukh",
-      email: "admin@yopmail.com",
+      email: "societyadmin32@yopmail.com",
       phone: "9876500001",
       password: PASSWORD,
       role: "SOCIETY_ADMIN",
@@ -615,7 +615,7 @@ const seed = async () => {
     console.log("Residents:", RESIDENTS.length, "| Guards:", 2, "| Accountant: 1 | Committee: 1");
     console.log("Bills:", billRows.length, "| Complaints:", complaintRows.length, "| Visitors: 5 | Amenities: 4\n");
     console.log("── LOGIN CREDENTIALS (password: Admin@123) ──");
-    console.log("Admin       → admin@yopmail.com");
+    console.log("Admin       → societyadmin32@yopmail.com");
     console.log("Committee   → committee@yopmail.com");
     console.log("Guard       → guard@yopmail.com");
     console.log("Accountant  → accountant@yopmail.com");

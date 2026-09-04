@@ -2,8 +2,8 @@ const request = require("supertest");
 const app = require("../../app");
 
 const ACCOUNTS = {
-  superAdmin: { email: "superadmin@society.com", password: "123456" },
-  admin: { email: "admin@yopmail.com", password: "Admin@123" },
+  superAdmin: { email: "superadmin@yopmail.com", password: "123456" },
+  admin: { email: "societyadmin32@yopmail.com", password: "Admin@123" },
   committee: { email: "committee@yopmail.com", password: "Admin@123" },
   guard: { email: "guard@yopmail.com", password: "Admin@123" },
   accountant: { email: "accountant@yopmail.com", password: "Admin@123" },
