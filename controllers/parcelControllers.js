@@ -347,6 +347,18 @@ const getParcels = async (req, res) => {
       distinct: true,
     });
 
+    const statusRows = await Parcel.findAll({
+      where: whereClause,
+      attributes: ["status", [Parcel.sequelize.fn("COUNT", Parcel.sequelize.col("status")), "cnt"]],
+      group: ["status"],
+      raw: true,
+    });
+
+    const counts = { EXPECTED: 0, AT_GATE: 0, COLLECTED: 0, CANCELLED: 0, ALL: count };
+    statusRows.forEach((r) => {
+      if (Object.prototype.hasOwnProperty.call(counts, r.status)) counts[r.status] = Number(r.cnt) || 0;
+    });
+
     res.json({
       data: rows,
       pagination: {
@@ -355,6 +367,7 @@ const getParcels = async (req, res) => {
         totalItems: count,
         totalPages: Math.ceil(count / limit),
       },
+      counts,
     });
   } catch (err) {
     console.error(err);
