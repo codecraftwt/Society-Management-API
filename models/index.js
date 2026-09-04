@@ -29,6 +29,7 @@ const Floor = require("./Floor");
 const UserDocuments = require("./UserDocuments");
 const FlatMembership = require("./FlatMembership");
 const BillingRule = require("./BillingRule");
+const MaintenanceRate = require("./MaintenanceRate");
 
 
 
@@ -197,6 +198,14 @@ Notification.belongsTo(User, {
 User.hasMany(Notification, {
   foreignKey: "user_id"
 });
+
+// === MAINTENANCE RATES (society-owned config) ===
+Society.hasMany(MaintenanceRate, { foreignKey: "society_id" });
+MaintenanceRate.belongsTo(Society, { foreignKey: "society_id" });
+
+// A maintenance rate can produce many maintenance bills.
+MaintenanceRate.hasMany(Bill, { foreignKey: "maintenance_rate_id", as: "bills" });
+Bill.belongsTo(MaintenanceRate, { foreignKey: "maintenance_rate_id", as: "rate" });
 
 // === VEHICLE RELATIONS ===
 
@@ -394,4 +403,5 @@ module.exports = {
   UserDocuments,
   FlatMembership,
   BillingRule,
+  MaintenanceRate,
 };

@@ -36,9 +36,9 @@ const guardLogRoutes       = require("./routes/guardLogRoutes.js");
 const flatHistoryRoutes    = require("./routes/flatHistoryRoutes");
 const floorRoutes          = require("./routes/floorRoutes.js");
 const userDocumentRoutes   = require("./routes/uploadDocumentRoutes");
+const maintenanceRoutes    = require("./routes/maintenanceRoutes");
 const membershipRoutes     = require("./routes/memberShipRoutes");
 const downloadRoute        = require("./routes/downloadRoute");
-
 const app = express();
 
 app.use(cors());
@@ -82,6 +82,7 @@ app.use("/api",                membershipRoutes);
 app.use("/api/flat-history",   flatHistoryRoutes);
 app.use("/api/download",       downloadRoute);
 app.use("/api/user-documents", userDocumentRoutes);
+app.use("/api/maintenance",   maintenanceRoutes);
 app.use("/uploads",            express.static("uploads"));
 
 app.get("/", (req, res) => {

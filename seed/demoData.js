@@ -591,7 +591,7 @@ const seed = async () => {
       ["ROW_HOUSE", "TENANT", 5400],
     ];
     for (const [flat_type, resident_type, amount] of rateDefs) {
-      await MaintenanceRate.create({ society_id: society.id, flat_type, resident_type, amount });
+      await MaintenanceRate.create({ society_id: society.id, maintenance_type: "FLAT", name: `${flat_type} ${resident_type} Maintenance`, flat_type, resident_type, amount, frequency: "MONTHLY", is_active: true });
     }
 
     /* ════════════════════════════════════════════════

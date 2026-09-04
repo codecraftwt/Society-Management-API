@@ -304,6 +304,101 @@ sequelize
     } catch (err) {
       console.log("[DB Migration] Note on guard_shifts unique constraint:", err.message);
     }
+
+    /* ###################################################################
+       MAINTENANCE MANAGEMENT MODULE MIGRATIONS
+       Adds the three genuinely-missing Bill columns and the
+       MaintenanceRates columns needed for LUMPSUM / SQ_FEET / FLAT configs.
+       All statements are guarded so they are safe to re-run.
+    ################################################################### */
+
+    // --- A) bills table: add maintenance module columns ---
+    const billCols = await sequelize
+      .query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bills'")
+      .then(([rows]) => new Set(rows.map((r) => r.COLUMN_NAME)));
+    const billColMigrations = [
+      ["type", "ALTER TABLE bills ADD COLUMN type VARCHAR(50) NOT NULL DEFAULT 'BILL' AFTER status"],
+      ["maintenance_rate_id", "ALTER TABLE bills ADD COLUMN maintenance_rate_id INT NULL AFTER type"],
+      ["calculation_details", "ALTER TABLE bills ADD COLUMN calculation_details TEXT NULL AFTER maintenance_rate_id"],
+    ];
+    for (const [col, sql] of billColMigrations) {
+      if (!billCols.has(col)) {
+        try {
+          await sequelize.query(sql);
+          console.log(`[DB Migration] Added bills.${col}`);
+        } catch (err) {
+          console.log(`[DB Migration] Note adding bills.${col}:`, err.message);
+        }
+      }
+    }
+
+    // --- B) MaintenanceRates table: add new columns + backfill ---
+    const rateCols = await sequelize
+      .query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'MaintenanceRates'")
+      .then(([rows]) => new Set(rows.map((r) => r.COLUMN_NAME)));
+    const rateColMigrations = [
+      ["maintenance_type", "ALTER TABLE MaintenanceRates ADD COLUMN maintenance_type VARCHAR(20) NULL AFTER society_id"],
+      ["name", "ALTER TABLE MaintenanceRates ADD COLUMN name VARCHAR(255) NULL AFTER maintenance_type"],
+      ["rate_per_sqft", "ALTER TABLE MaintenanceRates ADD COLUMN rate_per_sqft DECIMAL(10,2) NULL AFTER amount"],
+      ["frequency", "ALTER TABLE MaintenanceRates ADD COLUMN frequency VARCHAR(20) NOT NULL DEFAULT 'MONTHLY' AFTER rate_per_sqft"],
+      ["description", "ALTER TABLE MaintenanceRates ADD COLUMN description TEXT NULL AFTER frequency"],
+      ["is_active", "ALTER TABLE MaintenanceRates ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1 AFTER description"],
+    ];
+    for (const [col, sql] of rateColMigrations) {
+      if (!rateCols.has(col)) {
+        try {
+          await sequelize.query(sql);
+          console.log(`[DB Migration] Added MaintenanceRates.${col}`);
+        } catch (err) {
+          console.log(`[DB Migration] Note adding MaintenanceRates.${col}:`, err.message);
+        }
+      }
+    }
+
+    // Backfill existing old-style rows (flat_type based) as FLAT configs.
+    await sequelize.query(
+      "UPDATE MaintenanceRates SET maintenance_type = 'FLAT' WHERE maintenance_type IS NULL"
+    );
+    console.log("[DB Migration] Backfilled MaintenanceRates.maintenance_type = 'FLAT' for legacy rows");
+
+    // --- C) Align nullability of the type-dependent columns with the model.
+    // A LUMPSUM config stores flat_type = NULL, a SQ_FEET config stores amount = NULL,
+    // and a FLAT config stores resident_type = NULL. The legacy schema had these NOT NULL,
+    // so we must relax them before saving mixed config types. This is guarded to be re-runnable.
+    const rateNullable = await sequelize
+      .query(
+        "SELECT COLUMN_NAME, IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'MaintenanceRates' AND COLUMN_NAME IN ('flat_type','resident_type','amount')"
+      )
+      .then(([rows]) =>
+        rows.reduce((acc, r) => {
+          acc[r.COLUMN_NAME] = r.IS_NULLABLE === "YES";
+          return acc;
+        }, {})
+      );
+
+    const makeNullable = async (col, type) => {
+      if (rateNullable[col]) return;
+      try {
+        await sequelize.query(`ALTER TABLE MaintenanceRates MODIFY COLUMN ${col} ${type} NULL`);
+        console.log(`[DB Migration] Made MaintenanceRates.${col} nullable`);
+      } catch (err) {
+        console.log(`[DB Migration] Note making MaintenanceRates.${col} nullable:`, err.message);
+      }
+    };
+    await makeNullable("flat_type", "ENUM('1BHK','2BHK','3BHK','ROW_HOUSE','COMMERCIAL')");
+    await makeNullable("resident_type", "ENUM('OWNER','TENANT')");
+    await makeNullable("amount", "DECIMAL(10,2)");
+
+    // Add unique index for (society_id, maintenance_type, flat_type, resident_type)
+    try {
+      await sequelize.query(
+        "ALTER TABLE MaintenanceRates ADD UNIQUE KEY uq_rate_society_type (society_id, maintenance_type, flat_type, resident_type)"
+      );
+      console.log("[DB Migration] Added uq_rate_society_type index on MaintenanceRates");
+    } catch (err) {
+      console.log("[DB Migration] Note on MaintenanceRates unique index:", err.message);
+    }
+
     return sequelize.sync();
   })
   .then(() => {

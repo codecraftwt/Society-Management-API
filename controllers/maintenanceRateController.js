@@ -1,7 +1,71 @@
 const MaintenanceRate = require("../models/MaintenanceRate");
 
+const MAINTENANCE_TYPES = ["LUMPSUM", "SQ_FEET", "FLAT"];
 const FLAT_TYPES = ["1BHK", "2BHK", "3BHK", "ROW_HOUSE", "COMMERCIAL"];
 const RESIDENT_TYPES = ["OWNER", "TENANT"];
+const FREQUENCIES = ["MONTHLY", "QUARTERLY", "YEARLY", "ONE_TIME"];
+
+/* Shared validation used by single + batch upsert helpers. */
+function normalizeRateInput(body, society_id) {
+  const {
+    maintenance_type,
+    name,
+    flat_type,
+    resident_type,
+    amount,
+    rate_per_sqft,
+    frequency,
+    description,
+    is_active,
+  } = body;
+
+  if (!maintenance_type || !MAINTENANCE_TYPES.includes(maintenance_type)) {
+    return { error: `maintenance_type must be one of: ${MAINTENANCE_TYPES.join(", ")}` };
+  }
+
+  if (frequency && !FREQUENCIES.includes(frequency)) {
+    return { error: `frequency must be one of: ${FREQUENCIES.join(", ")}` };
+  }
+
+  if (flat_type && !FLAT_TYPES.includes(flat_type)) {
+    return { error: `flat_type must be one of: ${FLAT_TYPES.join(", ")}` };
+  }
+  if (resident_type && !RESIDENT_TYPES.includes(resident_type)) {
+    return { error: `resident_type must be OWNER or TENANT` };
+  }
+
+  if (maintenance_type === "LUMPSUM") {
+    if (amount === undefined || amount === null || isNaN(Number(amount)) || Number(amount) < 0) {
+      return { error: "amount is required and must be a non-negative number for LUMPSUM" };
+    }
+  } else if (maintenance_type === "SQ_FEET") {
+    if (rate_per_sqft === undefined || rate_per_sqft === null || isNaN(Number(rate_per_sqft)) || Number(rate_per_sqft) < 0) {
+      return { error: "rate_per_sqft is required and must be a non-negative number for SQ_FEET" };
+    }
+  } else if (maintenance_type === "FLAT") {
+    if (!flat_type) {
+      return { error: "flat_type is required for FLAT maintenance" };
+    }
+    if (amount === undefined || amount === null || isNaN(Number(amount)) || Number(amount) < 0) {
+      return { error: "amount is required and must be a non-negative number for FLAT" };
+    }
+  }
+
+  return {
+    data: {
+      society_id,
+      maintenance_type,
+      name: (name || "").toString().trim() || null,
+      flat_type: maintenance_type === "FLAT" ? flat_type : (flat_type || null),
+      resident_type: resident_type || null,
+      amount: maintenance_type === "SQ_FEET" ? null : (amount !== undefined && amount !== null ? Number(amount) : null),
+      rate_per_sqft: maintenance_type === "SQ_FEET" ? Number(rate_per_sqft) : (rate_per_sqft !== undefined && rate_per_sqft !== null ? Number(rate_per_sqft) : null),
+      frequency: frequency || "MONTHLY",
+      description: (description || "").toString().trim() || null,
+      is_active: is_active === undefined ? true : !!is_active,
+    },
+  };
+}
 
 /* ─────────────────────────────────────────
    GET RATES
@@ -12,10 +76,7 @@ const getRates = async (req, res) => {
   try {
     const rates = await MaintenanceRate.findAll({
       where: { society_id: req.user.society_id },
-      order: [
-        ["flat_type", "ASC"],
-        ["resident_type", "ASC"],
-      ],
+      order: [["maintenance_type", "ASC"], ["flat_type", "ASC"]],
     });
     return res.json(rates);
   } catch (err) {
@@ -27,50 +88,30 @@ const getRates = async (req, res) => {
 /* ─────────────────────────────────────────
    UPSERT RATE
    POST /rates
-   Body: { flat_type, resident_type, amount }
-   findOrCreate pattern — creates a new rate or updates existing one.
+   Body: { maintenance_type, name, amount | rate_per_sqft, flat_type, frequency, ... }
+   Creates a new rate or updates the matching one.
 ───────────────────────────────────────── */
 const upsertRate = async (req, res) => {
   try {
-    const { flat_type, resident_type, amount } = req.body;
+    const { error, data } = normalizeRateInput(req.body, req.user.society_id);
+    if (error) return res.status(400).json({ message: error });
 
-    if (!flat_type || !resident_type || amount === undefined) {
-      return res
-        .status(400)
-        .json({ message: "flat_type, resident_type, and amount are required" });
-    }
-    if (!FLAT_TYPES.includes(flat_type)) {
-      return res.status(400).json({ message: `flat_type must be one of: ${FLAT_TYPES.join(", ")}` });
-    }
-    if (!RESIDENT_TYPES.includes(resident_type)) {
-      return res.status(400).json({ message: `resident_type must be OWNER or TENANT` });
-    }
-    if (isNaN(Number(amount)) || Number(amount) < 0) {
-      return res.status(400).json({ message: "amount must be a non-negative number" });
-    }
+    const { maintenance_type, flat_type, resident_type, ...rest } = data;
+
+    const where = { society_id: req.user.society_id, maintenance_type };
+    if (flat_type) where.flat_type = flat_type;
+    if (resident_type) where.resident_type = resident_type;
 
     const [rate, created] = await MaintenanceRate.findOrCreate({
-      where: {
-        society_id: req.user.society_id,
-        flat_type,
-        resident_type,
-      },
-      defaults: {
-        society_id: req.user.society_id,
-        flat_type,
-        resident_type,
-        amount: Number(amount),
-      },
+      where,
+      defaults: data,
     });
 
     if (!created) {
-      await rate.update({ amount: Number(amount) });
+      await rate.update(data);
     }
 
-    return res.status(created ? 201 : 200).json({
-      rate,
-      action: created ? "created" : "updated",
-    });
+    return res.status(created ? 201 : 200).json({ rate, action: created ? "created" : "updated" });
   } catch (err) {
     console.error("[upsertRate]", err);
     res.status(500).json({ message: err.message });
@@ -78,9 +119,9 @@ const upsertRate = async (req, res) => {
 };
 
 /* ─────────────────────────────────────────
-   UPSERT MANY RATES (batch save from RateCard UI)
+   UPSERT MANY RATES
    POST /rates/batch
-   Body: { rates: [{ flat_type, resident_type, amount }, ...] }
+   Body: { rates: [{ maintenance_type, name, amount | rate_per_sqft, flat_type, ... }, ...] }
 ───────────────────────────────────────── */
 const upsertRates = async (req, res) => {
   try {
@@ -91,25 +132,18 @@ const upsertRates = async (req, res) => {
 
     const results = [];
     for (const entry of rates) {
-      const { flat_type, resident_type, amount } = entry;
-      if (!flat_type || !resident_type || amount === undefined) continue;
+      const { error, data } = normalizeRateInput(entry, req.user.society_id);
+      if (error) continue;
 
-      const [rate, created] = await MaintenanceRate.findOrCreate({
-        where: {
-          society_id: req.user.society_id,
-          flat_type,
-          resident_type,
-        },
-        defaults: {
-          society_id: req.user.society_id,
-          flat_type,
-          resident_type,
-          amount: Number(amount),
-        },
-      });
+      const { maintenance_type, flat_type, resident_type, ...rest } = data;
 
-      if (!created) await rate.update({ amount: Number(amount) });
-      results.push({ flat_type, resident_type, amount: Number(amount), action: created ? "created" : "updated" });
+      const where = { society_id: req.user.society_id, maintenance_type };
+      if (flat_type) where.flat_type = flat_type;
+      if (resident_type) where.resident_type = resident_type;
+
+      const [rate, created] = await MaintenanceRate.findOrCreate({ where, defaults: data });
+      if (!created) await rate.update(data);
+      results.push({ ...data, id: rate.id, action: created ? "created" : "updated" });
     }
 
     return res.json({ saved: results });
