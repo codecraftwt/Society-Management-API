@@ -2,6 +2,10 @@ const Block = require("../models/Block");
 const Floor = require("../models/Floor");
 const Flat = require("../models/Flat");
 const Society = require("../models/Society");
+const FlatMembership = require("../models/FlatMembership");
+const ParkingSlot = require("../models/ParkingSlot");
+const Vehicle = require("../models/Vehicle");
+const HouseHoldMember = require("../models/HouseHoldMember");
 
 const { Op } = require("sequelize");
 
@@ -15,6 +19,7 @@ const createBlock = async (req, res) => {
       floor_count,
       flats_per_floor,
       property_type,
+      area_sqft,
     } = req.body;
 
     const type = TYPE_MAP[property_type] || property_type || "APARTMENT";
@@ -44,7 +49,7 @@ const createBlock = async (req, res) => {
           block_id: block.id,
         });
 
-const flats = [];
+        const flats = [];
         for (let j = 1; j <= flatsPerFloor; j++) {
           flats.push({
             flat_number: `${name}-${i}${j.toString().padStart(2, "0")}`,
@@ -59,13 +64,15 @@ const flats = [];
 
     // ✅ ROW HOUSE
     if (type === "ROW_HOUSE") {
-const flats = [];
+      const flats = [];
+      const defaultArea = area_sqft ? parseFloat(area_sqft) : null;
 
       for (let i = 1; i <= flats_per_floor; i++) {
         flats.push({
           flat_number: `${name}-${i}`,
           floor_id: null,
           block_id: block.id,
+          area_sqft: defaultArea && !isNaN(defaultArea) ? defaultArea : null,
         });
       }
 
@@ -113,15 +120,28 @@ const deleteBlock = async (req, res) => {
     const floors = await Floor.findAll({ where: { block_id: blockId } });
     const floorIds = floors.map((f) => f.id);
 
-    // ✅ DELETE ALL FLATS (Apartment + Row House)
-    await Flat.destroy({
+    // Find all flats in this block/floors
+    const flats = await Flat.findAll({
       where: {
         [Op.or]: [
           { floor_id: floorIds },
           { block_id: blockId },
         ],
       },
+      attributes: ["id"],
     });
+    const flatIds = flats.map((f) => f.id);
+
+    if (flatIds.length > 0) {
+      await FlatMembership.destroy({ where: { flat_id: { [Op.in]: flatIds } } });
+      await ParkingSlot.update(
+        { flat_id: null, resident_id: null, status: "AVAILABLE" },
+        { where: { flat_id: { [Op.in]: flatIds } } }
+      );
+      await Vehicle.destroy({ where: { flat_id: { [Op.in]: flatIds } } });
+      await HouseHoldMember.destroy({ where: { flat_id: { [Op.in]: flatIds } } });
+      await Flat.destroy({ where: { id: { [Op.in]: flatIds } } });
+    }
 
     await Floor.destroy({ where: { block_id: blockId } });
     await Block.destroy({ where: { id: blockId } });

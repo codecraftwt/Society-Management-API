@@ -41,6 +41,11 @@ const Flat = sequelize.define("Flat", {
     type: DataTypes.ENUM("VACANT", "RENTED", "OWNER_OCCUPIED"),
     allowNull: true,
     defaultValue: "VACANT",
+  },
+  area_sqft: {
+    type: DataTypes.DECIMAL(10, 2),
+    allowNull: true,
+    defaultValue: null,
   }
 
 }, {

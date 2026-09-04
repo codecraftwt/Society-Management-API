@@ -928,9 +928,9 @@ const getResidents = async (req, res) => {
     }) : [];
 
     // Find ALL active memberships for those flats (to identify co-occupants: owner + tenant)
-    const membershipFlatIds = allMemberships.map(m => m.flat_id);
-    const directFlatIds = directFlats.map(f => f.id);
-    const flatIds = [...new Set([...membershipFlatIds, ...directFlatIds])];
+    const membershipFlatIds = allMemberships.filter(m => m && m.flat_id && m.Flat).map(m => m.flat_id);
+    const directFlatIds = directFlats.map(f => f?.id).filter(Boolean);
+    const flatIds = [...new Set([...membershipFlatIds, ...directFlatIds])].filter(Boolean);
 
     const allFlatMemberships = flatIds.length > 0
       ? await FlatMembership.findAll({
@@ -942,11 +942,12 @@ const getResidents = async (req, res) => {
     // Build occupant map: flatId → { owner: User, tenant: User }
     const flatOccupantMap = {};
     for (const fm of allFlatMemberships) {
+      if (!fm || !fm.flat_id) continue;
       if (!flatOccupantMap[fm.flat_id]) flatOccupantMap[fm.flat_id] = { owner: null, tenant: null };
-      if (fm.role === "OWNER" && !flatOccupantMap[fm.flat_id].owner) {
+      if (fm.role === "OWNER" && fm.User && !flatOccupantMap[fm.flat_id].owner) {
         flatOccupantMap[fm.flat_id].owner = fm.User;
       }
-      if (fm.role === "TENANT" && !flatOccupantMap[fm.flat_id].tenant) {
+      if (fm.role === "TENANT" && fm.User && !flatOccupantMap[fm.flat_id].tenant) {
         flatOccupantMap[fm.flat_id].tenant = fm.User;
       }
     }
@@ -955,7 +956,7 @@ const getResidents = async (req, res) => {
     if (block_id || floor_id || flat_id) {
       uniqueResidents = uniqueResidents.filter(user => {
         const userMemberships = allMemberships.filter(m => m.user_id === user.id);
-        const userDirectFlats = directFlats.filter(f => f.resident_id === user.id);
+        const userDirectFlats = directFlats.filter(f => f && f.resident_id === user.id);
         const allUserFlats = [
           ...userMemberships.map(m => m.Flat),
           ...userDirectFlats
@@ -980,9 +981,10 @@ const getResidents = async (req, res) => {
     const paginated = uniqueResidents.slice(offset, offset + limit);
 
     const data = paginated.map(user => {
-      const userMemberships = allMemberships.filter(m => m.user_id === user.id);
+      const userMemberships = allMemberships.filter(m => m.user_id === user.id && m.Flat);
       const userFlats = userMemberships.map(m => {
         const flat = m.Flat;
+        if (!flat || !flat.id) return null;
         const occupants = flatOccupantMap[flat.id] || {};
         return {
           id:           flat.id,
@@ -1001,12 +1003,13 @@ const getResidents = async (req, res) => {
           owner:  occupants.owner  ? { id: occupants.owner.id,  name: occupants.owner.name }  : null,
           tenant: occupants.tenant ? { id: occupants.tenant.id, name: occupants.tenant.name, approval_status: occupants.tenant.approval_status } : null,
         };
-      });
+      }).filter(Boolean);
 
       // Fallback: Append direct flats if not already in userMemberships
       const existingFlatIds = new Set(userFlats.map(f => f.id));
-      directFlats.filter(f => f.resident_id === user.id).forEach(flat => {
+      directFlats.filter(f => f && f.resident_id === user.id && f.id).forEach(flat => {
         if (!existingFlatIds.has(flat.id)) {
+          const occupants = flatOccupantMap[flat.id] || {};
           userFlats.push({
             id:           flat.id,
             flat_id:      flat.id,
@@ -1021,8 +1024,8 @@ const getResidents = async (req, res) => {
             Block: flat.Block ? { id: flat.Block.id, name: flat.Block.name } : null,
             floor_number: flat.Floor?.floor_number ?? null,
             block_name:   flat.Floor?.Block?.name || flat.Block?.name || null,
-            owner:        { id: user.id, name: user.name },
-            tenant:       null,
+            owner:        occupants.owner ? { id: occupants.owner.id, name: occupants.owner.name } : { id: user.id, name: user.name },
+            tenant:       occupants.tenant ? { id: occupants.tenant.id, name: occupants.tenant.name, approval_status: occupants.tenant.approval_status } : null,
           });
           existingFlatIds.add(flat.id);
         }

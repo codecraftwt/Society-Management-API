@@ -8,6 +8,7 @@ const Payment = require("../models/Payment");
 const Bill = require("../models/Bill");
 const ResidentHistory = require("../models/ResidentHistory");
 const FlatMembership = require("../models/FlatMembership");
+const Vehicle = require("../models/Vehicle");
 const { Op } = require("sequelize");
 
 /* ─────────────────────────────────────────────────────────────
@@ -33,7 +34,17 @@ function resolveBlockName(flat) {
 
 const createFlat = async (req, res) => {
   try {
-    const flat = await Flat.create(req.body);
+    const { flat_number, block_id, floor_id, resident_id, flat_type, occupancy_status, area_sqft } = req.body;
+    const payload = {
+      flat_number,
+      block_id,
+      floor_id: floor_id ?? null,
+      resident_id: resident_id ?? null,
+      flat_type: flat_type ?? null,
+      occupancy_status: occupancy_status ?? "VACANT",
+      area_sqft: area_sqft != null ? Number(area_sqft) : null,
+    };
+    const flat = await Flat.create(payload);
     res.status(200).json(flat);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -53,7 +64,7 @@ const getUnassignedFlatsByFloor = async (req, res) => {
   try {
     const flats = await Flat.findAll({
       where: { floor_id: req.params.floorId, resident_id: null },
-      attributes: ["id", "flat_number", "flat_type"],
+      attributes: ["id", "flat_number", "flat_type", "area_sqft"],
       include: [
         {
           model: Floor,
@@ -130,7 +141,7 @@ const getAllFlats = async (req, res) => {
 
     const flats = await Flat.findAll({
       where: { block_id: { [Op.in]: blockIds } },
-      attributes: ["id", "flat_number", "flat_type", "resident_id", "floor_id", "block_id"],
+      attributes: ["id", "flat_number", "flat_type", "resident_id", "floor_id", "block_id", "area_sqft"],
       include: FLAT_LOCATION_INCLUDE,
       order: [["flat_number", "ASC"]],
     });
@@ -158,7 +169,7 @@ const getUnassignedFlats = async (req, res) => {
 
     const flats = await Flat.findAll({
       where: { resident_id: null, block_id: { [Op.in]: blockIds } },
-      attributes: ["id", "flat_number", "flat_type", "floor_id", "block_id"],
+      attributes: ["id", "flat_number", "flat_type", "floor_id", "block_id", "area_sqft"],
       include: FLAT_LOCATION_INCLUDE,
       order: [["flat_number", "ASC"]],
     });
@@ -215,11 +226,13 @@ const assignResident = async (req, res) => {
     ───────────────────────────── */
     const isTenant = resident_type === "TENANT";
 
-    await flat.update({
+    const flatUpdate = {
       resident_id,
       flat_type:        flat_type || flat.flat_type,
       occupancy_status: isTenant ? "RENTED" : "OWNER_OCCUPIED",
-    });
+    };
+    if (req.body.area_sqft != null) flatUpdate.area_sqft = Number(req.body.area_sqft);
+    await flat.update(flatUpdate);
 
     if (resident_type) {
       await User.update(
@@ -306,7 +319,8 @@ const deleteFlat = async (req, res) => {
 
     const flat = await Flat.findByPk(flatId);
     if (!flat) return res.status(404).json({ message: "Flat not found" });
-    if (flat.resident_id)
+    const activeMembers = await FlatMembership.count({ where: { flat_id: flatId, is_current: true } });
+    if (flat.resident_id || activeMembers > 0)
       return res.status(400).json({
         message: "Cannot delete occupied flat. Unassign resident first.",
       });
@@ -321,6 +335,14 @@ const deleteFlat = async (req, res) => {
           message: "Cannot delete flat with pending payments. Clear dues first.",
         });
     }
+
+    await FlatMembership.destroy({ where: { flat_id: flatId } });
+    await ParkingSlot.update(
+      { flat_id: null, resident_id: null, status: "AVAILABLE" },
+      { where: { flat_id: flatId } }
+    );
+    await Vehicle.destroy({ where: { flat_id: flatId } });
+    await HouseHoldMember.destroy({ where: { flat_id: flatId } });
 
     await flat.destroy();
     res.json({ message: "Flat deleted successfully" });
@@ -361,7 +383,7 @@ const getAssignedFlats = async (req, res) => {
 
     const { count, rows } = await Flat.findAndCountAll({
       where: flatWhere,
-      attributes: ["id", "flat_number", "flat_type", "floor_id", "block_id"],
+      attributes: ["id", "flat_number", "flat_type", "floor_id", "block_id", "area_sqft"],
       include: [
         {
           model:      User,
@@ -481,7 +503,7 @@ const getNeighbours = async (req, res) => {
 
 //     const flats = await Flat.findAll({
 //       where,
-//       attributes: ["id", "flat_number", "flat_type", "resident_id", "floor_id", "block_id"],
+//       attributes: ["id", "flat_number", "flat_type", "resident_id", "floor_id", "block_id", "area_sqft"],
 //       order: [["flat_number", "ASC"]],
 //     });
 
@@ -515,13 +537,70 @@ const getFlatsByBlockAndFloor = async (req, res) => {
 
     const flats = await Flat.findAll({
       where,
-      attributes: ["id", "flat_number", "flat_type", "resident_id", "floor_id", "block_id"],
+      attributes: ["id", "flat_number", "flat_type", "resident_id", "floor_id", "block_id", "area_sqft"],
       order: [["flat_number", "ASC"]],
     });
 
     res.json(flats);
   } catch (err) {
     console.error(err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/* ─────────────────────────────────────────────────────────────
+   UPDATE FLAT
+   PUT /flats/update/:flatId
+   Whitelisted fields only — safe for area_sqft updates.
+───────────────────────────────────────────────────────────── */
+const updateFlat = async (req, res) => {
+  try {
+    const { flatId } = req.params;
+    const flat = await Flat.findByPk(flatId);
+    if (!flat) return res.status(404).json({ message: "Flat not found" });
+
+    const allowed = ["area_sqft", "flat_number", "flat_type", "occupancy_status"];
+    const updates = {};
+    for (const field of allowed) {
+      if (req.body[field] !== undefined) {
+        updates[field] = field === "area_sqft" ? (req.body[field] != null ? Number(req.body[field]) : null) : req.body[field];
+      }
+    }
+
+    await flat.update(updates);
+    res.json({ message: "Flat updated", flat });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/* ─────────────────────────────────────────────────────────────
+   BULK UPDATE FLATS (area assignment for row houses)
+   PUT /flats/bulk-update
+   Body: { flats: [{ flat_id, area_sqft }] }
+───────────────────────────────────────────────────────────── */
+const bulkUpdateFlats = async (req, res) => {
+  try {
+    const { flats } = req.body;
+    if (!Array.isArray(flats) || flats.length === 0) {
+      return res.status(400).json({ message: "flats array is required" });
+    }
+
+    const results = [];
+    for (const item of flats) {
+      if (!item.flat_id) continue;
+      const flat = await Flat.findByPk(item.flat_id);
+      if (!flat) continue;
+      const updates = {};
+      if (item.area_sqft !== undefined) updates.area_sqft = item.area_sqft != null ? Number(item.area_sqft) : null;
+      if (Object.keys(updates).length > 0) {
+        await flat.update(updates);
+        results.push({ flat_id: flat.id, area_sqft: flat.area_sqft });
+      }
+    }
+
+    res.json({ message: `Updated ${results.length} flat(s)`, updated: results });
+  } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
@@ -541,4 +620,6 @@ module.exports = {
   getNeighbours,
   getFlatsByBlockAndFloor,
   getFlatsByBlock: getFlatsByBlockAndFloor, // Alias for convenience
+  updateFlat,
+  bulkUpdateFlats,
 };

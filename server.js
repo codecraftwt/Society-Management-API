@@ -399,6 +399,19 @@ sequelize
       console.log("[DB Migration] Note on MaintenanceRates unique index:", err.message);
     }
 
+    // --- D) flats table: add area_sqft for SQ_FEET maintenance ---
+    const flatCols = await sequelize
+      .query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'flats'")
+      .then(([rows]) => new Set(rows.map((r) => r.COLUMN_NAME)));
+    if (!flatCols.has("area_sqft")) {
+      try {
+        await sequelize.query("ALTER TABLE flats ADD COLUMN area_sqft DECIMAL(10,2) NULL");
+        console.log("[DB Migration] Added flats.area_sqft");
+      } catch (err) {
+        console.log("[DB Migration] Note adding flats.area_sqft:", err.message);
+      }
+    }
+
     return sequelize.sync();
   })
   .then(() => {

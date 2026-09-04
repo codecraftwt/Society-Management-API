@@ -129,7 +129,9 @@ const {
   getUnassignedFlats,
   deleteFlat,
   getNeighbours,
-  getFlatsByBlockAndFloor
+  getFlatsByBlockAndFloor,
+  updateFlat,
+  bulkUpdateFlats,
 } = require("../controllers/flatControllers");
 
 // ✅ SPECIFIC routes FIRST — before any /:param routes
@@ -149,6 +151,8 @@ router.get("/floor/:floorId/unassigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMI
 router.post("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), createFlat);
 router.put("/assign/:flatId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), assignResident);
 router.put("/unassign/:flatId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), unassignResident);
+router.put("/update/:flatId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), updateFlat);
+router.put("/bulk-update", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), bulkUpdateFlats);
 
 // ✅ delete and /:blockId LAST — param routes always go at the bottom
 router.delete("/delete/:flatId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), deleteFlat);

@@ -401,9 +401,9 @@ const deleteBill = async (req, res) => {
       return res.status(404).json({ message: "Bill not found" });
     }
 
-    if (bill.status === "PAID") {
-      return res.status(400).json({ message: "Paid bills cannot be deleted" });
-    }
+    // Delete associated payments first to prevent foreign key errors
+    const Payment = require("../models/Payment");
+    await Payment.destroy({ where: { bill_id: id } });
 
     await bill.destroy();
 
@@ -415,57 +415,37 @@ const deleteBill = async (req, res) => {
 
 
 /* =====
-   CONFIRM BILL PAYMENT (ADMIN / ACCOUNTANT / COMMITTEE)
+   HELPER: PROCESS SINGLE BILL PAYMENT CONFIRMATION & NOTIFY
 ===== */
-const confirmPayment = async (req, res) => {
-  try {
-    const { id } = req.params;
+const processConfirmSingleBill = async (bill, reqUser, targetSocietyId) => {
+  await bill.update({ status: "PAID" });
 
-    const bill = await Bill.findByPk(id, {
-      include: [{ model: Flat }],
-    });
+  // Update Payment record if exists
+  const Payment = require("../models/Payment");
+  const payment = await Payment.findOne({ where: { bill_id: bill.id } });
+  if (payment) {
+    await payment.update({ status: "SUCCESS" });
+  }
 
-    if (!bill) {
-      return res.status(404).json({ success: false, message: "Bill not found" });
-    }
+  // Find resident & household admins to notify (Web + Mobile Push)
+  const userIdsToNotify = new Set();
+  if (bill.resident_id) userIdsToNotify.add(bill.resident_id);
+  if (bill.Flat?.resident_id) userIdsToNotify.add(bill.Flat.resident_id);
 
-    if (bill.status === "PAID") {
-      return res.status(400).json({ success: false, message: "Bill is already marked as PAID" });
-    }
+  const adminMembers = await HouseHoldMember.findAll({
+    where: { flat_id: bill.flat_id, isAdmin: true },
+  });
+  for (let member of adminMembers) {
+    if (member.user_id) userIdsToNotify.add(member.user_id);
+  }
 
-    if (bill.status !== "PENDING_VERIFICATION") {
-      return res.status(400).json({
-        success: false,
-        message: "Cannot confirm payment. The resident has not submitted payment for this bill yet.",
-      });
-    }
-
-    // Update Bill status to PAID
-    await bill.update({ status: "PAID" });
-
-    // Update Payment record if exists
-    const Payment = require("../models/Payment");
-    const payment = await Payment.findOne({ where: { bill_id: bill.id } });
-    if (payment) {
-      await payment.update({ status: "SUCCESS" });
-    }
-
-    // Find resident to notify (Web + Mobile Push)
-    const userIdsToNotify = new Set();
-    if (bill.resident_id) userIdsToNotify.add(bill.resident_id);
-    if (bill.Flat?.resident_id) userIdsToNotify.add(bill.Flat.resident_id);
-
-    const adminMembers = await HouseHoldMember.findAll({
-      where: { flat_id: bill.flat_id, isAdmin: true },
-    });
-    for (let member of adminMembers) {
-      if (member.user_id) userIdsToNotify.add(member.user_id);
-    }
-
+  if (userIdsToNotify.size > 0) {
     const usersToNotify = await User.findAll({
       where: { id: { [Op.in]: Array.from(userIdsToNotify) } },
       attributes: ["id", "fcm_token"],
     });
+
+    const societyId = targetSocietyId || reqUser?.society_id || bill.Flat?.Block?.society_id || bill.Flat?.society_id;
 
     for (const user of usersToNotify) {
       const settings = await UserSetting.findOne({ where: { user_id: user.id } });
@@ -476,7 +456,7 @@ const confirmPayment = async (req, res) => {
           type: "BILL",
           action_type: "BILL_CONFIRMED",
           action_route: "/resident/bills",
-          society_id: req.user.society_id || bill.Flat?.society_id,
+          society_id: societyId,
           receiver_user_id: user.id,
         });
 
@@ -496,6 +476,42 @@ const confirmPayment = async (req, res) => {
         }
       }
     }
+  }
+};
+
+/* =====
+   CONFIRM BILL PAYMENT (ADMIN / ACCOUNTANT / COMMITTEE)
+===== */
+const confirmPayment = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const bill = await Bill.findByPk(id, {
+      include: [
+        {
+          model: Flat,
+          include: [{ model: Block }],
+        },
+      ],
+    });
+
+    if (!bill) {
+      return res.status(404).json({ success: false, message: "Bill not found" });
+    }
+
+    if (bill.status === "PAID") {
+      return res.status(400).json({ success: false, message: "Bill is already marked as PAID" });
+    }
+
+    if (bill.status !== "PENDING_VERIFICATION") {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot confirm payment. The resident has not submitted payment for this bill yet.",
+      });
+    }
+
+    const targetSocietyId = req.headers["x-society-id"] || req.user.society_id;
+    await processConfirmSingleBill(bill, req.user, targetSocietyId);
 
     return res.status(200).json({
       success: true,
@@ -508,6 +524,140 @@ const confirmPayment = async (req, res) => {
   }
 };
 
+/* =====
+   BULK CONFIRM / APPROVE BILL PAYMENTS (ADMIN / ACCOUNTANT / COMMITTEE)
+===== */
+const bulkConfirmPayment = async (req, res) => {
+  try {
+    const rawIds = req.body.ids || req.body.bill_ids;
+    if (!Array.isArray(rawIds) || rawIds.length === 0) {
+      return res.status(400).json({ success: false, message: "A non-empty array of bill IDs is required." });
+    }
+
+    const ids = rawIds.map((id) => Number(id)).filter((id) => !isNaN(id));
+    if (ids.length === 0) {
+      return res.status(400).json({ success: false, message: "No valid bill IDs provided." });
+    }
+
+    const isGlobalSuperAdmin = req.user.activeRole === "SUPER_ADMIN" && !req.headers["x-society-id"];
+    const targetSocietyId = req.headers["x-society-id"] || req.user.society_id;
+
+    const blockInclude = {
+      model: Block,
+      required: true,
+      attributes: ["id", "name", "society_id"],
+    };
+    if (!isGlobalSuperAdmin && targetSocietyId) {
+      blockInclude.where = { society_id: targetSocietyId };
+    }
+
+    const bills = await Bill.findAll({
+      where: { id: { [Op.in]: ids } },
+      include: [
+        {
+          model: Flat,
+          required: true,
+          attributes: ["id", "flat_number", "resident_id"],
+          include: [blockInclude],
+        },
+      ],
+    });
+
+    if (bills.length === 0) {
+      return res.status(404).json({ success: false, message: "No matching bills found." });
+    }
+
+    let approvedCount = 0;
+    let skippedCount = 0;
+
+    for (const bill of bills) {
+      if (bill.status === "PAID") {
+        skippedCount++;
+        continue;
+      }
+      await processConfirmSingleBill(bill, req.user, targetSocietyId);
+      approvedCount++;
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Successfully approved ${approvedCount} bill(s).${skippedCount > 0 ? ` (${skippedCount} already paid bill(s) were skipped)` : ""}`,
+      approvedCount,
+      skippedCount,
+      totalRequested: ids.length,
+    });
+  } catch (err) {
+    console.error("Bulk Confirm Payment Error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/* =====
+   BULK DELETE BILLS (ADMIN / ACCOUNTANT / COMMITTEE)
+===== */
+const bulkDeleteBills = async (req, res) => {
+  try {
+    const rawIds = req.body.ids || req.body.bill_ids;
+    if (!Array.isArray(rawIds) || rawIds.length === 0) {
+      return res.status(400).json({ success: false, message: "A non-empty array of bill IDs is required." });
+    }
+
+    const ids = rawIds.map((id) => Number(id)).filter((id) => !isNaN(id));
+    if (ids.length === 0) {
+      return res.status(400).json({ success: false, message: "No valid bill IDs provided." });
+    }
+
+    const isGlobalSuperAdmin = req.user.activeRole === "SUPER_ADMIN" && !req.headers["x-society-id"];
+    const targetSocietyId = req.headers["x-society-id"] || req.user.society_id;
+
+    const blockInclude = {
+      model: Block,
+      required: true,
+      attributes: ["id", "name", "society_id"],
+    };
+    if (!isGlobalSuperAdmin && targetSocietyId) {
+      blockInclude.where = { society_id: targetSocietyId };
+    }
+
+    const bills = await Bill.findAll({
+      where: { id: { [Op.in]: ids } },
+      include: [
+        {
+          model: Flat,
+          required: true,
+          attributes: ["id", "flat_number"],
+          include: [blockInclude],
+        },
+      ],
+    });
+
+    if (bills.length === 0) {
+      return res.status(404).json({ success: false, message: "No matching bills found." });
+    }
+
+    const targetIds = bills.map((b) => b.id);
+
+    // Delete associated payments first to prevent foreign key errors
+    const Payment = require("../models/Payment");
+    await Payment.destroy({
+      where: { bill_id: { [Op.in]: targetIds } },
+    });
+
+    await Bill.destroy({
+      where: { id: { [Op.in]: targetIds } },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: `Successfully deleted ${targetIds.length} bill(s).`,
+      deletedCount: targetIds.length,
+      totalRequested: ids.length,
+    });
+  } catch (err) {
+    console.error("Bulk Delete Bills Error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
 
 module.exports = {
   createBill,
@@ -515,4 +665,6 @@ module.exports = {
   getResidentBills,
   confirmPayment,
   deleteBill,
-};
+  bulkConfirmPayment,
+  bulkDeleteBills,
+};

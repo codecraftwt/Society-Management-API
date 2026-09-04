@@ -62,6 +62,36 @@ describe("Bills API", () => {
     const res = await request(app).delete("/api/bills/99999999").set(headers);
     expect(res.status).toBeLessThan(500);
   });
+
+  it("PUT /api/bills/bulk-confirm validates required ids array", async () => {
+    const { headers } = await login("admin");
+    const res = await request(app).put("/api/bills/bulk-confirm").set(headers).send({});
+    expect(res.status).toBe(400);
+  });
+
+  it("PUT /api/bills/bulk-confirm handles missing bills gracefully", async () => {
+    const { headers } = await login("admin");
+    const res = await request(app).put("/api/bills/bulk-confirm").set(headers).send({ ids: [99999998, 99999999] });
+    expect(res.status).toBe(404);
+  });
+
+  it("DELETE /api/bills/bulk validates required ids array", async () => {
+    const { headers } = await login("admin");
+    const res = await request(app).delete("/api/bills/bulk").set(headers).send({});
+    expect(res.status).toBe(400);
+  });
+
+  it("DELETE /api/bills/bulk handles missing bills gracefully", async () => {
+    const { headers } = await login("admin");
+    const res = await request(app).delete("/api/bills/bulk").set(headers).send({ ids: [99999998, 99999999] });
+    expect(res.status).toBe(404);
+  });
+
+  it("POST /api/bills/bulk-delete alternative route works", async () => {
+    const { headers } = await login("admin");
+    const res = await request(app).post("/api/bills/bulk-delete").set(headers).send({ ids: [99999998, 99999999] });
+    expect(res.status).toBe(404);
+  });
 });
 
 describe("Billing rules API", () => {

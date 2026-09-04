@@ -14,7 +14,9 @@ router.delete("/config/:id", auth, role(...MAINTENANCE_ROLES), maintenanceContro
 // Available flat types in this society (for config validation / dropdown)
 router.get("/flat-types", auth, role(...MAINTENANCE_ROLES), maintenanceController.listFlatTypes);
 
-// Bill generation
+// Bill preview & generation
+router.get("/preview", auth, role(...MAINTENANCE_ROLES), maintenanceController.previewBills);
+router.post("/preview", auth, role(...MAINTENANCE_ROLES), maintenanceController.previewBills);
 router.post("/generate", auth, role(...MAINTENANCE_ROLES), maintenanceController.generateBills);
 
 // Generated bill viewing
