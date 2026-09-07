@@ -107,12 +107,18 @@ const getComplaints = async (req, res) => {
     });
 
     // ✅ Get counts for status tabs (ALL, PENDING, IN_PROGRESS, RESOLVED)
-    // We reuse the same 'where' filter except for status
+    //    Counts must ignore the active status `filter` + `search`, but keep
+    //    society/block/floor/flat scoping so tab numbers stay consistent
+    //    regardless of the selected tab.
+    const countWhere = { ...where };
+    delete countWhere.status;
+    delete countWhere[Op.or];
+
     const [totalAll, totalPending, totalInProgress, totalResolved] = await Promise.all([
-      Complaint.count({ where }),
-      Complaint.count({ where: { ...where, status: { [Op.in]: ["OPEN", "PENDING"] } } }),
-      Complaint.count({ where: { ...where, status: "IN_PROGRESS" } }),
-      Complaint.count({ where: { ...where, status: "RESOLVED" } }),
+      Complaint.count({ where: countWhere }),
+      Complaint.count({ where: { ...countWhere, status: { [Op.in]: ["OPEN", "PENDING"] } } }),
+      Complaint.count({ where: { ...countWhere, status: "IN_PROGRESS" } }),
+      Complaint.count({ where: { ...countWhere, status: "RESOLVED" } }),
     ]);
 
     const complaintIds = rows.map(c => c.id);
