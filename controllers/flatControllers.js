@@ -142,7 +142,14 @@ const getAllFlats = async (req, res) => {
     const flats = await Flat.findAll({
       where: { block_id: { [Op.in]: blockIds } },
       attributes: ["id", "flat_number", "flat_type", "resident_id", "floor_id", "block_id", "area_sqft"],
-      include: FLAT_LOCATION_INCLUDE,
+      include: [
+        ...FLAT_LOCATION_INCLUDE,
+        {
+          model: User,
+          required: false,
+          attributes: ["id", "name", "email", "phone"],
+        },
+      ],
       order: [["flat_number", "ASC"]],
     });
 
