@@ -131,6 +131,7 @@ const Notice = require("./models/Notice");
 const Complaint = require("./models/Complaint");
 const VisitorLog = require("./models/VisitorLog");
 const FlatMembership = require("./models/FlatMembership");
+const NoticeAcknowledgement = require("./models/NoticeAcknowledgement");
 
 // 1. Users → Society
 Society.hasMany(User, { foreignKey: "society_id" });
@@ -189,6 +190,13 @@ FlatMembership.belongsTo(User, { foreignKey: "user_id" });
 Flat.hasMany(Complaint, { foreignKey: "flat_id" });
 Complaint.belongsTo(Flat, { foreignKey: "flat_id" });
 
+// 13. Notice <-> NoticeAcknowledgement & User <-> NoticeAcknowledgement
+Notice.hasMany(NoticeAcknowledgement, { foreignKey: "notice_id", as: "acknowledgements" });
+NoticeAcknowledgement.belongsTo(Notice, { foreignKey: "notice_id" });
+
+User.hasMany(NoticeAcknowledgement, { foreignKey: "user_id" });
+NoticeAcknowledgement.belongsTo(User, { foreignKey: "user_id" });
+
 module.exports = {
-  User, Society, Block, Floor, Flat, Bill, Payment, Complaint, Notice, VisitorLog, FlatMembership
+  User, Society, Block, Floor, Flat, Bill, Payment, Complaint, Notice, VisitorLog, FlatMembership, NoticeAcknowledgement
 };

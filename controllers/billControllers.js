@@ -2,6 +2,7 @@ const { User, Block, HouseHoldMember, Society } = require("../models");
 
 const Bill = require("../models/Bill");
 const Flat = require("../models/Flat");
+const Floor = require("../models/Floor");
 const Notification = require("../models/Notification");
 const UserSetting = require("../models/UserSetting");
 const { sendPushNotification } = require("../utils/pushNotification");
@@ -184,21 +185,13 @@ const getSocietyBills = async (req, res) => {
     // ── Filter: ALL | PAID | PENDING ──
     const filter = req.query.filter || "ALL";
 
-    // ── Society scope via Block join ──
-    const isGlobalSuperAdmin = req.user.activeRole === "SUPER_ADMIN" && !req.headers["x-society-id"];
+    // ── Society scope ──
+    const targetSocId = req.headers["x-society-id"] || req.query.society_id || req.user.society_id;
+    const isGlobalSuperAdmin = req.user.activeRole === "SUPER_ADMIN" && !targetSocId;
 
-    const blockInclude = {
-      model:      Block,
-      required:   true,
-      attributes: ["id", "name"],
-      include:    [{ model: Society, attributes: ["id", "name"] }],
-    };
-    if (!isGlobalSuperAdmin) {
-      blockInclude.where = { society_id: req.user.society_id };
-    }
-
-    // ── Status WHERE ──
+    // ── Status WHERE (society scoping happens via Flat → Block includes below) ──
     const billWhere = {};
+
     if (filter === "PAID") billWhere.status = "PAID";
     else if (filter === "PENDING") billWhere.status = "PENDING";
     else if (filter === "PENDING_VERIFICATION") billWhere.status = "PENDING_VERIFICATION";
@@ -211,14 +204,23 @@ const getSocietyBills = async (req, res) => {
       ];
     }
 
-    // ── Base include (always scoped to society) ──
+    // ── Base include (scoped to society via Flat → Block) ──
+    const scopeBlockInclude = (baseInclude) => {
+      if (!isGlobalSuperAdmin && targetSocId) {
+        baseInclude.where    = { society_id: targetSocId };
+        baseInclude.required = true;
+      }
+      return baseInclude;
+    };
+
     const flatInclude = {
       model:      Flat,
-      required:   true,
-      attributes: ["id", "flat_number"],
+      required:   false,
+      attributes: ["id", "flat_number", "floor_id", "block_id"],
       include: [
-        blockInclude,
-        { model: User, attributes: ["id", "name"] },
+        scopeBlockInclude({ model: Block, required: false, attributes: ["id", "name"] }),
+        { model: Floor, required: false, attributes: ["id", "floor_number"], include: [{ model: Block, required: false, attributes: ["id", "name"] }] },
+        { model: User, required: false, attributes: ["id", "name"] },
       ],
     };
 
@@ -232,20 +234,21 @@ const getSocietyBills = async (req, res) => {
       distinct: true,
     });
 
-    // ── Unfiltered counts for stat strip & tab badges ──
-    const countBlockInclude = { model: Block, required: true, attributes: [] };
-    if (!isGlobalSuperAdmin) {
-      countBlockInclude.where = { society_id: req.user.society_id };
-    }
-
+    // ── Unfiltered counts for stat strip & tab badges (society-scoped via Flat → Block) ──
     const allBillsForCounts = await Bill.findAll({
       attributes: ["id", "status", "amount"],
-      include: [{
-        model:    Flat,
-        required: true,
-        attributes: [],
-        include:  [countBlockInclude],
-      }],
+      ...(!isGlobalSuperAdmin && targetSocId
+        ? {
+            include: [
+              {
+                model:      Flat,
+                required:   true,
+                attributes: [],
+                include:    [{ model: Block, required: true, where: { society_id: targetSocId }, attributes: [] }],
+              },
+            ],
+          }
+        : {}),
     });
 
     const totalAll                 = allBillsForCounts.length;

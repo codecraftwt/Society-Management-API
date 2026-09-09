@@ -647,8 +647,8 @@ const createGuard = async (req, res) => {
    ===== */
 const getGuards = async (req, res) => {
   try {
-    // SuperAdmin can see all guards if society_id not provided
-    const where = req.user.society_id ? { society_id: req.user.society_id } : {};
+    const targetSocietyId = req.params.societyId || req.query.society_id || (req.user.role !== "SUPER_ADMIN" ? req.user.society_id : null);
+    const where = targetSocietyId ? { society_id: targetSocietyId } : {};
 
     const allUsers = await User.findAll({
       where,
@@ -872,9 +872,18 @@ const getResidents = async (req, res) => {
       order: [["name", "ASC"]],
     });
 
-    const residentUsers = allUsers.filter((u) =>
-      (u.roles || [u.role]).includes("RESIDENT")
-    );
+    const residentUsers = allUsers.filter((u) => {
+      let rList = [];
+      if (Array.isArray(u.roles) && u.roles.length > 0) {
+        rList = u.roles;
+      } else if (typeof u.roles === "string") {
+        try { rList = JSON.parse(u.roles); } catch (e) { rList = []; }
+      }
+      if (u.role && !rList.includes(u.role)) {
+        rList.push(u.role);
+      }
+      return rList.includes("RESIDENT");
+    });
 
     // Deduplicate users (in case of duplicate entries)
     const emailMap = new Map();

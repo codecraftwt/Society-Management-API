@@ -1,18 +1,21 @@
 const express = require("express");
-const router  = express.Router();
+const router = express.Router();
 
-const auth   = require("../middlewares/authMiddleware");
-const role   = require("../middlewares/roleMiddleware");
-const upload = require("../middlewares/uploadNotice");          // ← shared upload
+const auth = require("../middlewares/authMiddleware");
+const role = require("../middlewares/roleMiddleware");
+const upload = require("../middlewares/uploadNotice");
 
 const {
   createNotice,
   updateNotice,
   deleteNotice,
-  getNotices
+  getNotices,
+  viewNotice,
+  acknowledgeNotice,
+  getNoticeAcknowledgements,
 } = require("../controllers/noticeControllers");
 
-// POST /api/notices  — create notice
+// POST /api/notices — create notice
 router.post(
   "/",
   auth,
@@ -38,12 +41,36 @@ router.delete(
   deleteNotice
 );
 
-// GET /api/notices
+// GET /api/notices — list notices
 router.get(
   "/",
   auth,
   role("SUPER_ADMIN", "RESIDENT", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "FAMILY_MEMBER"),
   getNotices
+);
+
+// POST /api/notices/:id/view — record notice viewed timestamp
+router.post(
+  "/:id/view",
+  auth,
+  role("SUPER_ADMIN", "RESIDENT", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "FAMILY_MEMBER"),
+  viewNotice
+);
+
+// POST /api/notices/:id/acknowledge — mark notice as read / acknowledged
+router.post(
+  "/:id/acknowledge",
+  auth,
+  role("SUPER_ADMIN", "RESIDENT", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "FAMILY_MEMBER"),
+  acknowledgeNotice
+);
+
+// GET /api/notices/:id/acknowledgements — get acknowledgement history report (Admin/Committee only)
+router.get(
+  "/:id/acknowledgements",
+  auth,
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"),
+  getNoticeAcknowledgements
 );
 
 module.exports = router;

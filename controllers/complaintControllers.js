@@ -44,7 +44,8 @@ const getComplaints = async (req, res) => {
     const limit  = Math.min(1000, parseInt(req.query.limit) || 10);
     const offset = (page - 1) * limit;
 
-    const { block_id, floor_id, flat_id, search, filter } = req.query;
+    const { block_id, floor_id, flat_id, search } = req.query;
+    const filter = req.query.filter || req.query.status || "ALL";
     
     // ✅ Logic: Super Admin with no society_id header gets EVERYTHING
     const where = {};
