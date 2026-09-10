@@ -653,7 +653,7 @@ const getGuards = async (req, res) => {
     const allUsers = await User.findAll({
       where,
       include: { model: Society, attributes: ["id", "name"], required: false },
-      attributes: ["id", "name", "email", "role", "roles", "society_id"],
+      attributes: ["id", "name", "email", "phone", "role", "roles", "society_id"],
     });
 
     const guards = allUsers.filter((u) => (u.roles || [u.role]).includes("GUARD"));
@@ -662,6 +662,9 @@ const getGuards = async (req, res) => {
         id: g.id,
         name: g.name,
         email: g.email,
+        phone: g.phone,
+        shiftType: null,
+        isActive: true,
         society_id: g.society_id,
         societyName: g.Society?.name || "NA",
       }))

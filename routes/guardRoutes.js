@@ -11,8 +11,8 @@ const {
 
 router.post("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), createGuard);
 router.get("/all", auth, role("SUPER_ADMIN"), getGuards);
-router.get("/society/:societyId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), getGuards);
-router.get("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), getGuards);
+router.get("/society/:societyId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getGuards);
+router.get("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getGuards);
 router.put("/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), updateGuard);
 router.delete("/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), deleteGuard);
 
