@@ -455,38 +455,28 @@ exports.switchRole = async (req, res) => {
       });
     }
 
-    const user = await User.findByPk(id);
+    const user = await User.findByPk(id, {
+      include: [{ model: Society, attributes: ["name"] }],
+    });
     if (!user) return res.status(404).json({ message: "User not found" });
 
     const { token } = issueAccessToken(user, role);
 
-    // return res.status(200).json({
-    //   message: `Switched to ${role}`,
-    //   token,
-    //   user: {
-    //     id: user.id,
-    //     name: user.name,
-    //     email: user.email,
-    //     role: user.role,
-    //     roles,
-    //     activeRole: role,
-    //     society_id: user.society_id,
-    //   },
-    // });
     return res.status(200).json({
-  message: `Switched to ${role}`,
-  token,
-  user: {
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    role: user.role,
-    roles,
-    activeRole: role,
-    resident_type: user.resident_type || null,  // ✅ ADD THIS LINE
-    society_id: user.society_id,
-  },
-});
+      message: `Switched to ${role}`,
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        roles,
+        activeRole: role,
+        resident_type: user.resident_type || null,
+        society_id: user.society_id,
+        society_name: user.Society?.name || null,
+      },
+    });
   } catch (err) {
     console.error("Switch role error:", err);
     return res.status(500).json({ message: err.message });

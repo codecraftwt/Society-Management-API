@@ -234,6 +234,22 @@ sequelize
       console.log("[DB Migration] Note adding notices.acknowledgement_required:", err.message);
     }
 
+    try {
+      const billCols = await sequelize
+        .query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bills'")
+        .then(([rows]) => new Set(rows.map((r) => r.COLUMN_NAME)));
+      if (!billCols.has("issue_date")) {
+        await sequelize.query("ALTER TABLE bills ADD COLUMN issue_date DATETIME NULL");
+        console.log("[DB Migration] Added bills.issue_date");
+      }
+      if (!billCols.has("last_pay_date")) {
+        await sequelize.query("ALTER TABLE bills ADD COLUMN last_pay_date DATETIME NULL");
+        console.log("[DB Migration] Added bills.last_pay_date");
+      }
+    } catch (err) {
+      console.log("[DB Migration] Note adding bills date columns:", err.message);
+    }
+
     return sequelize.sync();
   })
   .then(() => {

@@ -7,7 +7,9 @@ const Bill = sequelize.define("Bill", {
   flat_id: { type: DataTypes.INTEGER, allowNull: false },
   amount: { type: DataTypes.DECIMAL(10,2), allowNull: false },
   billing_month: { type: DataTypes.STRING },
+  issue_date: { type: DataTypes.DATE },
   due_date: { type: DataTypes.DATE },
+  last_pay_date: { type: DataTypes.DATE },
   status: { type: DataTypes.STRING(50), defaultValue: 'PENDING' },
   // Distinguish generated MAINTENANCE bills from regular BILL records.
   type: { type: DataTypes.STRING(50), defaultValue: 'BILL' },

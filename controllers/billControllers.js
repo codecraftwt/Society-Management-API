@@ -15,12 +15,17 @@ const addDays = (days) => {
   return date;
 };
 
+const todayIso = () => new Date().toISOString().slice(0, 10);
+
 /* =====
    CREATE BILL
 ===== */
 const createBill = async (req, res) => {
   try {
-    const { flat_id, title, amount, billing_month, bill_type } = req.body;
+    const { flat_id, title, amount, billing_month, bill_type, issue_date, last_pay_date } = req.body;
+
+    const finalIssueDate = issue_date || todayIso();
+    const finalDueDate = last_pay_date || addDays(30);
 
     /* ==== INDIVIDUAL BILL ==== */
     if (bill_type === "INDIVIDUAL") {
@@ -46,7 +51,9 @@ const createBill = async (req, res) => {
         title,
         amount,
         billing_month,
-        due_date: addDays(30),
+        issue_date: finalIssueDate,
+        due_date: finalDueDate,
+        last_pay_date: finalDueDate,
       });
 
       const userIdsToNotify = new Set();
@@ -120,7 +127,9 @@ const createBill = async (req, res) => {
           title,
           amount,
           billing_month,
-          due_date: addDays(30),
+          issue_date: finalIssueDate,
+          due_date: finalDueDate,
+          last_pay_date: finalDueDate,
         });
 
         createdBills.push(bill);
@@ -218,7 +227,7 @@ const getSocietyBills = async (req, res) => {
       required:   false,
       attributes: ["id", "flat_number", "floor_id", "block_id"],
       include: [
-        scopeBlockInclude({ model: Block, required: false, attributes: ["id", "name"] }),
+        scopeBlockInclude({ model: Block, required: false, attributes: ["id", "name"], include: [{ model: Society, attributes: ["id", "name"] }] }),
         { model: Floor, required: false, attributes: ["id", "floor_number"], include: [{ model: Block, required: false, attributes: ["id", "name"] }] },
         { model: User, required: false, attributes: ["id", "name"] },
       ],

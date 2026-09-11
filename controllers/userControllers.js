@@ -1425,6 +1425,7 @@ const createAccountant = async (req, res) => {
   try {
     const { name, email, password, phone, society_id } = req.body;
 
+    const safePassword = password || "Admin@123";
     const phoneRegex = /^[6-9]\d{9}$/;
     if (!phone || !phoneRegex.test(phone.replace(/\s/g, ""))) {
       return res.status(400).json({ message: "Please provide a valid 10-digit Indian mobile number." });
@@ -1446,7 +1447,7 @@ const createAccountant = async (req, res) => {
     const existing = allUsers.find((u) => (u.roles || [u.role]).includes("ACCOUNTANT"));
     if (existing) return res.status(400).json({ message: "Only one Accountant allowed per society" });
 
-    const hashed = await bcrypt.hash(password, 8);
+    const hashed = await bcrypt.hash(safePassword, 8);
     const accountant = await User.create({
       name, email, phone, password: hashed,
       role: "ACCOUNTANT", roles: ["ACCOUNTANT"],
@@ -1456,7 +1457,7 @@ const createAccountant = async (req, res) => {
     res.status(201).json(accountant);
 
     const society = await Society.findByPk(targetSocietyId);
-    sendAccountantWelcomeEmail(email, name, password, society?.name || "your society")
+    sendAccountantWelcomeEmail(email, name, safePassword, society?.name || "your society")
       .catch((err) => console.error("[Mailer] Accountant welcome email failed:", err.message));
   } catch (err) {
     res.status(500).json({ message: err.message });

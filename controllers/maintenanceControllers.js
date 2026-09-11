@@ -210,9 +210,12 @@ const deleteConfig = async (req, res) => {
 const previewBills = async (req, res) => {
   try {
     const societyId = req.user.society_id;
-    const { billing_month, rate_ids, due_date } = req.method === "GET" ? req.query : req.body;
+    const { billing_month, rate_ids, due_date, issue_date, last_pay_date } = req.method === "GET" ? req.query : req.body;
 
     const requestedMonth = (billing_month && String(billing_month).trim()) || monthNameAndYear();
+
+    const previewIssueDate = issue_date || new Date().toISOString().slice(0, 10);
+    const previewDueDate = last_pay_date || due_date || addDays(30);
 
     const rateWhere = { society_id: societyId, is_active: true };
     let parsedRateIds = rate_ids;
@@ -231,7 +234,9 @@ const previewBills = async (req, res) => {
     if (rates.length === 0) {
       return res.json({
         billing_month: requestedMonth,
-        due_date: due_date || addDays(30),
+        issue_date: previewIssueDate,
+        due_date: previewDueDate,
+        last_pay_date: previewDueDate,
         eligible_count: 0,
         billable_count: 0,
         already_billed_count: 0,
@@ -403,7 +408,7 @@ const previewBills = async (req, res) => {
 ───────────────────────────────────────── */
 const generateBills = async (req, res) => {
   const societyId = req.user.society_id;
-  const { billing_month, rate_ids, due_date } = req.body;
+  const { billing_month, rate_ids, due_date, issue_date, last_pay_date } = req.body;
 
   const requestedMonth = billing_month || monthNameAndYear();
   const monthRegex = /^[A-Za-z]+\s\d{4}$/;
@@ -454,7 +459,8 @@ const generateBills = async (req, res) => {
   const results = [];
   const summary = { generated: 0, skipped_duplicates: 0, skipped_sqft: 0, missing_areas: [], errors: [] };
   const notified = new Set();
-  const finalDueDate = due_date ? new Date(due_date) : addDays(30);
+  const finalDueDate = last_pay_date || due_date ? new Date(last_pay_date || due_date) : addDays(30);
+  const finalIssueDate = issue_date ? new Date(issue_date) : new Date();
 
   for (const rate of rates) {
     /* ─── SQ_FEET: validate ALL eligible row-house areas BEFORE creating any bills ─── */
@@ -515,7 +521,9 @@ const generateBills = async (req, res) => {
           title: `Maintenance ${requestedMonth}`,
           amount: calculatedAmount,
           billing_month: requestedMonth,
+          issue_date: finalIssueDate,
           due_date: finalDueDate,
+          last_pay_date: finalDueDate,
           status: "PENDING",
           type: "MAINTENANCE",
           maintenance_rate_id: rate.id,
@@ -601,7 +609,9 @@ const generateBills = async (req, res) => {
         title: `Maintenance ${requestedMonth}`,
         amount: calculatedAmount,
         billing_month: requestedMonth,
+        issue_date: finalIssueDate,
         due_date: finalDueDate,
+        last_pay_date: finalDueDate,
         status: "PENDING",
         type: "MAINTENANCE",
         maintenance_rate_id: rate.id,

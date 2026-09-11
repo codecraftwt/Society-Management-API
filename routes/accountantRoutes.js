@@ -11,9 +11,74 @@ const {
   getDashboardStats,
 } = require("../controllers/accountantControllers");
 
+const {
+  createAccountant,
+  getAccountant,
+  updateAccountant,
+  deleteAccountant,
+} = require("../controllers/userControllers");
+
+// Resolve the accountant's society for :id based routes
+const resolveSocietyFromAccountant = async (req, res, next) => {
+  try {
+    const { User } = require("../models");
+    const acc = await User.findByPk(req.params.id);
+    if (!acc) return res.status(404).json({ message: "Accountant not found" });
+    req.resolvedSocietyId = acc.society_id;
+    next();
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 router.get("/dashboard-stats", auth, role("ACCOUNTANT"), getDashboardStats);
 router.get("/bills", auth, role("ACCOUNTANT"), getSocietyBills);
 router.get("/payments", auth, role("ACCOUNTANT"), getPayments);
 router.get("/payments/summary", auth, role("ACCOUNTANT"), monthlyCollection);
+
+// Accountant CRUD (Super Admin list / Society Admin single)
+router.post("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), createAccountant);
+router.get("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "RESIDENT"), getAccountant);
+
+// Super Admin global list
+router.get("/all", auth, role("SUPER_ADMIN"), (req, res, next) => {
+  req.query.society_id = undefined;
+  next();
+}, getAccountant);
+
+// Super Admin filtered single society
+router.get("/society/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), (req, res, next) => {
+  req.query.society_id = req.params.id;
+  next();
+}, getAccountant);
+
+// Current user's society accountant
+router.get("/me", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "RESIDENT"), (req, res, next) => {
+  req.query.society_id = undefined;
+  next();
+}, getAccountant);
+
+router.put(
+  "/:id",
+  auth,
+  role("SUPER_ADMIN", "SOCIETY_ADMIN"),
+  resolveSocietyFromAccountant,
+  (req, res, next) => {
+    req.body.society_id = req.body.society_id || req.resolvedSocietyId;
+    next();
+  },
+  updateAccountant
+);
+router.delete(
+  "/:id",
+  auth,
+  role("SUPER_ADMIN", "SOCIETY_ADMIN"),
+  resolveSocietyFromAccountant,
+  (req, res, next) => {
+    req.query.society_id = req.query.society_id || req.resolvedSocietyId;
+    next();
+  },
+  deleteAccountant
+);
 
 module.exports = router;
