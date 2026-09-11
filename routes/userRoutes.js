@@ -20,10 +20,10 @@ router.get("/resident/unassigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "C
 router.post("/societies/:societyId/admin", auth, role("SUPER_ADMIN"), createSocietyAdmin);
 
 // Allow Super Admin to create, view, update, and delete residents
-router.post("/resident", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), createResident);
+router.post("/resident", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), createResident);
 router.get("/resident", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getResidents);
-router.put("/resident/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), updateResident);
-router.delete("/resident/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), deleteResident);
+router.put("/resident/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), updateResident);
+router.delete("/resident/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), deleteResident);
 
 // Allow Super Admin to manage guards
 router.post("/guard", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), createGuard);
@@ -56,11 +56,11 @@ router.post("/reset-password", resetPassword);
 router.post("/resident/add-tenant", auth, role("RESIDENT"), addTenantByOwner);
 router.post("/resident/remove-tenant", auth, role("RESIDENT"), removeTenantByOwner);
 
-// Pending approvals
+// Pending approvals (committee can review & approve tenant applications too)
 router.get(
-  "/resident/pending", 
-  auth, 
-  role("SUPER_ADMIN", "SOCIETY_ADMIN"), 
+  "/resident/pending",
+  auth,
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"),
   getPendingResidents
 );
 

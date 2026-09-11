@@ -97,9 +97,18 @@ const getParkingSlots = async (req, res) => {
     }
 
     const include = [
-      { model: Flat,    as: "Flat",     attributes: ["id", "flat_number"], required: false },
+      { model: Flat,    attributes: ["id", "flat_number"], required: false },
       { model: User,    as: "resident", attributes: ["id", "name", "email", "phone"], required: false },
-      { model: Vehicle, as: "Vehicle",  attributes: ["id", "vehicle_number", "vehicle_name", "vehicle_type"], required: false },
+      {
+        model: Vehicle,
+        as: "Vehicle",
+        attributes: ["id", "vehicle_number", "vehicle_name", "vehicle_type", "flat_id", "resident_id"],
+        include: [
+          { model: Flat, attributes: ["id", "flat_number"], required: false },
+          { model: User, attributes: ["id", "name", "email", "phone"], required: false },
+        ],
+        required: false,
+      },
     ];
 
     const { count, rows: slots } = await ParkingSlot.findAndCountAll({
@@ -112,6 +121,13 @@ const getParkingSlots = async (req, res) => {
 
     const mapSlot = (s) => {
       const j = s.toJSON();
+      const resolvedFlatNumber = j.Flat?.flat_number || j.Vehicle?.Flat?.flat_number || (j.flat_number ? j.flat_number : null);
+      const resolvedResident = j.resident
+        ? { id: j.resident.id, name: j.resident.name, email: j.resident.email, phone: j.resident.phone }
+        : j.Vehicle?.User
+          ? { id: j.Vehicle.User.id, name: j.Vehicle.User.name, email: j.Vehicle.User.email, phone: j.Vehicle.User.phone }
+          : null;
+
       return {
         id:             j.id,
         society_id:     j.society_id,
@@ -120,10 +136,10 @@ const getParkingSlots = async (req, res) => {
         vehicle_type:   j.vehicle_type,
         status:         j.status,
         parking_type:   j.parking_type,
-        flat_id:        j.flat_id,
-        resident_id:    j.resident_id,
-        flat_number:    j.Flat?.flat_number || null,
-        resident:       j.resident ? { id: j.resident.id, name: j.resident.name, email: j.resident.email, phone: j.resident.phone } : null,
+        flat_id:        j.flat_id || j.Vehicle?.flat_id || null,
+        resident_id:    j.resident_id || j.Vehicle?.resident_id || null,
+        flat_number:    resolvedFlatNumber,
+        resident:       resolvedResident,
         vehicle:        j.Vehicle
           ? { id: j.Vehicle.id, vehicle_number: j.Vehicle.vehicle_number, vehicle_name: j.Vehicle.vehicle_name, vehicle_type: j.Vehicle.vehicle_type }
           : null,
@@ -210,6 +226,75 @@ const deleteParkingSlot = async (req, res) => {
     res.json({ message: "Parking slot deleted" });
   } catch (err) {
     console.error("DELETE SLOT ERROR:", err);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
+
+/* ═══════════════════════════════════════════
+   4b️⃣  UPDATE SLOT  (ADMIN only)
+   → Edits slot_number / parking_floor / vehicle_type / parking_type
+→ Route: PUT /parking-slots/:id
+═══════════════════════════════════════════ */
+const updateParkingSlot = async (req, res) => {
+  try {
+    const { slot_number, parking_floor, vehicle_type, parking_type } = req.body;
+
+    if (!slot_number || !vehicle_type) {
+      return res.status(400).json({ message: "Slot number and vehicle type are required" });
+    }
+
+    const slot = await ParkingSlot.findOne({
+      where: { id: req.params.id, society_id: req.user.society_id },
+    });
+
+    if (!slot) return res.status(404).json({ message: "Slot not found" });
+
+    if (vehicle_type !== "CAR" && vehicle_type !== "BIKE") {
+      return res.status(400).json({ message: "Vehicle type must be CAR or BIKE" });
+    }
+
+    const trimmed = String(slot_number).trim();
+    if (trimmed !== slot.slot_number) {
+      const dup = await ParkingSlot.findOne({
+        where: {
+          society_id: req.user.society_id,
+          slot_number: trimmed,
+          id:          { [Op.ne]: slot.id },
+        },
+      });
+      if (dup) return res.status(409).json({ message: `Slot "${trimmed}" already exists` });
+    }
+
+    slot.slot_number   = trimmed;
+    slot.parking_floor = parking_floor || null;
+    slot.vehicle_type  = vehicle_type;
+    if (parking_type === "DEFAULT" || parking_type === "EXTRA") {
+      slot.parking_type = parking_type;
+    }
+
+    if (req.body.flat_id !== undefined) {
+      if (req.body.flat_id === null || req.body.flat_id === "" || req.body.flat_id === "null") {
+        slot.flat_id = null;
+        if (slot.status === "ASSIGNED" && !slot.resident_id) {
+          slot.status = "AVAILABLE";
+        }
+      } else {
+        const targetFlatId = parseInt(req.body.flat_id, 10);
+        if (!isNaN(targetFlatId) && targetFlatId > 0) {
+          slot.flat_id = targetFlatId;
+          if (slot.status === "AVAILABLE") {
+            slot.status = "ASSIGNED";
+          }
+        }
+      }
+    }
+
+    await slot.save();
+
+    res.json({ message: "Parking slot updated", slot });
+  } catch (err) {
+    console.error("UPDATE SLOT ERROR:", err);
     res.status(500).json({ message: "Server Error" });
   }
 };
@@ -646,6 +731,7 @@ module.exports = {
   createParkingSlots,
   getParkingSlots,
   getAvailableSlots,
+  updateParkingSlot,
   deleteParkingSlot,
   revokeSlotAssignment,
   getMyAllocatedSlots,

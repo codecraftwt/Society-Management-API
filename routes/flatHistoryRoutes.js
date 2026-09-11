@@ -13,6 +13,6 @@ const role = require("../middlewares/roleMiddleware");
 // ✅ Specific routes BEFORE dynamic param route
 router.post("/move-in", auth, role("SOCIETY_ADMIN"), moveInResident);
 router.post("/move-out", auth, role("SOCIETY_ADMIN"), moveOutResident);
-router.get("/:flat_id", auth, role("SOCIETY_ADMIN"), getFlatHistory);
+router.get("/:flat_id", auth, role("SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER"), getFlatHistory);
 
 module.exports = router;

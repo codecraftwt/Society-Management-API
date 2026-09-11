@@ -219,7 +219,10 @@ exports.approveResident = async (req, res) => {
     const { userId } = req.params;
 
     if (!userId) return res.status(400).json({ message: "User ID missing" });
-    if (req.user.role !== "SOCIETY_ADMIN") return res.status(403).json({ message: "Only admin allowed" });
+    const callerRole = req.user.activeRole || req.user.role;
+    if (!["SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER"].includes(callerRole)) {
+      return res.status(403).json({ message: "Access denied. Admin or Committee Member required." });
+    }
 
     const resident = await User.findByPk(userId, { transaction });
     if (!resident) {
@@ -232,11 +235,15 @@ exports.approveResident = async (req, res) => {
       return res.status(403).json({ message: "Invalid society access" });
     }
 
-    // 1. Activate Account
+    // 1. Activate Account with Approval Audit
     resident.approval_status  = "APPROVED";
     resident.status           = "ACTIVE";
     resident.role             = "RESIDENT";
     resident.rejection_reason = null;
+    resident.approved_by_user_id = req.user.id;
+    resident.approved_by_name = req.user.name || (callerRole === "COMMITTEE_MEMBER" ? "Committee Member" : "Society Admin");
+    resident.approved_by_role = callerRole;
+    resident.approved_at = new Date();
     await resident.save({ transaction });
 
     // 2. Sync Flat & Membership Data
@@ -344,12 +351,23 @@ exports.approveResident = async (req, res) => {
 exports.rejectResident = async (req, res) => {
   try {
     const { userId } = req.params;
+    const callerRole = req.user.activeRole || req.user.role;
+    if (!["SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER"].includes(callerRole)) {
+      return res.status(403).json({ message: "Access denied. Admin or Committee Member required." });
+    }
 
     const user = await User.findByPk(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
 
     // 1. Set the User to REJECTED and INACTIVE
-    await user.update({ approval_status: "REJECTED", status: "INACTIVE" });
+    await user.update({
+      approval_status: "REJECTED",
+      status: "INACTIVE",
+      approved_by_user_id: req.user.id,
+      approved_by_name: req.user.name || (callerRole === "COMMITTEE_MEMBER" ? "Committee Member" : "Society Admin"),
+      approved_by_role: callerRole,
+      approved_at: new Date(),
+    });
 
     // 2. Find any FlatMembership for this user
     const pendingMembership = await FlatMembership.findOne({ where: { user_id: userId } });
@@ -435,7 +453,10 @@ exports.getTenantHistory = async (req, res) => {
       include: [
         {
           model: User,
-          attributes: ["id", "name", "email", "phone", "approval_status", "status", "resident_type"],
+          attributes: [
+            "id", "name", "email", "phone", "approval_status", "status", "resident_type",
+            "approved_by_user_id", "approved_by_name", "approved_by_role", "approved_at"
+          ],
           where: { society_id: societyId },
         },
         {
@@ -476,7 +497,10 @@ exports.getTenantHistory = async (req, res) => {
         resident_type: "TENANT",
         approval_status: "REJECTED",
       },
-      attributes: ["id", "name", "email", "phone", "approval_status", "status", "resident_type"],
+      attributes: [
+        "id", "name", "email", "phone", "approval_status", "status", "resident_type",
+        "approved_by_user_id", "approved_by_name", "approved_by_role", "approved_at"
+      ],
     });
 
     const rejectedUserIds = rejectedUsers.map(u => u.id);
@@ -509,6 +533,10 @@ exports.getTenantHistory = async (req, res) => {
         approval_status: user.approval_status,
         user_status: user.status,
         resident_type: user.resident_type,
+        approved_by_user_id: user.approved_by_user_id,
+        approved_by_name: user.approved_by_name,
+        approved_by_role: user.approved_by_role,
+        approved_at: user.approved_at,
         flat_id: flat?.id,
         flat_number: fNum,
         flat_label: flatLabel,
@@ -540,13 +568,16 @@ exports.getTenantHistory = async (req, res) => {
         approval_status: u.approval_status,
         user_status: u.status,
         resident_type: u.resident_type,
+        approved_by_user_id: u.approved_by_user_id,
+        approved_by_name: u.approved_by_name,
+        approved_by_role: u.approved_by_role,
+        approved_at: u.approved_at,
         flat_id: null,
         flat_number: null,
         flat_label: null,
         flat_type: null,
         block_name: null,
         occupancy_status: null,
-        membership_role: "TENANT",
         is_staying: false,
         is_current: false,
         move_in_date: null,

@@ -5,9 +5,9 @@ const role = require("../middlewares/roleMiddleware");
 const {createBlock, getBlocksBySociety,deleteBlock,getSocietyName} = require("../controllers/blockControllers");
 
 router.post("/", auth, role("SUPER_ADMIN","SOCIETY_ADMIN"), createBlock);
-router.get("/:societyId", auth, role("SUPER_ADMIN","SOCIETY_ADMIN"), getBlocksBySociety);
+router.get("/:societyId", auth, role("SUPER_ADMIN","SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getBlocksBySociety);
 router.delete("/:blockId", auth, role("SUPER_ADMIN","SOCIETY_ADMIN"), deleteBlock);
-router.get("/getname/:societyId", auth, role("SUPER_ADMIN","SOCIETY_ADMIN"), getSocietyName);
+router.get("/getname/:societyId", auth, role("SUPER_ADMIN","SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getSocietyName);
 
 module.exports = router;
 

@@ -4,6 +4,7 @@ const Flat = require("../models/Flat");
 const Notification = require("../models/Notification");
 const HouseHoldMember = require("../models/HouseHoldMember");
 const OtpVerification = require("../models/OtpVerification");
+const AccountantAssignment = require("../models/AccountantAssignment");
 
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -14,6 +15,28 @@ const transporter = require("../utils/mailer");
 /* =====
     HELPERS
     ===== */
+async function getAvailablePanels(user) {
+  const roles = Array.isArray(user.roles) && user.roles.length > 0 ? user.roles : [user.role];
+  const panels = [];
+  
+  if (roles.includes("SUPER_ADMIN")) panels.push("SUPER_ADMIN");
+  if (roles.includes("SOCIETY_ADMIN")) panels.push("SOCIETY_ADMIN");
+  if (roles.includes("COMMITTEE_MEMBER")) panels.push("COMMITTEE_MEMBER");
+  if (roles.includes("RESIDENT")) panels.push("RESIDENT");
+  if (roles.includes("FAMILY_MEMBER")) panels.push("FAMILY_MEMBER");
+  if (roles.includes("GUARD")) panels.push("GUARD");
+  
+  if (roles.includes("ACCOUNTANT")) {
+    const assignment = await AccountantAssignment.findOne({
+      where: { user_id: user.id, status: "ACTIVE" }
+    });
+    if (assignment || user.role === "ACCOUNTANT") {
+      panels.push("ACCOUNTANT");
+    }
+  }
+  
+  return panels.length > 0 ? panels : [user.role];
+}
 function generateOtp() {
   // Real random 6-digit OTP for all environments.
   // In test mode, keep it deterministic so the test suite can log in.
@@ -257,9 +280,12 @@ exports.login = async (req, res) => {
       { expiresIn: "3m" }
     );
 
+    const availablePanels = await getAvailablePanels(user);
+
     return res.status(200).json({
       message: "OTP sent to your registered email address",
       tempToken,
+      availablePanels,
       user: {
         id: user.id,
         name: user.name,
@@ -267,6 +293,7 @@ exports.login = async (req, res) => {
         role: user.role,
         roles,
         activeRole: user.role,
+        availablePanels,
         society_id: user.society_id,
         society_name: user.Society?.name || null,
       },
@@ -353,36 +380,25 @@ exports.verifyOtp = async (req, res) => {
 
     const { token } = issueAccessToken(user, user.role);
     const roles = user.roles ?? [user.role];
+    const availablePanels = await getAvailablePanels(user);
 
-    // return res.status(200).json({
-    //   message: "Login successful",
-    //   token,
-    //   user: {
-    //     id: user.id,
-    //     name: user.name,
-    //     email: user.email,
-    //     role: user.role,
-    //     roles,
-    //     activeRole: user.role,
-    //     society_id: user.society_id,
-    //     society_name: user.Society?.name || null,
-    //   },
-    // });
     return res.status(200).json({
-  message: "Login successful",
-  token,
-  user: {
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    role: user.role,
-    roles,
-    activeRole: user.role,
-    resident_type: user.resident_type || null,  // ✅ ADD THIS LINE
-    society_id: user.society_id,
-    society_name: user.Society?.name || null,
-  },
-});
+      message: "Login successful",
+      token,
+      availablePanels,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        roles,
+        activeRole: user.role,
+        availablePanels,
+        resident_type: user.resident_type || null,
+        society_id: user.society_id,
+        society_name: user.Society?.name || null,
+      },
+    });
   } catch (err) {
     console.error("OTP verify error:", err);
     return res.status(500).json({ message: err.message });
@@ -461,10 +477,12 @@ exports.switchRole = async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
 
     const { token } = issueAccessToken(user, role);
+    const availablePanels = await getAvailablePanels(user);
 
     return res.status(200).json({
       message: `Switched to ${role}`,
       token,
+      availablePanels,
       user: {
         id: user.id,
         name: user.name,
@@ -472,6 +490,7 @@ exports.switchRole = async (req, res) => {
         role: user.role,
         roles,
         activeRole: role,
+        availablePanels,
         resident_type: user.resident_type || null,
         society_id: user.society_id,
         society_name: user.Society?.name || null,

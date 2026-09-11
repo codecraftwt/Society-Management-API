@@ -1,4 +1,5 @@
 const GuardShift = require("../models/GuardShift");
+const User = require("../models/User");
 const { Op } = require("sequelize");
 
 /* ── IST date helper ── */
@@ -28,7 +29,13 @@ const datesOverlap = (aStart, aEnd, bStart, bEnd) =>
 const upsertShift = async (req, res) => {
   try {
     const { guard_id, shift_type, start_date, end_date } = req.body;
-    const society_id = req.user.society_id;
+    let society_id = req.user.society_id;
+
+    /* SUPER_ADMIN isn't scoped to a society — resolve the guard's own society */
+    if (!society_id) {
+      const guard = await User.findByPk(guard_id);
+      society_id = guard?.society_id ?? null;
+    }
 
     if (!guard_id || !shift_type || !start_date || !end_date) {
       return res.status(400).json({ message: "guard_id, shift_type, start_date, and end_date are required" });
@@ -38,9 +45,10 @@ const upsertShift = async (req, res) => {
       return res.status(400).json({ message: "start_date must be on or before end_date" });
     }
 
-    /* Find ALL existing shifts of the same type for this guard in this society */
+    /* Find ALL existing shifts for this guard in this society (any type —
+       a guard can only hold ONE shift covering any given date) */
     const existingShifts = await GuardShift.findAll({
-      where: { guard_id, society_id, shift_type },
+      where: { guard_id, society_id },
     });
 
     /* Check each for date overlap */
@@ -50,7 +58,7 @@ const upsertShift = async (req, res) => {
 
     if (overlapping) {
       return res.status(409).json({
-        message: `A ${shift_type} shift already exists from ${overlapping.start_date} to ${overlapping.end_date}. Update it instead.`,
+        message: `A ${overlapping.shift_type} shift already exists from ${overlapping.start_date} to ${overlapping.end_date}. Edit that shift instead of creating a new one.`,
         existingShift: overlapping,
       });
     }
@@ -93,12 +101,11 @@ const updateShift = async (req, res) => {
       return res.status(400).json({ message: "start_date must be on or before end_date" });
     }
 
-    /* Check overlap with OTHER shifts of same type for same guard+ society */
+    /* Check overlap with OTHER shifts of the same guard+society (any type) */
     const otherShifts = await GuardShift.findAll({
       where: {
         guard_id:   shift.guard_id,
         society_id: shift.society_id,
-        shift_type: newType,
         id: { [Op.ne]: shift.id },
       },
     });
@@ -109,7 +116,7 @@ const updateShift = async (req, res) => {
 
     if (overlapping) {
       return res.status(409).json({
-        message: `A ${newType} shift already exists from ${overlapping.start_date} to ${overlapping.end_date}. Update it instead.`,
+        message: `A ${overlapping.shift_type} shift already exists from ${overlapping.start_date} to ${overlapping.end_date}. Edit that shift instead of creating a new one.`,
         existingShift: overlapping,
       });
     }
@@ -190,11 +197,15 @@ const getSocietyShifts = async (req, res) => {
 /* === GET SHIFTS BY GUARD ID (admin — all shifts for a guard) === */
 const getGuardShiftByGuard = async (req, res) => {
   try {
+    const where = { guard_id: req.params.guardId };
+
+    /* Super Admin isn't scoped to any society — show every shift for the guard */
+    if (req.user.role !== "SUPER_ADMIN") {
+      where.society_id = req.user.society_id;
+    }
+
     const shifts = await GuardShift.findAll({
-      where: {
-        guard_id:   req.params.guardId,
-        society_id: req.user.society_id,
-      },
+      where,
       order: [["shift_type", "ASC"]],
     });
 

@@ -27,21 +27,21 @@ router.use(verifyToken);
 router.post("/",                         requestParking);
 router.get("/",                          getParkingRequests);
 
-/* ── Admin only ── */
+/* ── Admin & Committee allocation ── */
 router.get(
   "/unassigned-resident-vehicles",
-  role("SOCIETY_ADMIN"),
+  role("SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER"),
   getUnassignedResidentVehicles
 );
 router.put(
   "/:id/admin-assign",
-  role("SOCIETY_ADMIN"),
+  role("SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER"),
   adminAssignResidentSlot
 );
 router.put(
-  "/:id/admin-reject",                   // ← separate admin reject (no shift check)
-  role("SOCIETY_ADMIN"),
-  adminRejectResidentSlot                // ← new controller function below
+  "/:id/admin-reject",
+  role("SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER"),
+  adminRejectResidentSlot
 );
 router.post(
   "/request-slot",
@@ -60,7 +60,7 @@ router.put("/:id/exit",                 markExit);
 
 router.post(
   "/admin-cancel-vehicle-request",
-  role("SOCIETY_ADMIN"),
+  role("SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER"),
   adminCancelVehicleRequest
 );
 module.exports = router;

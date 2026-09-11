@@ -22,13 +22,13 @@ router.get("/", auth, getDocuments);
 router.get("/admin", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN" ,"COMMITTEE_MEMBER"), adminGetDocuments);
 
 // POST   /api/documents/admin
-router.post("/admin", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN","COMMITTEE_MEMBER"), upload("documents").single("file"), adminUploadDocument);
+router.post("/admin", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), upload("documents").single("file"), adminUploadDocument);
 
 // PATCH  /api/documents/admin/:id
-router.patch("/admin/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN","COMMITTEE_MEMBER"), adminUpdateDocument);
+router.patch("/admin/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), adminUpdateDocument);
 
 // DELETE /api/documents/admin/:id          → soft delete
 // DELETE /api/documents/admin/:id?hard=true → permanent
-router.delete("/admin/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN","COMMITTEE_MEMBER"), adminDeleteDocument);
+router.delete("/admin/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), adminDeleteDocument);
 
 module.exports = router;

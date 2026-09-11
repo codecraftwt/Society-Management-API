@@ -140,13 +140,13 @@ router.get("/getall", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMB
 router.get("/unassigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getUnassignedFlats);
 router.get("/assigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "GUARD","ACCOUNTANT"), getAssignedFlats);
 router.get("/neighbours", auth, role("RESIDENT", "FAMILY_MEMBER"), getNeighbours);
-router.get("/filter", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "GUARD"), getFlatsByBlockAndFloor);
+router.get("/filter", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "GUARD", "COMMITTEE_MEMBER"), getFlatsByBlockAndFloor);
 
 // ✅ THIS WAS MISSING — frontend calls /flats/list?blockId=X
-router.get("/list", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "GUARD", "RESIDENT"), getFlatsByBlockAndFloor);
+router.get("/list", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "GUARD", "RESIDENT", "COMMITTEE_MEMBER"), getFlatsByBlockAndFloor);
 
-router.get("/floor/:floorId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), getFlatsByFloor);
-router.get("/floor/:floorId/unassigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), getUnassignedFlatsByFloor);
+router.get("/floor/:floorId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getFlatsByFloor);
+router.get("/floor/:floorId/unassigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getUnassignedFlatsByFloor);
 
 router.post("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), createFlat);
 router.put("/assign/:flatId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), assignResident);
@@ -156,6 +156,6 @@ router.put("/bulk-update", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), bulkUpdat
 
 // ✅ delete and /:blockId LAST — param routes always go at the bottom
 router.delete("/delete/:flatId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), deleteFlat);
-router.get("/:blockId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "GUARD"), getFlatsByBlockAndFloor);
+router.get("/:blockId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "GUARD", "COMMITTEE_MEMBER"), getFlatsByBlockAndFloor);
 
 module.exports = router;

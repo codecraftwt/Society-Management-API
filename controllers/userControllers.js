@@ -16,6 +16,7 @@ const { sendEmail } = require("../services/emailService");
 const FlatMembership = require("../models/FlatMembership");
 const ParkingSlot = require("../models/ParkingSlot");
 const Vehicle = require("../models/Vehicle"); 
+const AccountantAssignment = require("../models/AccountantAssignment");
 const transporter = require("../utils/mailer");
 
 async function sendAccountantWelcomeEmail(toEmail, name, password, societyName) {
@@ -631,11 +632,11 @@ const createGuard = async (req, res) => {
   try {
     const { name, email, password } = req.body;
     const hashed = await bcrypt.hash(password, 8);
-    const guard = await User.create({
-      name, email, password: hashed,
-      role: "GUARD", roles: ["GUARD"],
-      society_id: req.user.society_id,
-    });
+const guard = await User.create({
+        name, email, password: hashed,
+        role: "GUARD", roles: ["GUARD"],
+        society_id: req.body.society_id || req.user.society_id,
+      });
     res.status(200).json(guard);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -695,6 +696,9 @@ const updateGuard = async (req, res) => {
     const updateData = { name, email };
     if (password) {
       updateData.password = await bcrypt.hash(password, 8);
+    }
+    if (req.user.role === "SUPER_ADMIN" && req.body.society_id) {
+      updateData.society_id = req.body.society_id;
     }
 
     await guard.update(updateData);
@@ -1419,7 +1423,7 @@ const getMyFlat = async (req, res) => {
 };
 
 /* =====
-   ACCOUNTANT — CREATE
+   ACCOUNTANT — CREATE (EXTERNAL)
    ===== */
 const createAccountant = async (req, res) => {
   try {
@@ -1440,32 +1444,264 @@ const createAccountant = async (req, res) => {
       return res.status(400).json({ message: "Society ID is required" });
     }
 
-    const allUsers = await User.findAll({
-      where: { society_id: targetSocietyId },
-      attributes: ["id", "role", "roles"],
-    });
-    const existing = allUsers.find((u) => (u.roles || [u.role]).includes("ACCOUNTANT"));
-    if (existing) return res.status(400).json({ message: "Only one Accountant allowed per society" });
+    const existingUser = await User.findOne({ where: { email } });
+    if (existingUser) {
+      return res.status(400).json({ message: "A user with this email already exists." });
+    }
 
     const hashed = await bcrypt.hash(safePassword, 8);
     const accountant = await User.create({
-      name, email, phone, password: hashed,
-      role: "ACCOUNTANT", roles: ["ACCOUNTANT"],
+      name,
+      email,
+      phone,
+      password: hashed,
+      role: "ACCOUNTANT",
+      roles: ["ACCOUNTANT"],
       society_id: targetSocietyId,
+      status: "ACTIVE",
+      approval_status: "APPROVED",
     });
 
-    res.status(201).json(accountant);
+    const assignment = await AccountantAssignment.create({
+      user_id: accountant.id,
+      society_id: targetSocietyId,
+      is_society_resident: false,
+      start_date: new Date(),
+      status: "ACTIVE",
+      appointed_by: req.user.id,
+    });
 
     const society = await Society.findByPk(targetSocietyId);
     sendAccountantWelcomeEmail(email, name, safePassword, society?.name || "your society")
       .catch((err) => console.error("[Mailer] Accountant welcome email failed:", err.message));
+
+    res.status(201).json({
+      id: assignment.id,
+      user_id: accountant.id,
+      name: accountant.name,
+      email: accountant.email,
+      phone: accountant.phone,
+      role: accountant.role,
+      roles: accountant.roles,
+      society_id: targetSocietyId,
+      societyName: society?.name || "NA",
+      from_society: false,
+      start_date: assignment.start_date,
+      inactive_date: assignment.inactive_date,
+      status: assignment.status,
+      assignment_id: assignment.id,
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
 
 /* =====
-   ACCOUNTANT — GET
+   ACCOUNTANT — APPOINT FROM SOCIETY RESIDENTS
+   ===== */
+const appointResidentAccountant = async (req, res) => {
+  try {
+    const { resident_id, society_id } = req.body;
+    const activeRole = req.user.activeRole || req.user.role;
+    const isSuperAdmin = activeRole === "SUPER_ADMIN";
+    let targetSocietyId = req.user.society_id;
+    if (isSuperAdmin && society_id) targetSocietyId = society_id;
+
+    if (!resident_id) {
+      return res.status(400).json({ message: "Resident ID is required." });
+    }
+    if (!targetSocietyId) {
+      return res.status(400).json({ message: "Society ID is required." });
+    }
+
+    const resident = await User.findByPk(resident_id);
+    if (!resident) {
+      return res.status(404).json({ message: "Resident not found." });
+    }
+
+    if (resident.society_id !== parseInt(targetSocietyId, 10)) {
+      return res.status(400).json({ message: "Resident does not belong to the selected society." });
+    }
+
+    const roles = Array.isArray(resident.roles) && resident.roles.length > 0 ? [...resident.roles] : [resident.role];
+
+    // Rule: Cannot be Admin
+    if (roles.includes("SOCIETY_ADMIN") || roles.includes("SUPER_ADMIN")) {
+      return res.status(400).json({ message: "Society Admins cannot be appointed as Accountant." });
+    }
+
+    // Rule: A resident can only be an accountant or committee member, not both at the same time
+    if (roles.includes("COMMITTEE_MEMBER") || resident.role === "COMMITTEE_MEMBER") {
+      return res.status(400).json({
+        message: "Resident is a Committee Member. A resident can only be an Accountant or Committee Member, not both simultaneously.",
+      });
+    }
+
+    // Check if already active accountant
+    const existingActiveAssignment = await AccountantAssignment.findOne({
+      where: { user_id: resident.id, society_id: targetSocietyId, status: "ACTIVE" },
+    });
+    if (existingActiveAssignment && roles.includes("ACCOUNTANT")) {
+      return res.status(400).json({ message: "Resident is already an active Accountant in this society." });
+    }
+
+    if (!roles.includes("ACCOUNTANT")) roles.push("ACCOUNTANT");
+    if (!roles.includes("RESIDENT")) roles.push("RESIDENT");
+
+    await resident.update({ roles });
+
+    let assignment = await AccountantAssignment.findOne({
+      where: { user_id: resident.id, society_id: targetSocietyId },
+    });
+    if (assignment) {
+      await assignment.update({
+        status: "ACTIVE",
+        start_date: new Date(),
+        inactive_date: null,
+        appointed_by: req.user.id,
+      });
+    } else {
+      assignment = await AccountantAssignment.create({
+        user_id: resident.id,
+        society_id: targetSocietyId,
+        is_society_resident: true,
+        start_date: new Date(),
+        status: "ACTIVE",
+        appointed_by: req.user.id,
+      });
+    }
+
+    const society = await Society.findByPk(targetSocietyId);
+
+    res.status(201).json({
+      id: assignment.id,
+      user_id: resident.id,
+      name: resident.name,
+      email: resident.email,
+      phone: resident.phone,
+      role: resident.role,
+      roles: resident.roles,
+      society_id: targetSocietyId,
+      societyName: society?.name || "NA",
+      from_society: true,
+      start_date: assignment.start_date,
+      inactive_date: assignment.inactive_date,
+      status: assignment.status,
+      assignment_id: assignment.id,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/* =====
+   ACCOUNTANT — GET ELIGIBLE RESIDENTS FOR APPOINTMENT
+   ===== */
+const getEligibleAccountantResidents = async (req, res) => {
+  try {
+    const activeRole = req.user.activeRole || req.user.role;
+    const isSuperAdmin = activeRole === "SUPER_ADMIN";
+    const { society_id } = req.query;
+
+    let targetSocietyId = req.user.society_id;
+    if (isSuperAdmin && society_id && society_id !== "ALL") targetSocietyId = parseInt(society_id, 10);
+    else if (targetSocietyId) targetSocietyId = parseInt(targetSocietyId, 10);
+
+    if (!targetSocietyId) {
+      return res.json([]);
+    }
+
+    const allUsers = await User.findAll({
+      where: {
+        society_id: targetSocietyId,
+      },
+      order: [["name", "ASC"]],
+    });
+
+    const userIds = allUsers.map((u) => u.id);
+
+    // Fetch active FlatMemberships to display flat numbers
+    const memberships = await FlatMembership.findAll({
+      where: { user_id: { [Op.in]: userIds }, is_current: true },
+      include: [
+        {
+          model: Flat,
+          attributes: ["id", "flat_number", "block_id", "floor_id"],
+          include: [{ model: Block, attributes: ["id", "name"], required: false }],
+          required: false,
+        },
+      ],
+    });
+
+    const flatMap = new Map();
+    memberships.forEach((m) => {
+      if (m.Flat && !flatMap.has(m.user_id)) {
+        flatMap.set(m.user_id, {
+          flat_number: m.Flat.flat_number,
+          block_name: m.Flat.Block?.name || null,
+        });
+      }
+    });
+
+    // Also get active accountant assignment user IDs
+    const activeAssignments = await AccountantAssignment.findAll({
+      where: {
+        society_id: targetSocietyId,
+        status: "ACTIVE",
+      },
+      attributes: ["user_id"],
+    });
+    const activeAccountantUserIds = new Set(activeAssignments.map((a) => a.user_id));
+
+    // Filter eligible: Resident, NOT admin, NOT committee member, NOT active accountant
+    const eligible = allUsers.filter((u) => {
+      let rList = [];
+      if (Array.isArray(u.roles) && u.roles.length > 0) {
+        rList = u.roles;
+      } else if (typeof u.roles === "string") {
+        try { rList = JSON.parse(u.roles); } catch (e) { rList = []; }
+      }
+      if (u.role && !rList.includes(u.role)) {
+        rList.push(u.role);
+      }
+
+      const isRes = rList.includes("RESIDENT") || u.role === "RESIDENT";
+      const isAdmin = rList.includes("SOCIETY_ADMIN") || rList.includes("SUPER_ADMIN") || u.role === "SOCIETY_ADMIN" || u.role === "SUPER_ADMIN";
+      const isCommittee = rList.includes("COMMITTEE_MEMBER") || u.role === "COMMITTEE_MEMBER";
+      const isAccountant = rList.includes("ACCOUNTANT") || u.role === "ACCOUNTANT" || activeAccountantUserIds.has(u.id);
+
+      return isRes && !isAdmin && !isCommittee && !isAccountant;
+    });
+
+    // Deduplicate users (in case of multiple records with same email)
+    const seen = new Set();
+    const uniqueEligible = [];
+    for (const u of eligible) {
+      const key = u.email ? u.email.toLowerCase().trim() : u.id;
+      if (!seen.has(key)) {
+        seen.add(key);
+        const fInfo = flatMap.get(u.id);
+        uniqueEligible.push({
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          phone: u.phone,
+          resident_type: u.resident_type,
+          flat_number: fInfo?.flat_number || null,
+          block_name: fInfo?.block_name || null,
+        });
+      }
+    }
+
+    res.json(uniqueEligible);
+  } catch (err) {
+    console.error("getEligibleAccountantResidents error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/* =====
+   ACCOUNTANT — GET ALL ACCOUNTANTS (LIST)
    ===== */
 const getAccountant = async (req, res) => {
   try {
@@ -1475,37 +1711,80 @@ const getAccountant = async (req, res) => {
 
     const where = {};
     if (isSuperAdmin) {
-      if (society_id) where.society_id = society_id;
+      if (society_id && society_id !== "ALL") where.society_id = society_id;
     } else {
       where.society_id = req.user.society_id;
     }
 
-    const allUsers = await User.findAll({
+    const assignments = await AccountantAssignment.findAll({
       where,
-      attributes: ["id", "name", "email", "phone", "role", "roles", "society_id"],
+      include: [
+        {
+          model: User,
+          as: "user",
+          attributes: ["id", "name", "email", "phone", "role", "roles", "status"],
+          required: true,
+        },
+        {
+          model: Society,
+          as: "society",
+          attributes: ["id", "name"],
+          required: false,
+        },
+      ],
+      order: [["created_at", "DESC"]],
+    });
+
+    const userWhere = { ...where };
+    const allUsers = await User.findAll({
+      where: userWhere,
+      attributes: ["id", "name", "email", "phone", "role", "roles", "society_id", "status", "created_at"],
       include: [{ model: Society, attributes: ["id", "name"], required: false }],
     });
 
-    const filtered = allUsers.filter((u) => (u.roles || [u.role]).includes("ACCOUNTANT"));
+    const assignmentUserIds = new Set(assignments.map((a) => a.user_id));
+    const legacyAccountants = allUsers.filter(
+      (u) =>
+        ((Array.isArray(u.roles) && u.roles.includes("ACCOUNTANT")) || u.role === "ACCOUNTANT") &&
+        !assignmentUserIds.has(u.id)
+    );
 
-    const data = filtered.map((u) => ({
-      id: u.id,
-      name: u.name,
-      email: u.email,
-      phone: u.phone,
-      role: u.role,
-      roles: u.roles,
-      society_id: u.society_id,
-      societyName: u.Society?.name || "NA",
-    }));
+    const list = [
+      ...assignments.map((a) => ({
+        id: a.user?.id || a.id,
+        assignment_id: a.id,
+        user_id: a.user?.id,
+        name: a.user?.name || "Unknown",
+        email: a.user?.email || "—",
+        phone: a.user?.phone || null,
+        role: a.user?.role,
+        roles: a.user?.roles || [],
+        society_id: a.society_id,
+        societyName: a.society?.name || "NA",
+        from_society: Boolean(a.is_society_resident),
+        start_date: a.start_date,
+        inactive_date: a.inactive_date,
+        status: a.status,
+      })),
+      ...legacyAccountants.map((u) => ({
+        id: u.id,
+        assignment_id: null,
+        user_id: u.id,
+        name: u.name,
+        email: u.email,
+        phone: u.phone,
+        role: u.role,
+        roles: u.roles || [],
+        society_id: u.society_id,
+        societyName: u.Society?.name || "NA",
+        from_society: Boolean((u.roles || []).includes("RESIDENT") || u.role === "RESIDENT"),
+        start_date: u.created_at,
+        inactive_date: u.status === "INACTIVE" ? u.created_at : null,
+        status: u.status === "INACTIVE" ? "INACTIVE" : "ACTIVE",
+      })),
+    ];
 
-    if (isSuperAdmin && !society_id) {
-      // Return array for Super Admin list view
-      res.json(data);
-    } else {
-      // Return single object for Society Admin or specific filtered society
-      res.json(data[0] || null);
-    }
+    res.json(list);
   } catch (err) {
     console.error("getAccountant error:", err);
     res.status(500).json({ message: err.message });
@@ -1513,22 +1792,12 @@ const getAccountant = async (req, res) => {
 };
 
 /* =====
-   ACCOUNTANT — UPDATE
+   ACCOUNTANT — UPDATE DETAILS
    ===== */
 const updateAccountant = async (req, res) => {
   try {
-    const { name, phone, society_id } = req.body;
-    const activeRole = req.user.activeRole || req.user.role;
-    const isSuperAdmin = activeRole === "SUPER_ADMIN";
-
-    let targetSocietyId = req.user.society_id;
-    if (isSuperAdmin && society_id) {
-      targetSocietyId = society_id;
-    }
-
-    if (!targetSocietyId) {
-      return res.status(400).json({ message: "Society ID is required" });
-    }
+    const { name, phone } = req.body;
+    const targetId = req.params.id;
 
     if (phone) {
       const phoneRegex = /^[6-9]\d{9}$/;
@@ -1536,40 +1805,118 @@ const updateAccountant = async (req, res) => {
         return res.status(400).json({ message: "Please provide a valid 10-digit Indian mobile number." });
     }
 
-    const allUsers = await User.findAll({ where: { society_id: targetSocietyId } });
-    const accountant = allUsers.find((u) => (u.roles || [u.role]).includes("ACCOUNTANT"));
-    if (!accountant) return res.status(404).json({ message: "Accountant not found" });
+    let user = await User.findByPk(targetId);
+    if (!user) {
+      const assignment = await AccountantAssignment.findByPk(targetId);
+      if (assignment) {
+        user = await User.findByPk(assignment.user_id);
+      }
+    }
+    if (!user) return res.status(404).json({ message: "Accountant not found" });
 
-    await accountant.update({ name, ...(phone && { phone }) });
-    res.json({ message: "Accountant updated successfully" });
+    await user.update({ ...(name && { name }), ...(phone && { phone }) });
+    res.json({ message: "Accountant updated successfully", user });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
 
 /* =====
-   ACCOUNTANT — DELETE
+   ACCOUNTANT — TOGGLE STATUS (DISABLE / MAKE INACTIVE / REACTIVATE)
    ===== */
-const deleteAccountant = async (req, res) => {
+const toggleAccountantStatus = async (req, res) => {
   try {
-    const { society_id } = req.query;
-    const activeRole = req.user.activeRole || req.user.role;
-    const isSuperAdmin = activeRole === "SUPER_ADMIN";
+    const targetId = req.params.id;
+    const { status } = req.body;
 
-    let targetSocietyId = req.user.society_id;
-    if (isSuperAdmin && society_id) targetSocietyId = society_id;
+    let assignment = await AccountantAssignment.findOne({
+      where: {
+        [Op.or]: [{ id: targetId }, { user_id: targetId }],
+      },
+    });
 
-    if (!targetSocietyId) return res.status(400).json({ message: "Society ID is required" });
+    let user = null;
+    if (assignment) {
+      user = await User.findByPk(assignment.user_id);
+    } else {
+      user = await User.findByPk(targetId);
+      if (user) {
+        const isRes = Boolean((user.roles || []).includes("RESIDENT") || user.role === "RESIDENT");
+        assignment = await AccountantAssignment.create({
+          user_id: user.id,
+          society_id: user.society_id,
+          is_society_resident: isRes,
+          start_date: user.created_at || new Date(),
+          status: user.status === "INACTIVE" ? "INACTIVE" : "ACTIVE",
+        });
+      }
+    }
 
-    const allUsers = await User.findAll({ where: { society_id: targetSocietyId } });
-    const accountant = allUsers.find((u) => (u.roles || [u.role]).includes("ACCOUNTANT"));
-    if (!accountant) return res.status(404).json({ message: "Accountant not found" });
+    if (!assignment || !user) {
+      return res.status(404).json({ message: "Accountant assignment not found" });
+    }
 
-    await accountant.destroy();
-    res.json({ message: "Accountant deleted successfully" });
+    const newStatus = status || (assignment.status === "ACTIVE" ? "INACTIVE" : "ACTIVE");
+
+    if (newStatus === "INACTIVE") {
+      await assignment.update({
+        status: "INACTIVE",
+        inactive_date: new Date(),
+      });
+
+      if (assignment.is_society_resident) {
+        // DO NOT touch user general status; only remove ACCOUNTANT from roles
+        let roles = Array.isArray(user.roles) ? [...user.roles] : [user.role];
+        roles = roles.filter((r) => r !== "ACCOUNTANT");
+        if (!roles.includes("RESIDENT")) roles.push("RESIDENT");
+        const nextRole = user.role === "ACCOUNTANT" ? "RESIDENT" : user.role;
+        await user.update({ roles, role: nextRole });
+      } else {
+        await user.update({ status: "INACTIVE" });
+      }
+
+      return res.json({
+        message: "Accountant deactivated successfully",
+        status: "INACTIVE",
+        inactive_date: assignment.inactive_date,
+      });
+    } else {
+      // Activating
+      if (assignment.is_society_resident) {
+        const roles = Array.isArray(user.roles) ? [...user.roles] : [user.role];
+        if (roles.includes("COMMITTEE_MEMBER") || user.role === "COMMITTEE_MEMBER") {
+          return res.status(400).json({
+            message: "Resident is currently a Committee Member. Cannot activate accountant role without removing committee membership first.",
+          });
+        }
+        if (!roles.includes("ACCOUNTANT")) roles.push("ACCOUNTANT");
+        await user.update({ roles });
+      } else {
+        await user.update({ status: "ACTIVE" });
+      }
+
+      await assignment.update({
+        status: "ACTIVE",
+        inactive_date: null,
+      });
+
+      return res.json({
+        message: "Accountant activated successfully",
+        status: "ACTIVE",
+        inactive_date: null,
+      });
+    }
   } catch (err) {
+    console.error("toggleAccountantStatus error:", err);
     res.status(500).json({ message: err.message });
   }
+};
+
+/* =====
+   ACCOUNTANT — DELETE / DISABLE FALLBACK
+   ===== */
+const deleteAccountant = async (req, res) => {
+  return toggleAccountantStatus(req, res);
 };
 
 /* =====
@@ -1673,10 +2020,27 @@ const promoteToCommittee = async (req, res) => {
     const { userId } = req.body;
     const user = await User.findByPk(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
-    if (user.role !== "RESIDENT")
+    if (user.role !== "RESIDENT" && !user.roles?.includes("RESIDENT"))
       return res.status(400).json({ message: "Only residents can be promoted to committee member" });
 
     let roles = Array.isArray(user.roles) && user.roles.length > 0 ? [...user.roles] : ["RESIDENT"];
+
+    // Rule: Cannot be both accountant and committee member
+    if (roles.includes("ACCOUNTANT") || user.role === "ACCOUNTANT") {
+      return res.status(400).json({
+        message: "Resident is currently an Accountant. A resident can only be an Accountant or Committee Member, not both simultaneously.",
+      });
+    }
+
+    const activeAccAssignment = await AccountantAssignment.findOne({
+      where: { user_id: userId, status: "ACTIVE" },
+    });
+    if (activeAccAssignment) {
+      return res.status(400).json({
+        message: "Resident has an active Accountant assignment. Please deactivate accountant role first before adding to committee.",
+      });
+    }
+
     if (!roles.includes("COMMITTEE_MEMBER")) roles.push("COMMITTEE_MEMBER");
 
     await user.update({ roles, role: "COMMITTEE_MEMBER" });
@@ -1965,7 +2329,10 @@ module.exports = {
   getMyFlat,
   deleteGuard,
   createAccountant,
+  appointResidentAccountant,
+  getEligibleAccountantResidents,
   updateAccountant,
+  toggleAccountantStatus,
   deleteAccountant,
   getAccountant,
   getMyProfile,

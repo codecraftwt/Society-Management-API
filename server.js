@@ -230,8 +230,60 @@ sequelize
         await sequelize.query("ALTER TABLE notices ADD COLUMN acknowledgement_required TINYINT(1) NOT NULL DEFAULT 0");
         console.log("[DB Migration] Added notices.acknowledgement_required");
       }
+      if (!noticeCols.has("created_by_user_id")) {
+        await sequelize.query("ALTER TABLE notices ADD COLUMN created_by_user_id INT NULL");
+        console.log("[DB Migration] Added notices.created_by_user_id");
+      }
+      if (!noticeCols.has("created_by_name")) {
+        await sequelize.query("ALTER TABLE notices ADD COLUMN created_by_name VARCHAR(255) NULL");
+        console.log("[DB Migration] Added notices.created_by_name");
+      }
+      if (!noticeCols.has("created_by_role")) {
+        await sequelize.query("ALTER TABLE notices ADD COLUMN created_by_role VARCHAR(50) NULL");
+        console.log("[DB Migration] Added notices.created_by_role");
+      }
     } catch (err) {
-      console.log("[DB Migration] Note adding notices.acknowledgement_required:", err.message);
+      console.log("[DB Migration] Note adding notices columns:", err.message);
+    }
+
+    try {
+      const userCols = await sequelize
+        .query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'")
+        .then(([rows]) => new Set(rows.map((r) => r.COLUMN_NAME)));
+      if (!userCols.has("approved_by_user_id")) {
+        await sequelize.query("ALTER TABLE users ADD COLUMN approved_by_user_id INT NULL");
+        console.log("[DB Migration] Added users.approved_by_user_id");
+      }
+      if (!userCols.has("approved_by_name")) {
+        await sequelize.query("ALTER TABLE users ADD COLUMN approved_by_name VARCHAR(255) NULL");
+        console.log("[DB Migration] Added users.approved_by_name");
+      }
+      if (!userCols.has("approved_by_role")) {
+        await sequelize.query("ALTER TABLE users ADD COLUMN approved_by_role VARCHAR(50) NULL");
+        console.log("[DB Migration] Added users.approved_by_role");
+      }
+      if (!userCols.has("approved_at")) {
+        await sequelize.query("ALTER TABLE users ADD COLUMN approved_at DATETIME NULL");
+        console.log("[DB Migration] Added users.approved_at");
+      }
+    } catch (err) {
+      console.log("[DB Migration] Note adding users approval columns:", err.message);
+    }
+
+    try {
+      const accCols = await sequelize
+        .query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'accountant_assignments'")
+        .then(([rows]) => new Set(rows.map((r) => r.COLUMN_NAME)));
+      if (!accCols.has("is_from_society")) {
+        await sequelize.query("ALTER TABLE accountant_assignments ADD COLUMN is_from_society TINYINT(1) NOT NULL DEFAULT 0");
+        console.log("[DB Migration] Added accountant_assignments.is_from_society");
+      }
+      if (!accCols.has("updated_by")) {
+        await sequelize.query("ALTER TABLE accountant_assignments ADD COLUMN updated_by INT NULL");
+        console.log("[DB Migration] Added accountant_assignments.updated_by");
+      }
+    } catch (err) {
+      console.log("[DB Migration] Note adding accountant_assignments columns:", err.message);
     }
 
     try {
@@ -252,8 +304,33 @@ sequelize
 
     return sequelize.sync();
   })
-  .then(() => {
+  .then(async () => {
     console.log("All models synced");
+
+    // Backfill AccountantAssignment for existing accountants
+    try {
+      const { User, AccountantAssignment } = db;
+      const allUsers = await User.findAll();
+      for (const u of allUsers) {
+        const uRoles = Array.isArray(u.roles) && u.roles.length > 0 ? u.roles : [u.role];
+        if (uRoles.includes("ACCOUNTANT") && u.society_id) {
+          const exists = await AccountantAssignment.findOne({ where: { user_id: u.id } });
+          if (!exists) {
+            await AccountantAssignment.create({
+              user_id: u.id,
+              society_id: u.society_id,
+              is_society_resident: Boolean(uRoles.includes("RESIDENT") || u.role === "RESIDENT"),
+              start_date: u.created_at || new Date(),
+              status: u.status === "INACTIVE" ? "INACTIVE" : "ACTIVE",
+              inactive_date: u.status === "INACTIVE" ? (u.updated_at || new Date()) : null,
+            });
+            console.log(`[DB Migration] Backfilled AccountantAssignment for user ${u.id} (${u.name})`);
+          }
+        }
+      }
+    } catch (err) {
+      console.log("[DB Migration] Note on AccountantAssignment backfill:", err.message);
+    }
 
     // Start OTP cleanup AFTER DB is ready
     startOtpCleanup();

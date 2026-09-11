@@ -6,6 +6,7 @@ const {
   createParkingSlots,
   getParkingSlots,
   getAvailableSlots,  
+  updateParkingSlot,
   deleteParkingSlot,
   revokeSlotAssignment,
   getMyAllocatedSlots,
@@ -33,11 +34,9 @@ router.get(
 router.post(
   "/revoke",
   auth,
-  role("SOCIETY_ADMIN", "SUPER_ADMIN"),
+  role("SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER"),
   revokeSlotAssignment
 );
-
-/* ======
 
 /* ======
    CREATE SLOT → SOCIETY_ADMIN ONLY
@@ -50,13 +49,23 @@ router.post(
 );
 
 /* ======
-   VIEW SLOTS → GUARD + SOCIETY_ADMIN
+   VIEW SLOTS → GUARD + SOCIETY_ADMIN + COMMITTEE_MEMBER
 ====== */
 router.get(
   "/",
   auth,
-  role("GUARD", "SOCIETY_ADMIN", "SUPER_ADMIN"),
+  role("GUARD", "SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER"),
   getParkingSlots
+);
+
+/* ======
+   UPDATE SLOT → SOCIETY_ADMIN
+====== */
+router.put(
+  "/:id",
+  auth,
+  role("SOCIETY_ADMIN", "SUPER_ADMIN"),
+  updateParkingSlot
 );
 
 /* ======

@@ -170,6 +170,22 @@ const User = sequelize.define(
       allowNull: true,
       defaultValue: null,
     },
+    approved_by_user_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    approved_by_name: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    approved_by_role: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    approved_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
   },
   {
     tableName: "users",

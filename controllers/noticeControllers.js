@@ -33,12 +33,16 @@ const createNotice = async (req, res) => {
       return res.status(400).json({ message: "Please select a valid society to publish this notice." });
     }
 
+    const callerRole = req.user.activeRole || req.user.role;
     const notice = await Notice.create({
       title,
       description,
       society_id: targetSocietyId,
       file_url: fileUrl,
       acknowledgement_required: isAckRequired,
+      created_by_user_id: req.user.id,
+      created_by_name: req.user.name || (callerRole === "COMMITTEE_MEMBER" ? "Committee Member" : "Society Admin"),
+      created_by_role: callerRole,
     });
 
     // Emit to society room for real-time notice board update
@@ -123,6 +127,15 @@ const updateNotice = async (req, res) => {
       return res.status(403).json({ message: "Access denied" });
     }
 
+    const callerRole = req.user.activeRole || req.user.role;
+    if (callerRole === "COMMITTEE_MEMBER") {
+      const isCreatedByAdmin = notice.created_by_role === "SOCIETY_ADMIN" || notice.created_by_role === "SUPER_ADMIN" || !notice.created_by_role;
+      const isDifferentUser = notice.created_by_user_id && Number(notice.created_by_user_id) !== Number(req.user.id);
+      if (isCreatedByAdmin || isDifferentUser) {
+        return res.status(403).json({ message: "Committee members cannot modify Admin-created notices" });
+      }
+    }
+
     let fileUrl = notice.file_url;
     if (req.file) {
       const originalName = encodeURIComponent(req.file.originalname);
@@ -159,6 +172,15 @@ const deleteNotice = async (req, res) => {
 
     if (req.user.role !== "SUPER_ADMIN" && String(notice.society_id) !== String(req.user.society_id)) {
       return res.status(403).json({ message: "Access denied" });
+    }
+
+    const callerRole = req.user.activeRole || req.user.role;
+    if (callerRole === "COMMITTEE_MEMBER") {
+      const isCreatedByAdmin = notice.created_by_role === "SOCIETY_ADMIN" || notice.created_by_role === "SUPER_ADMIN" || !notice.created_by_role;
+      const isDifferentUser = notice.created_by_user_id && Number(notice.created_by_user_id) !== Number(req.user.id);
+      if (isCreatedByAdmin || isDifferentUser) {
+        return res.status(403).json({ message: "Committee members cannot delete Admin-created notices" });
+      }
     }
 
     await NoticeAcknowledgement.destroy({ where: { notice_id: id } });

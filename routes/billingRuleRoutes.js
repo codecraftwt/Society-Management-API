@@ -10,7 +10,7 @@ const {
 } = require("../controllers/billingRuleControllers");
 
 router.get("/", auth, role("SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getBillingRules);
-router.post("/", auth, role("SOCIETY_ADMIN", "COMMITTEE_MEMBER"), createBillingRule);
-router.delete("/:id", auth, role("SOCIETY_ADMIN", "COMMITTEE_MEMBER"), deleteBillingRule);
+router.post("/", auth, role("SOCIETY_ADMIN"), createBillingRule);
+router.delete("/:id", auth, role("SOCIETY_ADMIN"), deleteBillingRule);
 
 module.exports = router;

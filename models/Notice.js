@@ -8,6 +8,9 @@ const Notice = sequelize.define("Notice", {
   description: { type: DataTypes.TEXT },
   file_url: { type: DataTypes.STRING, allowNull: true },
   acknowledgement_required: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  created_by_user_id: { type: DataTypes.INTEGER, allowNull: true },
+  created_by_name: { type: DataTypes.STRING, allowNull: true },
+  created_by_role: { type: DataTypes.STRING, allowNull: true },
 }, {
   tableName: "notices",
   timestamps: true,

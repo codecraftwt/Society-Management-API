@@ -1,4 +1,4 @@
-const { Op } = require("sequelize");
+const { Op, Sequelize } = require("sequelize");
 const {
   MaintenanceRate,
   Bill,
@@ -675,24 +675,118 @@ const generateBills = async (req, res) => {
    LIST GENERATED MAINTENANCE BILLS
    GET /maintenance/bills
 ───────────────────────────────────────── */
+const monthYearToDate = (s) => {
+  if (!s) return null;
+  const mm = String(s).trim().match(/^([A-Za-z]+)\s+(\d{4})$/);
+  if (!mm) return null;
+  const month = new Date(`${mm[1]} 1, ${mm[2]}`).getMonth();
+  if (Number.isNaN(month) || month < 0) return null;
+  return new Date(Date.UTC(Number(mm[2]), month, 1));
+};
+
 const listBills = async (req, res) => {
   try {
-    const { billing_month, status } = req.query;
+    const {
+      billing_month,
+      status,
+      from_month,
+      to_month,
+      from_date,
+      to_date,
+      date_field,
+      maintenance_type,
+      type: queryType,
+      rate_id,
+      maintenance_rate_id,
+      flat_type,
+    } = req.query;
+
     const where = { type: "MAINTENANCE" };
     const rateWhere = { society_id: req.user.society_id };
+
+    let selectedType = maintenance_type || (queryType && queryType !== "MAINTENANCE" ? queryType : undefined);
+    let selectedRateId = rate_id || maintenance_rate_id;
+
+    if (selectedType && typeof selectedType === "string" && selectedType.startsWith("rate:")) {
+      selectedRateId = Number(selectedType.replace("rate:", ""));
+      selectedType = undefined;
+    }
+
+    if (selectedRateId) {
+      where.maintenance_rate_id = selectedRateId;
+    }
+
+    if (selectedType) {
+      if (["LUMPSUM", "SQ_FEET", "FLAT"].includes(selectedType)) {
+        rateWhere.maintenance_type = selectedType;
+      } else {
+        rateWhere[Op.or] = [
+          { maintenance_type: selectedType },
+          { flat_type: selectedType },
+          { name: selectedType },
+        ];
+      }
+    }
+
+    if (flat_type) {
+      rateWhere.flat_type = flat_type;
+    }
 
     if (billing_month) where.billing_month = billing_month;
     if (status) where.status = status;
 
+    // Exact Day/Date range filter (e.g. YYYY-MM-DD)
+    if (from_date || to_date) {
+      const col = date_field === "due_date" ? "due_date" : "created_at";
+      const dateRange = {};
+      if (from_date) {
+        const start = new Date(from_date);
+        start.setHours(0, 0, 0, 0);
+        dateRange[Op.gte] = start;
+      }
+      if (to_date) {
+        const end = new Date(to_date);
+        end.setHours(23, 59, 59, 999);
+        dateRange[Op.lte] = end;
+      }
+      where[col] = dateRange;
+    } else {
+      // Month-Year range filter
+      const fromDate = monthYearToDate(from_month);
+      const toDate = monthYearToDate(to_month);
+      if (fromDate || toDate) {
+        const expr = Sequelize.fn("STR_TO_DATE", Sequelize.col("billing_month"), "%M %Y");
+        const range = [];
+        if (fromDate) range.push(Sequelize.where(expr, { [Op.gte]: fromDate }));
+        if (toDate) range.push(Sequelize.where(expr, { [Op.lte]: toDate }));
+        where[Op.and] = [...(where[Op.and] || []), ...range];
+      }
+    }
+
+    const hasRateFilter = Boolean(selectedType || selectedRateId || flat_type);
+
     const bills = await Bill.findAll({
       where,
-      attributes: ["id", "flat_id", "title", "amount", "billing_month", "due_date", "status", "type", "maintenance_rate_id", "calculation_details", "created_at"],
+      attributes: [
+        "id",
+        "flat_id",
+        "title",
+        "amount",
+        "billing_month",
+        "issue_date",
+        "due_date",
+        "status",
+        "type",
+        "maintenance_rate_id",
+        "calculation_details",
+        "created_at",
+      ],
       include: [
         {
           model: MaintenanceRate,
           as: "rate",
           attributes: ["id", "name", "maintenance_type", "flat_type", "amount", "rate_per_sqft"],
-          required: true,
+          required: hasRateFilter,
           where: rateWhere,
         },
         {
