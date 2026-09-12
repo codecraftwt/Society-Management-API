@@ -8,7 +8,7 @@ const seedSuperAdmin = async () => {
     await sequelize.authenticate();
     await sequelize.sync();
 
-    const existing = await User.findOne({ where: { email: "superadmin@yopmail.com" } });
+    const existing = await User.findOne({ where: { email: "superadmin@society.com" } });
     if (existing) {
       console.log("ℹ️  Super Admin already exists (id:", existing.id, "). Skipping seed.");
       process.exit(0);
@@ -18,7 +18,7 @@ const seedSuperAdmin = async () => {
 
     const superAdmin = await User.create({
       name: "Super Admin",
-      email: "superadmin@yopmail.com",
+      email: "superadmin@society.com",
       password: hashedPass,
       role: "SUPER_ADMIN",
       roles: ["SUPER_ADMIN"],

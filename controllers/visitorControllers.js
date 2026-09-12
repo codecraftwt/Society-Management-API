@@ -252,14 +252,24 @@ const getSocietyVisitors = async (req, res) => {
     const filter = req.query.filter || "ALL";
     const search = req.query.search || "";
     const { society_id, block_id, floor_id, flat_id } = req.query;
+    const purpose = String(req.query.purpose || "").toUpperCase();
+    const PURPOSE_VALUES = ["MAINTENANCE", "DELIVERY", "GUEST", "CAB", "SERVICE", "OTHER"];
+    const purposeFilter = PURPOSE_VALUES.includes(purpose) ? { purpose } : {};
 
     const activeSocId = req.user.society_id || society_id;
-    const where = {};
+    const where = { ...purposeFilter };
     if (activeSocId) where.society_id = activeSocId;
 
     if (filter === "IN")  where.exit_time = null;
     if (filter === "OUT") where.exit_time = { [Op.ne]: null };
-    if (search)           where.visitor_name = { [Op.like]: `%${search}%` };
+    if (search) {
+      const q = `%${search}%`;
+      where[Op.or] = [
+        { visitor_name: { [Op.like]: q } },
+        { vehicle_number: { [Op.like]: q } },
+        { mobile: { [Op.like]: q } },
+      ];
+    }
 
     if (flat_id) where.flat_id = flat_id;
 
@@ -267,11 +277,16 @@ const getSocietyVisitors = async (req, res) => {
     if (block_id) flatWhere.block_id = block_id;
     if (floor_id) flatWhere.floor_id = floor_id;
 
+    const countWhere = {
+      ...purposeFilter,
+      society_id: activeSocId || { [Op.ne]: null },
+    };
+
     /* ── Count breakdown for stat pills (ALL / IN / OUT) ── */
     const [allCount, inCount, outCount] = await Promise.all([
-      VisitorLog.count({ where: { society_id: activeSocId || { [Op.ne]: null } } }),
-      VisitorLog.count({ where: { society_id: activeSocId || { [Op.ne]: null }, exit_time: null } }),
-      VisitorLog.count({ where: { society_id: activeSocId || { [Op.ne]: null }, exit_time: { [Op.ne]: null } } }),
+      VisitorLog.count({ where: countWhere }),
+      VisitorLog.count({ where: { ...countWhere, exit_time: null } }),
+      VisitorLog.count({ where: { ...countWhere, exit_time: { [Op.ne]: null } } }),
     ]);
 
     const { count, rows } = await VisitorLog.findAndCountAll({

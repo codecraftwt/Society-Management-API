@@ -104,7 +104,9 @@ const seed = async () => {
       if (userCount > 0) {
         console.log("ℹ️  Demo data already exists (Society id:", existing.id, "| Users:", userCount, "). Skipping seed.");
         console.log("── LOGIN CREDENTIALS (password: Admin@123) ──");
-        console.log("Super Admin  → superadmin@yopmail.com  (password: 123456)");
+        console.log("Super Admin  → superadmin@society.com  (password: 123456)");
+        console.log("Admin        → superadmin@yopmail.com");
+        console.log("Admin        → admin@yopmail.com");
         console.log("Admin        → societyadmin32@yopmail.com");
         console.log("Committee    → committee@yopmail.com");
         console.log("Guard        → guard@yopmail.com");
@@ -165,6 +167,24 @@ const seed = async () => {
       approval_status: "APPROVED",
       status: "ACTIVE",
     });
+
+    const extraAdminAttrs = {
+      name: "Society Admin",
+      email: "superadmin@yopmail.com",
+      phone: "9876500099",
+      password: PASSWORD,
+      role: "SOCIETY_ADMIN",
+      roles: ["SOCIETY_ADMIN", "RESIDENT"],
+      society_id: society.id,
+      approval_status: "APPROVED",
+      status: "ACTIVE",
+    };
+    const extraAdmin = await User.findOne({ where: { email: extraAdminAttrs.email } });
+    if (extraAdmin) {
+      await extraAdmin.update(extraAdminAttrs);
+    } else {
+      await User.create(extraAdminAttrs);
+    }
 
     const committee = await User.create({
       name: "Priya Nair",
@@ -615,6 +635,8 @@ const seed = async () => {
     console.log("Residents:", RESIDENTS.length, "| Guards:", 2, "| Accountant: 1 | Committee: 1");
     console.log("Bills:", billRows.length, "| Complaints:", complaintRows.length, "| Visitors: 5 | Amenities: 4\n");
     console.log("── LOGIN CREDENTIALS (password: Admin@123) ──");
+    console.log("Admin       → superadmin@yopmail.com");
+    console.log("Admin       → admin@yopmail.com");
     console.log("Admin       → societyadmin32@yopmail.com");
     console.log("Committee   → committee@yopmail.com");
     console.log("Guard       → guard@yopmail.com");

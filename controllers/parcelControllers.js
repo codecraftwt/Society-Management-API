@@ -303,6 +303,8 @@ const getParcels = async (req, res) => {
     const page   = Math.max(parseInt(req.query.page)  || 1, 1);
     const limit  = Math.max(parseInt(req.query.limit) || 5, 1);
     const offset = (page - 1) * limit;
+    const status = String(req.query.status || "ALL").toUpperCase();
+    const search = String(req.query.search || "").trim();
 
     const whereClause = { society_id };
 
@@ -325,8 +327,16 @@ const getParcels = async (req, res) => {
       whereClause.flat_id = { [Op.in]: userFlatIds };
     }
 
+    const listWhere = { ...whereClause };
+    if (["EXPECTED", "AT_GATE", "COLLECTED", "CANCELLED"].includes(status)) {
+      listWhere.status = status;
+    }
+    if (search) {
+      listWhere.courier_name = { [Op.like]: `%${search}%` };
+    }
+
     const { count, rows } = await Parcel.findAndCountAll({
-      where: whereClause,
+      where: listWhere,
       include: [
         {
           model: Flat,
@@ -354,10 +364,11 @@ const getParcels = async (req, res) => {
       raw: true,
     });
 
-    const counts = { EXPECTED: 0, AT_GATE: 0, COLLECTED: 0, CANCELLED: 0, ALL: count };
+    const counts = { EXPECTED: 0, AT_GATE: 0, COLLECTED: 0, CANCELLED: 0, ALL: 0 };
     statusRows.forEach((r) => {
       if (Object.prototype.hasOwnProperty.call(counts, r.status)) counts[r.status] = Number(r.cnt) || 0;
     });
+    counts.ALL = counts.EXPECTED + counts.AT_GATE + counts.COLLECTED + counts.CANCELLED;
 
     res.json({
       data: rows,
