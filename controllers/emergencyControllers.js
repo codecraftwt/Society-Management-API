@@ -173,14 +173,17 @@ const createEmergency = async (req, res) => {
       }
     }
 
-    // 2. Notify Admins
+    // 2. Notify Admins & Committee Members
+    const adminRoles = ["SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ADMIN"];
     const admins = await User.findAll({
-      where: { society_id: payload.society_id, role: "SOCIETY_ADMIN" },
+      where: {
+        society_id: payload.society_id,
+        role: { [Op.in]: adminRoles }
+      },
       attributes: ['id', 'fcm_token']
     });
 
     for (const admin of admins) {
-
       const notification = await Notification.create({
         society_id: payload.society_id,
         receiver_user_id: admin.id,
@@ -208,7 +211,7 @@ const createEmergency = async (req, res) => {
       }
     }
 
-    // 3. Notify Neighbors
+    // 3. Notify Residents
     if (roles.includes("RESIDENT") || roles.includes("FAMILY_MEMBER")) {
       const neighbors = await User.findAll({
         where: {
@@ -242,6 +245,43 @@ const createEmergency = async (req, res) => {
             neighbor.fcm_token,
             alertTitle,
             neighborBody,
+            { route: "/resident/emergency", type: "EMERGENCY", alertId: String(emergency.id) }
+          ).catch(err => console.error("Push Error:", err));
+        }
+      }
+    } else if (roles.includes("GUARD")) {
+      // Guard raised emergency: Notify all residents in the society
+      const residents = await User.findAll({
+        where: {
+          society_id: payload.society_id,
+          role: { [Op.in]: ["RESIDENT", "FAMILY_MEMBER"] },
+        },
+        attributes: ['id', 'fcm_token']
+      });
+
+      const guardAlertBody = `🚨 Guard SOS Alert: ${payload.type} reported at Security Gate. ${payload.message || ''}`;
+
+      for (const resUser of residents) {
+        const notification = await Notification.create({
+          society_id: payload.society_id,
+          receiver_user_id: resUser.id,
+          title: `🚨 GATE EMERGENCY: ${payload.type}`,
+          message: guardAlertBody,
+          type: "EMERGENCY",
+          action_type: "VIEW_EMERGENCY",
+          action_route: "/resident/emergency",
+          is_read: false
+        });
+
+        if (global.io) {
+          global.io.to(`user_${resUser.id}`).emit("new_notification", notification);
+        }
+
+        if (resUser.fcm_token) {
+          sendPushNotification(
+            resUser.fcm_token,
+            `🚨 GATE EMERGENCY: ${payload.type}`,
+            guardAlertBody,
             { route: "/resident/emergency", type: "EMERGENCY", alertId: String(emergency.id) }
           ).catch(err => console.error("Push Error:", err));
         }

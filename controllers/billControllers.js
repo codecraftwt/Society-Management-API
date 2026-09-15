@@ -22,13 +22,28 @@ const todayIso = () => new Date().toISOString().slice(0, 10);
 ===== */
 const createBill = async (req, res) => {
   try {
-    const { flat_id, title, amount, billing_month, bill_type, issue_date, last_pay_date } = req.body;
+    const { 
+      flat_id, 
+      title, 
+      amount, 
+      billing_month, 
+      bill_type, 
+      flat_type, 
+      bill_category, 
+      other_bill_type, 
+      issue_date, 
+      last_pay_date 
+    } = req.body;
+
+    const targetFlatType = (flat_type || bill_type || "INDIVIDUAL").toUpperCase();
+    const finalCategory = (bill_category || "OTHER").toUpperCase();
+    const finalOtherType = finalCategory === "OTHER" ? (other_bill_type || null) : null;
 
     const finalIssueDate = issue_date || todayIso();
     const finalDueDate = last_pay_date || addDays(30);
 
     /* ==== INDIVIDUAL BILL ==== */
-    if (bill_type === "INDIVIDUAL") {
+    if (targetFlatType === "INDIVIDUAL") {
 
       const flat = await Flat.findByPk(flat_id);
 
@@ -51,6 +66,8 @@ const createBill = async (req, res) => {
         title,
         amount,
         billing_month,
+        bill_category: finalCategory,
+        other_bill_type: finalOtherType,
         issue_date: finalIssueDate,
         due_date: finalDueDate,
         last_pay_date: finalDueDate,
@@ -103,7 +120,7 @@ const createBill = async (req, res) => {
     }
 
     /* ==== ALL FLATS BILL ==== */
-    if (bill_type === "ALL") {
+    if (targetFlatType === "ALL") {
 
       // Only bill owner-occupied flats — exclude RENTED (tenant) flats
       const flats = await Flat.findAll({
@@ -127,6 +144,8 @@ const createBill = async (req, res) => {
           title,
           amount,
           billing_month,
+          bill_category: finalCategory,
+          other_bill_type: finalOtherType,
           issue_date: finalIssueDate,
           due_date: finalDueDate,
           last_pay_date: finalDueDate,

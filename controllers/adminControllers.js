@@ -438,18 +438,24 @@ exports.rejectResident = async (req, res) => {
 
 
 /* =====
-    TENANT HISTORY — Full list of tenants (current + past) for society
-    GET /admin/tenant-history?status=living|removed|expired|all
+    TENANT HISTORY — Full list of tenants (current + past + pending) for society
+    GET /admin/tenant-history?status=living|removed|expired|pending|rejected|all
     ===== */
 exports.getTenantHistory = async (req, res) => {
   try {
     const { Op } = require("sequelize");
+    const UserDocuments = require("../models/UserDocuments");
     const status = req.query.status || "all"; // all, living, removed, expired, pending, approved, rejected
     const societyId = req.user.society_id;
 
     // 1. Fetch ALL tenant FlatMemberships for this society
     const memberships = await FlatMembership.findAll({
-      where: { role: "TENANT" },
+      where: {
+        [Op.or]: [
+          { role: "TENANT" },
+          { role: "tenant" },
+        ],
+      },
       include: [
         {
           model: User,
@@ -458,6 +464,7 @@ exports.getTenantHistory = async (req, res) => {
             "approved_by_user_id", "approved_by_name", "approved_by_role", "approved_at"
           ],
           where: { society_id: societyId },
+          include: [{ model: UserDocuments, required: false }],
         },
         {
           model: Flat,
@@ -474,7 +481,7 @@ exports.getTenantHistory = async (req, res) => {
     });
 
     // 2. Fetch owner info for each flat
-    const flatIds = [...new Set(memberships.map(m => m.flat_id))];
+    const flatIds = [...new Set(memberships.map(m => m.flat_id).filter(Boolean))];
     const ownerMemberships = flatIds.length > 0
       ? await FlatMembership.findAll({
           where: { flat_id: { [Op.in]: flatIds }, role: "OWNER", is_current: true },
@@ -484,40 +491,26 @@ exports.getTenantHistory = async (req, res) => {
 
     const ownerMap = {};
     for (const om of ownerMemberships) {
-      if (!ownerMap[om.flat_id]) {
+      if (!ownerMap[om.flat_id] && om.User) {
         ownerMap[om.flat_id] = { id: om.User.id, name: om.User.name, email: om.User.email };
       }
     }
 
-    // 3. For rejected tenants, also find users who have a rejected approval_status
-    //    but whose FlatMembership was destroyed (rejectResident destroys memberships)
-    const rejectedUsers = await User.findAll({
-      where: {
-        society_id: societyId,
-        resident_type: "TENANT",
-        approval_status: "REJECTED",
-      },
-      attributes: [
-        "id", "name", "email", "phone", "approval_status", "status", "resident_type",
-        "approved_by_user_id", "approved_by_name", "approved_by_role", "approved_at"
-      ],
-    });
-
-    const rejectedUserIds = rejectedUsers.map(u => u.id);
-
-    // 3. Build the full tenant list
+    // 3. Build the initial tenant list from memberships
     let results = [];
 
     for (const m of memberships) {
       const user = m.User;
+      if (!user) continue;
       const flat = m.Flat;
       const bName = flat?.Block?.name || flat?.Floor?.Block?.name || "";
       const fNum = flat?.flat_number || "";
       const flatLabel = bName ? `${fNum} - ${bName}` : fNum;
 
+      const appStatus = (user.approval_status || "").toUpperCase();
       let statusLabel = "UNKNOWN";
-      if (user.approval_status === "PENDING") statusLabel = "PENDING";
-      else if (user.approval_status === "REJECTED") statusLabel = "REJECTED";
+      if (appStatus === "PENDING") statusLabel = "PENDING";
+      else if (appStatus === "REJECTED") statusLabel = "REJECTED";
       else if (m.is_current && (!m.move_out_date || new Date(m.move_out_date) > new Date())) statusLabel = "LIVING";
       else if (m.is_current && m.move_out_date && new Date(m.move_out_date) <= new Date()) statusLabel = "EXPIRED";
       else if (!m.is_current) statusLabel = "REMOVED";
@@ -526,13 +519,14 @@ exports.getTenantHistory = async (req, res) => {
       const owner = ownerMap[flat?.id] || null;
 
       results.push({
+        id: user.id,
         tenant_id: user.id,
         tenant_name: user.name,
         tenant_email: user.email,
         tenant_phone: user.phone,
         approval_status: user.approval_status,
         user_status: user.status,
-        resident_type: user.resident_type,
+        resident_type: user.resident_type || "TENANT",
         approved_by_user_id: user.approved_by_user_id,
         approved_by_name: user.approved_by_name,
         approved_by_role: user.approved_by_role,
@@ -542,52 +536,100 @@ exports.getTenantHistory = async (req, res) => {
         flat_label: flatLabel,
         flat_type: flat?.flat_type || null,
         block_name: bName,
+        floor_number: flat?.Floor?.floor_number !== undefined ? flat.Floor.floor_number : null,
         occupancy_status: flat?.occupancy_status,
         membership_role: m.role,
         is_staying: m.is_staying,
         is_current: m.is_current,
         move_in_date: m.move_in_date,
         move_out_date: m.move_out_date,
-        membership_created: m.created_at,
+        membership_created: m.createdAt || m.created_at,
         status_label: statusLabel,
         owner_name: owner?.name || null,
         owner_email: owner?.email || null,
+        UserDocuments: user.UserDocument || user.UserDocuments || null,
+        documents: user.UserDocument || user.UserDocuments || null,
       });
     }
 
-    // 4. Add rejected tenants whose memberships were destroyed
-    for (const u of rejectedUsers) {
-      // Skip if already in results (membership still exists)
+    // 4. Also fetch pending or unassigned tenants/residents so nothing is missed
+    const additionalUsers = await User.findAll({
+      where: {
+        society_id: societyId,
+        [Op.or]: [
+          { approval_status: "PENDING" },
+          { approval_status: "pending" },
+          { approval_status: "REJECTED" },
+          { approval_status: "rejected" },
+          { resident_type: "TENANT" },
+        ],
+      },
+      include: [
+        { model: UserDocuments, required: false },
+        {
+          model: Flat,
+          required: false,
+          include: [
+            { model: Floor, attributes: ["id", "floor_number"], required: false,
+              include: [{ model: Block, attributes: ["id", "name"], required: false }]
+            },
+            { model: Block, attributes: ["id", "name"], required: false },
+          ],
+        },
+      ],
+      attributes: [
+        "id", "name", "email", "phone", "approval_status", "status", "resident_type",
+        "approved_by_user_id", "approved_by_name", "approved_by_role", "approved_at"
+      ],
+    });
+
+    for (const u of additionalUsers) {
       if (results.some(r => r.tenant_id === u.id)) continue;
+      const flat = u.Flat;
+      const bName = flat?.Block?.name || flat?.Floor?.Block?.name || "";
+      const fNum = flat?.flat_number || "";
+      const flatLabel = bName ? `${fNum} - ${bName}` : fNum;
+
+      const appStatus = (u.approval_status || "").toUpperCase();
+      let statusLabel = "PENDING";
+      if (appStatus === "REJECTED") statusLabel = "REJECTED";
+      else if (appStatus === "APPROVED") statusLabel = "LIVING";
+      else statusLabel = "PENDING";
 
       results.push({
+        id: u.id,
         tenant_id: u.id,
         tenant_name: u.name,
         tenant_email: u.email,
         tenant_phone: u.phone,
-        approval_status: u.approval_status,
+        approval_status: u.approval_status || "PENDING",
         user_status: u.status,
-        resident_type: u.resident_type,
+        resident_type: u.resident_type || "TENANT",
         approved_by_user_id: u.approved_by_user_id,
         approved_by_name: u.approved_by_name,
         approved_by_role: u.approved_by_role,
         approved_at: u.approved_at,
-        flat_id: null,
-        flat_number: null,
-        flat_label: null,
-        flat_type: null,
-        block_name: null,
-        occupancy_status: null,
-        is_staying: false,
-        is_current: false,
+        flat_id: flat?.id || null,
+        flat_number: fNum || null,
+        flat_label: flatLabel || null,
+        flat_type: flat?.flat_type || null,
+        block_name: bName || null,
+        floor_number: flat?.Floor?.floor_number !== undefined ? flat.Floor.floor_number : null,
+        occupancy_status: flat?.occupancy_status || null,
+        is_staying: true,
+        is_current: true,
         move_in_date: null,
         move_out_date: null,
-        membership_created: null,
-        status_label: "REJECTED",
+        membership_created: u.created_at || null,
+        status_label: statusLabel,
+        owner_name: null,
+        owner_email: null,
+        UserDocuments: u.UserDocument || u.UserDocuments || null,
+        documents: u.UserDocument || u.UserDocuments || null,
       });
     }
 
-    // 5. Apply status filter
+    // 5. Apply status filter if requested
     if (status !== "all") {
       const statusUpper = status.toUpperCase();
       results = results.filter(r => r.status_label === statusUpper);

@@ -2290,24 +2290,60 @@ const renewTenantLease = async (req, res) => {
    ===== */
 const getPendingResidents = async (req, res) => {
   try {
+    const UserDocuments = require("../models/UserDocuments");
+    const FlatMembership = require("../models/FlatMembership");
+    const Flat = require("../models/Flat");
+    const Floor = require("../models/Floor");
+    const Block = require("../models/Block");
+    const { Op } = require("sequelize");
+
     const users = await User.findAll({
       where: {
         society_id: req.user.society_id,
-        approval_status: "PENDING",
-        resident_type: "TENANT",
+        [Op.or]: [
+          { approval_status: "PENDING" },
+          { approval_status: "pending" },
+          { approval_status: null, status: "INACTIVE" },
+        ],
       },
       include: [
-        { model: require("../models/UserDocuments"), required: false },
+        { model: UserDocuments, required: false },
         {
-          model: require("../models/FlatMembership"),
-          where: { is_current: true, role: "TENANT" },
-          include: [{ model: require("../models/Flat") }],
+          model: Flat,
           required: false,
+          include: [
+            {
+              model: Floor,
+              required: false,
+              include: [{ model: Block, required: false }],
+            },
+            { model: Block, required: false },
+          ],
+        },
+        {
+          model: FlatMembership,
+          required: false,
+          include: [
+            {
+              model: Flat,
+              required: false,
+              include: [
+                {
+                  model: Floor,
+                  required: false,
+                  include: [{ model: Block, required: false }],
+                },
+                { model: Block, required: false },
+              ],
+            },
+          ],
         },
       ],
+      order: [["id", "DESC"]],
     });
     res.json(users);
   } catch (err) {
+    console.error("Error in getPendingResidents:", err);
     res.status(500).json({ message: err.message });
   }
 };

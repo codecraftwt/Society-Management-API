@@ -127,6 +127,8 @@ sequelize
       .then(([rows]) => new Set(rows.map((r) => r.COLUMN_NAME)));
     const billColMigrations = [
       ["type", "ALTER TABLE bills ADD COLUMN type VARCHAR(50) NOT NULL DEFAULT 'BILL' AFTER status"],
+      ["bill_category", "ALTER TABLE bills ADD COLUMN bill_category VARCHAR(50) NOT NULL DEFAULT 'OTHER' AFTER status"],
+      ["other_bill_type", "ALTER TABLE bills ADD COLUMN other_bill_type VARCHAR(255) NULL AFTER bill_category"],
       ["maintenance_rate_id", "ALTER TABLE bills ADD COLUMN maintenance_rate_id INT NULL AFTER type"],
       ["calculation_details", "ALTER TABLE bills ADD COLUMN calculation_details TEXT NULL AFTER maintenance_rate_id"],
     ];
@@ -139,6 +141,16 @@ sequelize
           console.log(`[DB Migration] Note adding bills.${col}:`, err.message);
         }
       }
+    }
+
+    // Ensure role_permissions table is synced
+    try {
+      if (db.RolePermission) {
+        await db.RolePermission.sync();
+        console.log("[DB Migration] role_permissions table synced successfully");
+      }
+    } catch (err) {
+      console.log("[DB Migration] Note syncing role_permissions:", err.message);
     }
 
     // --- B) MaintenanceRates table: add new columns + backfill ---

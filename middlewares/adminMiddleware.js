@@ -6,7 +6,14 @@ module.exports = (req, res, next) => {
     return res.status(401).json({ message: "Not authenticated" });
   }
 
-  if (ADMIN_ROLES.includes(req.user.activeRole)) {
+  const activeRole = req.user.activeRole;
+  const userRoles = new Set(req.user.roles || []);
+  if (req.user.role) userRoles.add(req.user.role);
+  if (activeRole) userRoles.add(activeRole);
+  if (req.user.is_committee_member || req.user.is_committee) userRoles.add("COMMITTEE_MEMBER");
+
+  const hasAccess = ADMIN_ROLES.some((r) => userRoles.has(r));
+  if (hasAccess) {
     return next();
   }
 

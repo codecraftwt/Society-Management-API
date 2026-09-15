@@ -31,6 +31,7 @@ const FlatMembership = require("./FlatMembership");
 const BillingRule = require("./BillingRule");
 const MaintenanceRate = require("./MaintenanceRate");
 const AccountantAssignment = require("./AccountantAssignment");
+const RolePermission = require("./RolePermission");
 
 
 
@@ -380,6 +381,9 @@ AccountantAssignment.belongsTo(User, { foreignKey: "user_id", as: "user" });
 Society.hasMany(AccountantAssignment, { foreignKey: "society_id", as: "accountantAssignments" });
 AccountantAssignment.belongsTo(Society, { foreignKey: "society_id", as: "society" });
 
+Society.hasMany(RolePermission, { foreignKey: "society_id", as: "rolePermissions" });
+RolePermission.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
 module.exports = {
   sequelize,
   User,
@@ -413,4 +417,5 @@ module.exports = {
   BillingRule,
   MaintenanceRate,
   AccountantAssignment,
+  RolePermission,
 };

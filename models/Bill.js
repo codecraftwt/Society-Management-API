@@ -13,6 +13,16 @@ const Bill = sequelize.define("Bill", {
   status: { type: DataTypes.STRING(50), defaultValue: 'PENDING' },
   // Distinguish generated MAINTENANCE bills from regular BILL records.
   type: { type: DataTypes.STRING(50), defaultValue: 'BILL' },
+  // Category of bill: ELECTRICITY, WATER, GAS, PARKING, SECURITY, AMENITIES, OTHER
+  bill_category: { 
+    type: DataTypes.STRING(50), 
+    defaultValue: 'OTHER' 
+  },
+  // Custom description when bill_category is OTHER
+  other_bill_type: { 
+    type: DataTypes.STRING(100), 
+    allowNull: true 
+  },
   // Reference to the MaintenanceRates config that generated this maintenance bill.
   maintenance_rate_id: { type: DataTypes.INTEGER, allowNull: true },
   // Optional snapshot of how the amount was calculated at generation time.
