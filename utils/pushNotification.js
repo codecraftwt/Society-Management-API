@@ -51,26 +51,62 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
     }
   }
 
-  // ✅ Add title and body directly into the DATA block
+  // Determine notification type and channel
+  const type = String(stringifiedData.type || stringifiedData.alert_type || '').toUpperCase();
+  const actionType = String(stringifiedData.action_type || '').toUpperCase();
+  const isEmergency =
+    type === 'EMERGENCY' ||
+    type === 'SOS' ||
+    type === 'EMERGENCY_ALERT' ||
+    type === 'FIRE' ||
+    type === 'MEDICAL' ||
+    type === 'SECURITY' ||
+    type === 'GATE_PANIC' ||
+    actionType === 'VIEW_EMERGENCY';
+
+  const channelId = isEmergency ? 'emergency_channel_v3' : 'default_channel_id';
+
+  // Ensure title & body are inside stringifiedData
   stringifiedData.title = String(title);
   stringifiedData.body = String(body);
 
   const message = {
-    // ❌ REMOVED the 'notification' block. 
-    // This makes it a "Data-Only" message so Android doesn't auto-display it.
-    data: stringifiedData, 
+    // For EMERGENCY SOS alerts, omit top-level notification payload so Android delivers it as a high-priority data message directly to CustomFirebaseMessagingReceiver to trigger native buzzer & screen wake.
+    // For standard notifications (notices, bills), include top-level notification for default system tray presentation.
+    ...(isEmergency
+      ? {}
+      : {
+          notification: {
+            title: String(title),
+            body: String(body),
+          },
+        }),
+    data: stringifiedData,
     token: fcmToken,
     android: {
       priority: 'high',
+      ...(isEmergency
+        ? {}
+        : {
+            notification: {
+              channelId: channelId,
+              sound: 'default',
+              priority: 'high',
+              visibility: 'public',
+              defaultSound: true,
+              defaultVibrateTimings: true,
+            },
+          }),
     },
     apns: {
       payload: {
         aps: {
           'content-available': 1,
-          category: stringifiedData.type === 'GATE_APPROVAL' ? 'GATE_APPROVAL' : 'DEFAULT', 
-        }
-      }
-    }
+          sound: isEmergency ? 'sos_buzzer.wav' : 'default',
+          category: stringifiedData.type === 'GATE_APPROVAL' ? 'GATE_APPROVAL' : 'DEFAULT',
+        },
+      },
+    },
   };
 
   try {

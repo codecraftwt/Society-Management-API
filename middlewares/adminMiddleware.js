@@ -1,5 +1,5 @@
 
-const ADMIN_ROLES = ["SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER"];
+const ADMIN_ROLES = ["SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"];
 
 module.exports = (req, res, next) => {
   if (!req.user) {

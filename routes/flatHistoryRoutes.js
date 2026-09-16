@@ -11,8 +11,8 @@ const auth = require("../middlewares/authMiddleware");
 const role = require("../middlewares/roleMiddleware");
 
 // ✅ Specific routes BEFORE dynamic param route
-router.post("/move-in", auth, role("SOCIETY_ADMIN"), moveInResident);
-router.post("/move-out", auth, role("SOCIETY_ADMIN"), moveOutResident);
-router.get("/:flat_id", auth, role("SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER"), getFlatHistory);
+router.post("/move-in", auth, role("SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), moveInResident);
+router.post("/move-out", auth, role("SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), moveOutResident);
+router.get("/:flat_id", auth, role("SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), getFlatHistory);
 
 module.exports = router;

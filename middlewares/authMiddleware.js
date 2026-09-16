@@ -32,10 +32,13 @@ module.exports = async (req, res, next) => {
       ? user.roles
       : [user.role];
 
-    // 🔥 activeRole still from token (user-selected role)
-    const activeRole = decoded.activeRole && roles.includes(decoded.activeRole)
-      ? decoded.activeRole
-      : roles[0];
+    const reqActiveRole = req.headers["x-active-role"] || req.query.role;
+    let activeRole = decoded.activeRole;
+    if (reqActiveRole && (roles.includes(reqActiveRole.toUpperCase()) || ((reqActiveRole.toUpperCase() === "COMMITTEE_MEMBER" || reqActiveRole.toUpperCase() === "COMMITTEE") && (user.is_committee_member || user.is_committee || roles.includes("COMMITTEE_MEMBER"))))) {
+      activeRole = reqActiveRole.toUpperCase() === "COMMITTEE" ? "COMMITTEE_MEMBER" : reqActiveRole.toUpperCase();
+    } else if (!activeRole || !roles.includes(activeRole)) {
+      activeRole = roles[0];
+    }
 
     req.user = {
       ...user.toJSON(),

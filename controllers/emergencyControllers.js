@@ -56,8 +56,27 @@ const createEmergency = async (req, res) => {
   try {
     const user = req.user;
     const roles = Array.isArray(user.roles) ? user.roles : [user.role];
+    const activeRole = user.activeRole;
+
+    // Decide sender kind — active role wins over stacked roles
+    // (e.g. an admin who is also a resident raises as ADMIN from the admin panel)
+    const isActive = (r) => String(activeRole) === r;
+    let senderKind;
+    if (isActive("SUPER_ADMIN")) senderKind = "SUPER_ADMIN";
+    else if (isActive("GUARD")) senderKind = "GUARD";
+    else if (isActive("RESIDENT")) senderKind = "RESIDENT";
+    else if (isActive("FAMILY_MEMBER")) senderKind = "FAMILY_MEMBER";
+    else if (isActive("SOCIETY_ADMIN") || isActive("ADMIN")) senderKind = "ADMIN";
+    else if (isActive("COMMITTEE_MEMBER") || isActive("COMMITTEE")) senderKind = "COMMITTEE";
+    else if (roles.includes("GUARD")) senderKind = "GUARD";
+    else if (roles.includes("FAMILY_MEMBER")) senderKind = "FAMILY_MEMBER";
+    else if (roles.includes("SOCIETY_ADMIN") || roles.includes("ADMIN")) senderKind = "ADMIN";
+    else if (roles.includes("COMMITTEE_MEMBER") || roles.includes("COMMITTEE")) senderKind = "COMMITTEE";
+    else if (roles.includes("RESIDENT")) senderKind = "RESIDENT";
+    else senderKind = "RESIDENT";
+
     const payload = {
-      type: req.body.type,
+      type: req.body.type || "OTHER",
       message: req.body.message,
       society_id: user.society_id,
       status: "ACTIVE",
@@ -65,13 +84,38 @@ const createEmergency = async (req, res) => {
 
     let flatInfoStr = "";
 
-    if (roles.includes("GUARD")) {
+    if (senderKind === "GUARD") {
       payload.guard_id = user.id;
       payload.source = "GUARD";
     }
 
+    // ✅ SUPER_ADMIN — target society is chosen in the app (not bound to a profile society)
+    else if (senderKind === "SUPER_ADMIN") {
+      const societyId = parseInt(req.body.society_id, 10);
+      if (!societyId) {
+        return res.status(400).json({
+          message: "Super Admin must select a target society for the SOS alert"
+        });
+      }
+      payload.society_id = societyId;
+      payload.admin_id = user.id;
+      payload.source = "SUPER_ADMIN";
+    }
+
+    // ✅ SOCIETY_ADMIN / ADMIN
+    else if (senderKind === "ADMIN") {
+      payload.admin_id = user.id;
+      payload.source = "ADMIN";
+    }
+
+    // ✅ COMMITTEE_MEMBER
+    else if (senderKind === "COMMITTEE") {
+      payload.admin_id = user.id;
+      payload.source = "COMMITTEE";
+    }
+
     // ✅ RESIDENT (flat mandatory)
-    else if (roles.includes("RESIDENT")) {
+    else if (senderKind === "RESIDENT") {
 
       // Prefer client-provided flat_id (owner selecting from multiple flats),
       // fall back to auto-lookup for single-flat residents
@@ -103,7 +147,7 @@ const createEmergency = async (req, res) => {
     }
 
     // ✅ FAMILY MEMBER (flat optional)
-    else if (roles.includes("FAMILY_MEMBER")) {
+    else if (senderKind === "FAMILY_MEMBER") {
 
       // Prefer client-provided flat_id, fall back to auto-lookup
       const flatId = req.body.flat_id
@@ -132,8 +176,10 @@ const createEmergency = async (req, res) => {
       if (onShiftGuardId) payload.guard_id = onShiftGuardId;
     }
 
-    else {
-      payload.source = "RESIDENT";
+    // ✅ ADMIN / COMMITTEE / SUPER_ADMIN — route to the on-shift guard too
+    if (["ADMIN", "COMMITTEE", "SUPER_ADMIN"].includes(senderKind)) {
+      const onShiftGuardId = await getOnShiftGuardId(payload.society_id);
+      if (onShiftGuardId) payload.guard_id = onShiftGuardId;
     }
 
     const emergency = await EmergencyAlert.create(payload);
@@ -141,8 +187,31 @@ const createEmergency = async (req, res) => {
     const alertTitle = `🚨 EMERGENCY: ${payload.type} 🚨`;
     const alertBody = `New emergency alert raised${flatInfoStr}: ${payload.message}`;
 
+    let senderFlatNumber = "";
+    let senderBlockName = "";
+    if (payload.flat_id) {
+      const f = await Flat.findByPk(payload.flat_id, {
+        include: [{ model: Block, attributes: ["name"] }]
+      });
+      if (f) {
+        senderFlatNumber = f.flat_number || "";
+        senderBlockName = f.Block?.name || "";
+      }
+    }
+
+    const emergencyPushData = {
+      type: "EMERGENCY",
+      alertId: String(emergency.id),
+      title: alertTitle,
+      message: payload.message || alertBody,
+      senderName: user.name || "Resident",
+      flatNumber: senderFlatNumber,
+      blockName: senderBlockName,
+      alert_type: payload.type,
+    };
+
     // 1. Notify Guard
-    if ((roles.includes("RESIDENT") || roles.includes("FAMILY_MEMBER")) && payload.guard_id) {
+    if ((senderKind === "RESIDENT" || senderKind === "FAMILY_MEMBER") && payload.guard_id) {
 
       const notification = await Notification.create({
         society_id: payload.society_id,
@@ -155,10 +224,16 @@ const createEmergency = async (req, res) => {
         is_read: false
       });
 
+      const notifData = {
+        ...notification.toJSON(),
+        ...emergencyPushData,
+        alertId: String(emergency.id),
+      };
+
       if (global.io) {
         global.io
           .to(`user_${payload.guard_id}`)
-          .emit("new_notification", notification);
+          .emit("new_notification", notifData);
       }
 
       const guardUser = await User.findByPk(payload.guard_id, { attributes: ['fcm_token'] });
@@ -168,7 +243,7 @@ const createEmergency = async (req, res) => {
           guardUser.fcm_token,
           alertTitle,
           alertBody,
-          { route: "/guard/emergency", type: "EMERGENCY", alertId: String(emergency.id) }
+          { ...emergencyPushData, route: "/guard/emergency" }
         ).catch(err => console.error("Push Error:", err));
       }
     }
@@ -178,7 +253,8 @@ const createEmergency = async (req, res) => {
     const admins = await User.findAll({
       where: {
         society_id: payload.society_id,
-        role: { [Op.in]: adminRoles }
+        role: { [Op.in]: adminRoles },
+        id: { [Op.ne]: user.id }
       },
       attributes: ['id', 'fcm_token']
     });
@@ -195,10 +271,16 @@ const createEmergency = async (req, res) => {
         is_read: false
       });
 
+      const notifData = {
+        ...notification.toJSON(),
+        ...emergencyPushData,
+        alertId: String(emergency.id),
+      };
+
       if (global.io) {
         global.io
           .to(`user_${admin.id}`)
-          .emit("new_notification", notification);
+          .emit("new_notification", notifData);
       }
 
       if (admin.fcm_token) {
@@ -206,13 +288,16 @@ const createEmergency = async (req, res) => {
           admin.fcm_token,
           alertTitle,
           alertBody,
-          { route: "/admin/emergency", type: "EMERGENCY", alertId: String(emergency.id) }
+          { ...emergencyPushData, route: "/admin/emergency" }
         ).catch(err => console.error("Push Error:", err));
       }
     }
 
-    // 3. Notify Residents
-    if (roles.includes("RESIDENT") || roles.includes("FAMILY_MEMBER")) {
+    // 3. Notify Residents / Family Members
+    const isResidentKind = senderKind === "RESIDENT" || senderKind === "FAMILY_MEMBER";
+    const isAdminKind = ["ADMIN", "COMMITTEE", "SUPER_ADMIN"].includes(senderKind);
+
+    if (isResidentKind) {
       const neighbors = await User.findAll({
         where: {
           society_id: payload.society_id,
@@ -236,8 +321,15 @@ const createEmergency = async (req, res) => {
           is_read: false
         });
 
+        const notifData = {
+          ...notification.toJSON(),
+          ...emergencyPushData,
+          message: neighborBody,
+          alertId: String(emergency.id),
+        };
+
         if (global.io) {
-          global.io.to(`user_${neighbor.id}`).emit("new_notification", notification);
+          global.io.to(`user_${neighbor.id}`).emit("new_notification", notifData);
         }
 
         if (neighbor.fcm_token) {
@@ -245,12 +337,14 @@ const createEmergency = async (req, res) => {
             neighbor.fcm_token,
             alertTitle,
             neighborBody,
-            { route: "/resident/emergency", type: "EMERGENCY", alertId: String(emergency.id) }
+            { ...emergencyPushData, message: neighborBody, route: "/resident/emergency" }
           ).catch(err => console.error("Push Error:", err));
         }
       }
-    } else if (roles.includes("GUARD")) {
-      // Guard raised emergency: Notify all residents in the society
+    }
+
+    // Guard / Admin / Committee / Super Admin raised emergency: broadcast to all residents in the society
+    if (senderKind === "GUARD" || isAdminKind) {
       const residents = await User.findAll({
         where: {
           society_id: payload.society_id,
@@ -259,33 +353,120 @@ const createEmergency = async (req, res) => {
         attributes: ['id', 'fcm_token']
       });
 
-      const guardAlertBody = `🚨 Guard SOS Alert: ${payload.type} reported at Security Gate. ${payload.message || ''}`;
+      let broadcastTitle;
+      let broadcastBody;
+      if (senderKind === "GUARD") {
+        broadcastTitle = `🚨 GATE EMERGENCY: ${payload.type}`;
+        broadcastBody = `🚨 Guard SOS Alert: ${payload.type} reported at Security Gate. ${payload.message || ''}`;
+      } else if (senderKind === "ADMIN") {
+        broadcastTitle = `🚨 SOS ALERT: ${payload.type}`;
+        broadcastBody = `🚨 Admin SOS Alert: ${payload.type} reported by ${user.name}. ${payload.message || ''}`;
+      } else if (senderKind === "COMMITTEE") {
+        broadcastTitle = `🚨 SOS ALERT: ${payload.type}`;
+        broadcastBody = `🚨 Committee SOS Alert: ${payload.type} reported by ${user.name}. ${payload.message || ''}`;
+      } else {
+        broadcastTitle = `🚨 SOS ALERT: ${payload.type}`;
+        broadcastBody = `🚨 Super Admin SOS Alert: ${payload.type} reported by ${user.name}. ${payload.message || ''}`;
+      }
 
       for (const resUser of residents) {
         const notification = await Notification.create({
           society_id: payload.society_id,
           receiver_user_id: resUser.id,
-          title: `🚨 GATE EMERGENCY: ${payload.type}`,
-          message: guardAlertBody,
+          title: broadcastTitle,
+          message: broadcastBody,
           type: "EMERGENCY",
           action_type: "VIEW_EMERGENCY",
           action_route: "/resident/emergency",
           is_read: false
         });
 
+        const notifData = {
+          ...notification.toJSON(),
+          ...emergencyPushData,
+          senderName: user.name || "Security Guard",
+          flatNumber: senderKind === "GUARD" ? "Security Gate" : "",
+          blockName: senderKind === "GUARD" ? "Main Gate" : "",
+          message: broadcastBody,
+          alertId: String(emergency.id),
+        };
+
         if (global.io) {
-          global.io.to(`user_${resUser.id}`).emit("new_notification", notification);
+          global.io.to(`user_${resUser.id}`).emit("new_notification", notifData);
         }
 
         if (resUser.fcm_token) {
           sendPushNotification(
             resUser.fcm_token,
-            `🚨 GATE EMERGENCY: ${payload.type}`,
-            guardAlertBody,
-            { route: "/resident/emergency", type: "EMERGENCY", alertId: String(emergency.id) }
+            broadcastTitle,
+            broadcastBody,
+            {
+              ...emergencyPushData,
+              senderName: user.name || "Security Guard",
+              flatNumber: senderKind === "GUARD" ? "Security Gate" : "",
+              blockName: senderKind === "GUARD" ? "Main Gate" : "",
+              message: broadcastBody,
+              route: "/resident/emergency"
+            }
           ).catch(err => console.error("Push Error:", err));
         }
       }
+    }
+
+    // 4. Admin / Committee / Super Admin SOS: also alert every guard in the society
+    if (isAdminKind) {
+      const guards = await User.findAll({
+        where: {
+          society_id: payload.society_id,
+          role: "GUARD",
+          id: { [Op.ne]: user.id }
+        },
+        attributes: ['id', 'fcm_token']
+      });
+
+      const guardTitle = `🚨 SOS ALERT: ${payload.type}`;
+      const guardBody = `🚨 ${senderKind === "SUPER_ADMIN" ? "Super Admin" : senderKind === "COMMITTEE" ? "Committee" : "Admin"} SOS Alert: ${payload.type} reported by ${user.name}. ${payload.message || ''}`;
+
+      for (const guard of guards) {
+        const notification = await Notification.create({
+          society_id: payload.society_id,
+          receiver_user_id: guard.id,
+          title: guardTitle,
+          message: guardBody,
+          type: "EMERGENCY",
+          action_type: "VIEW_EMERGENCY",
+          action_route: "/guard/emergency",
+          is_read: false
+        });
+
+        const notifData = {
+          ...notification.toJSON(),
+          ...emergencyPushData,
+          message: guardBody,
+          alertId: String(emergency.id),
+        };
+
+        if (global.io) {
+          global.io.to(`user_${guard.id}`).emit("new_notification", notifData);
+        }
+
+        if (guard.fcm_token) {
+          sendPushNotification(
+            guard.fcm_token,
+            guardTitle,
+            guardBody,
+            { ...emergencyPushData, message: guardBody, route: "/guard/emergency" }
+          ).catch(err => console.error("Push Error:", err));
+        }
+      }
+    }
+
+    // 5. Broadcast general socket emergency event to society room
+    if (global.io && payload.society_id) {
+      global.io.to(`society_${payload.society_id}`).emit("emergency_alert", {
+        ...emergencyPushData,
+        alertId: String(emergency.id),
+      });
     }
 
     res.status(201).json({
@@ -315,6 +496,7 @@ const getEmergencyAlerts = async (req, res) => {
       include: [
         { model: User, as: "Resident", attributes: ["id", "name"] },
         { model: User, as: "Guard", attributes: ["id", "name"] },
+        { model: User, as: "Admin", attributes: ["id", "name"] },
         {
           model: Flat,
           attributes: ["id", "flat_number"],
@@ -348,6 +530,7 @@ const getActiveEmergencies = async (req, res) => {
       include: [
         { model: User, as: "Resident", attributes: ["id", "name"] },
         { model: User, as: "Guard", attributes: ["id", "name"] },
+        { model: User, as: "Admin", attributes: ["id", "name"] },
         {
           model: Flat,
           attributes: ["id", "flat_number"],
@@ -374,7 +557,7 @@ const resolveEmergency = async (req, res) => {
       return res.status(404).json({ message: "Emergency not found" });
     }
 
-    if (alert.society_id !== req.user.society_id) {
+    if (req.user.role !== "SUPER_ADMIN" && alert.society_id !== req.user.society_id) {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
@@ -445,6 +628,7 @@ const getMyEmergencies = async (req, res) => {
       include: [
         { model: User, as: "Resident", attributes: ["id", "name"] },
         { model: User, as: "Guard",    attributes: ["id", "name"] },
+        { model: User, as: "Admin",    attributes: ["id", "name"] },
         {
           model: Flat,
           attributes: ["id", "flat_number"],

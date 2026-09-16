@@ -143,10 +143,24 @@ sequelize
       }
     }
 
-    // Ensure role_permissions table is synced
+    // Ensure role_permissions table is synced + role column is a VARCHAR (was an ENUM)
     try {
       if (db.RolePermission) {
         await db.RolePermission.sync();
+
+        const rpCols = await sequelize
+          .query(
+            "SELECT COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'role_permissions'"
+          )
+          .then(([rows]) => new Map(rows.map((r) => [r.COLUMN_NAME, r.COLUMN_TYPE])));
+        const roleType = rpCols.get("role");
+        if (roleType && roleType.startsWith("enum")) {
+          await sequelize.query(
+            "ALTER TABLE role_permissions MODIFY COLUMN role VARCHAR(40) NOT NULL"
+          );
+          console.log("[DB Migration] role_permissions.role widened to VARCHAR(40)");
+        }
+
         console.log("[DB Migration] role_permissions table synced successfully");
       }
     } catch (err) {
@@ -312,6 +326,28 @@ sequelize
       }
     } catch (err) {
       console.log("[DB Migration] Note adding bills date columns:", err.message);
+    }
+
+    // --- Emergency alerts: widen source enum to admin senders + add admin_id ---
+    try {
+      const eaCols = await sequelize
+        .query(
+          "SELECT COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'emergency_alerts'"
+        )
+        .then(([rows]) => new Map(rows.map((r) => [r.COLUMN_NAME, r.COLUMN_TYPE])));
+      const sourceType = eaCols.get("source");
+      if (sourceType && !sourceType.includes("ADMIN")) {
+        await sequelize.query(
+          "ALTER TABLE emergency_alerts MODIFY COLUMN source ENUM('GUARD','RESIDENT','ADMIN','COMMITTEE','SUPER_ADMIN') NOT NULL"
+        );
+        console.log("[DB Migration] emergency_alerts.source widened for admin senders");
+      }
+      if (!eaCols.has("admin_id")) {
+        await sequelize.query("ALTER TABLE emergency_alerts ADD COLUMN admin_id INT NULL");
+        console.log("[DB Migration] Added emergency_alerts.admin_id");
+      }
+    } catch (err) {
+      console.log("[DB Migration] Note on emergency_alerts columns:", err.message);
     }
 
     return sequelize.sync();

@@ -399,6 +399,11 @@ const updateParcelStatus = async (req, res) => {
     const parcel = await Parcel.findByPk(id);
     if (!parcel) return res.status(404).json({ message: "Parcel not found" });
 
+    const isManager =
+      activeRole === "SOCIETY_ADMIN" ||
+      activeRole === "SUPER_ADMIN" ||
+      activeRole === "COMMITTEE_MEMBER";
+
     /* ── guard shift check ── */
     if (activeRole === "GUARD") {
       const activeGuardId = await getActiveShiftGuard(parcel.society_id);
@@ -454,7 +459,7 @@ const updateParcelStatus = async (req, res) => {
 
     /* ── EXPECTED → AT_GATE (guard marks parcel arrived) ── */
     if (status === "AT_GATE" && parcel.status === "EXPECTED") {
-      if (activeRole !== "GUARD") {
+      if (activeRole !== "GUARD" && !isManager) {
         return res
           .status(403)
           .json({ message: "Only guards can mark parcels as arrived." });
@@ -463,7 +468,7 @@ const updateParcelStatus = async (req, res) => {
       parcel.pickup_code = generatePickupCode();
       parcel.entry_time  = new Date();
       parcel.status      = "AT_GATE";
-      parcel.guard_id    = req.user.id;
+      parcel.guard_id    = activeRole === "GUARD" ? req.user.id : parcel.guard_id || req.user.id;
       await parcel.save();
 
       const full = await getFullParcel(parcel.id);
@@ -492,13 +497,13 @@ const updateParcelStatus = async (req, res) => {
 
     /* ── AT_GATE → COLLECTED ── */
     if (status === "COLLECTED") {
-      if (activeRole !== "GUARD") {
+      if (activeRole !== "GUARD" && !isManager) {
         return res
           .status(403)
           .json({ message: "Only guards can mark parcels as collected." });
       }
 
-      if (parcel.pickup_code !== pickup_code) {
+      if (!isManager && parcel.pickup_code !== pickup_code) {
         return res.status(400).json({ message: "Invalid OTP" });
       }
 

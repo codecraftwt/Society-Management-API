@@ -9,14 +9,14 @@ const dailyHelpController = require('../controllers/dailyHelpControllers');
 router.post("/", auth, role("GUARD"), addVisitor);
 router.put("/exit/:id", auth, role("GUARD"), markExit);
 
-// Admin / Guard — view all society visitors
-router.get("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "GUARD"), getSocietyVisitors);
+// Admin / Guard / Accountant — view all society visitors
+router.get("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "GUARD", "ACCOUNTANT"), getSocietyVisitors);
 
 // ✅ FAMILY_MEMBER can view their own visitors (read only)
 router.get("/resident", auth, role("RESIDENT", "FAMILY_MEMBER"), getResidentVisitors);
 
 // Guard — get blocks
-router.get("/block", auth, role("SUPER_ADMIN", "GUARD"), getSocietyBlocksForGuard);
+router.get("/block", auth, role("SUPER_ADMIN", "GUARD", "ACCOUNTANT"), getSocietyBlocksForGuard);
 
 
 

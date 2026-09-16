@@ -42,8 +42,13 @@ flat_id: {
   allowNull: true
 },
 
+admin_id: {
+  type: DataTypes.INTEGER,
+  allowNull: true
+},
+
 source: {
-  type: DataTypes.ENUM("GUARD", "RESIDENT"),
+  type: DataTypes.ENUM("GUARD", "RESIDENT", "ADMIN", "COMMITTEE", "SUPER_ADMIN"),
   allowNull: false
 }
 ,

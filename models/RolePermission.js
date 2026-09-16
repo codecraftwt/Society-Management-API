@@ -14,7 +14,7 @@ const RolePermission = sequelize.define(
       allowNull: true, // null represents global default template
     },
     role: {
-      type: DataTypes.ENUM("COMMITTEE_MEMBER", "ACCOUNTANT"),
+      type: DataTypes.STRING(40),
       allowNull: false,
     },
     module: {

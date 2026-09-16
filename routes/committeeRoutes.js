@@ -5,6 +5,6 @@ const auth = require("../middlewares/authMiddleware");
 const role = require("../middlewares/roleMiddleware");
 const { getDashboardStats } = require("../controllers/committeeControllers");
 
-router.get("/dashboard-stats", auth, role("SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getDashboardStats);
+router.get("/dashboard-stats", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), getDashboardStats);
 
 module.exports = router;

@@ -135,27 +135,27 @@ const {
 } = require("../controllers/flatControllers");
 
 // ✅ SPECIFIC routes FIRST — before any /:param routes
-router.get("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getAllFlats);
-router.get("/getall", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getAllFlats);
-router.get("/unassigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getUnassignedFlats);
-router.get("/assigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "GUARD","ACCOUNTANT"), getAssignedFlats);
+router.get("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), getAllFlats);
+router.get("/getall", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), getAllFlats);
+router.get("/unassigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), getUnassignedFlats);
+router.get("/assigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "GUARD", "ACCOUNTANT"), getAssignedFlats);
 router.get("/neighbours", auth, role("RESIDENT", "FAMILY_MEMBER"), getNeighbours);
-router.get("/filter", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "GUARD", "COMMITTEE_MEMBER"), getFlatsByBlockAndFloor);
+router.get("/filter", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "GUARD", "COMMITTEE_MEMBER", "ACCOUNTANT"), getFlatsByBlockAndFloor);
 
 // ✅ THIS WAS MISSING — frontend calls /flats/list?blockId=X
-router.get("/list", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "GUARD", "RESIDENT", "COMMITTEE_MEMBER"), getFlatsByBlockAndFloor);
+router.get("/list", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "GUARD", "RESIDENT", "COMMITTEE_MEMBER", "ACCOUNTANT"), getFlatsByBlockAndFloor);
 
-router.get("/floor/:floorId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getFlatsByFloor);
-router.get("/floor/:floorId/unassigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getUnassignedFlatsByFloor);
+router.get("/floor/:floorId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), getFlatsByFloor);
+router.get("/floor/:floorId/unassigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), getUnassignedFlatsByFloor);
 
-router.post("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), createFlat);
-router.put("/assign/:flatId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), assignResident);
-router.put("/unassign/:flatId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), unassignResident);
-router.put("/update/:flatId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), updateFlat);
-router.put("/bulk-update", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), bulkUpdateFlats);
+router.post("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), createFlat);
+router.put("/assign/:flatId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), assignResident);
+router.put("/unassign/:flatId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), unassignResident);
+router.put("/update/:flatId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), updateFlat);
+router.put("/bulk-update", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), bulkUpdateFlats);
 
 // ✅ delete and /:blockId LAST — param routes always go at the bottom
-router.delete("/delete/:flatId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), deleteFlat);
-router.get("/:blockId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "GUARD", "COMMITTEE_MEMBER"), getFlatsByBlockAndFloor);
+router.delete("/delete/:flatId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), deleteFlat);
+router.get("/:blockId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "GUARD", "COMMITTEE_MEMBER", "ACCOUNTANT"), getFlatsByBlockAndFloor);
 
 module.exports = router;

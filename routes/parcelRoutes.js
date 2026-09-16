@@ -7,15 +7,15 @@ const role = require("../middlewares/roleMiddleware");
 // All routes must be authenticated
 router.use(auth);
 
-// Guard or Resident can create
-router.get("/", role("GUARD", "RESIDENT","SOCIETY_ADMIN"), getParcels);
-router.post("/", role("GUARD", "RESIDENT"), createParcel);
+// Guard or Resident can create (committee/admin may log parcels too)
+router.get("/", role("GUARD", "RESIDENT", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getParcels);
+router.post("/", role("GUARD", "RESIDENT", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), createParcel);
 
 // Guard sees all, Resident sees own (handle inside controller)
 
 
-// Only Guard can update status
+// Guard, society admin or committee can update status
 
-router.put("/:id/status", role("GUARD", "RESIDENT"), updateParcelStatus);
+router.put("/:id/status", role("GUARD", "RESIDENT", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), updateParcelStatus);
 
 module.exports = router;

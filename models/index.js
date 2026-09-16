@@ -176,6 +176,12 @@ EmergencyAlert.belongsTo(User, {
   as: "Guard",
 });
 
+EmergencyAlert.belongsTo(User, {
+  foreignKey: "admin_id",
+  as: "Admin",
+});
+User.hasMany(EmergencyAlert, { foreignKey: "admin_id", as: "AdminAlerts" });
+
 EmergencyAlert.belongsTo(Flat, {
   foreignKey: "flat_id",
 });

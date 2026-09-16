@@ -11,6 +11,7 @@ const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { Op } = require("sequelize");
 const transporter = require("../utils/mailer");
+const { fetchEffectivePermissions } = require("./permissionController");
 
 /* =====
     HELPERS
@@ -381,6 +382,7 @@ exports.verifyOtp = async (req, res) => {
     const { token } = issueAccessToken(user, user.role);
     const roles = user.roles ?? [user.role];
     const availablePanels = await getAvailablePanels(user);
+    const dynamicPermissions = await fetchEffectivePermissions(user.society_id, user.role);
 
     return res.status(200).json({
       message: "Login successful",
@@ -394,6 +396,8 @@ exports.verifyOtp = async (req, res) => {
         roles,
         activeRole: user.role,
         availablePanels,
+        dynamic_permissions: dynamicPermissions,
+        permissions: dynamicPermissions,
         resident_type: user.resident_type || null,
         society_id: user.society_id,
         society_name: user.Society?.name || null,
@@ -478,6 +482,7 @@ exports.switchRole = async (req, res) => {
 
     const { token } = issueAccessToken(user, role);
     const availablePanels = await getAvailablePanels(user);
+    const dynamicPermissions = await fetchEffectivePermissions(user.society_id, role);
 
     return res.status(200).json({
       message: `Switched to ${role}`,
@@ -491,6 +496,8 @@ exports.switchRole = async (req, res) => {
         roles,
         activeRole: role,
         availablePanels,
+        dynamic_permissions: dynamicPermissions,
+        permissions: dynamicPermissions,
         resident_type: user.resident_type || null,
         society_id: user.society_id,
         society_name: user.Society?.name || null,

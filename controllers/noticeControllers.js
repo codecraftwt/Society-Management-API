@@ -375,13 +375,26 @@ const getNoticeAcknowledgements = async (req, res) => {
     const notice = await Notice.findByPk(id);
     if (!notice) return res.status(404).json({ message: "Notice not found" });
 
-    const userRole = req.user.activeRole || req.user.role;
-    const allowedRoles = ["SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"];
-    if (!allowedRoles.includes(userRole)) {
+    const userRoles = new Set(req.user.roles || []);
+    if (req.user.role) userRoles.add(req.user.role);
+    if (req.user.activeRole) userRoles.add(req.user.activeRole);
+    if (req.user.is_committee_member || req.user.is_committee) {
+      userRoles.add("COMMITTEE_MEMBER");
+    }
+    if (userRoles.has("SOCIETY_ADMIN")) {
+      userRoles.add("COMMITTEE_MEMBER");
+    }
+
+    const isAllowed =
+      userRoles.has("SUPER_ADMIN") ||
+      userRoles.has("SOCIETY_ADMIN") ||
+      userRoles.has("COMMITTEE_MEMBER");
+
+    if (!isAllowed) {
       return res.status(403).json({ message: "Access denied: Resident cannot view acknowledgement history" });
     }
 
-    if (userRole !== "SUPER_ADMIN" && String(notice.society_id) !== String(req.user.society_id)) {
+    if (!userRoles.has("SUPER_ADMIN") && String(notice.society_id) !== String(req.user.society_id)) {
       return res.status(403).json({ message: "Access denied: Notice belongs to another society" });
     }
 

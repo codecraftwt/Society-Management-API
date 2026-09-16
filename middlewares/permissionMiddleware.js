@@ -33,11 +33,16 @@ const checkPermission = (module, action) => {
       }
 
       // 3. COMMITTEE MEMBER OR ACCOUNTANT DYNAMIC PERMISSION CHECK
-      const checkRole = userRoles.has("COMMITTEE_MEMBER")
-        ? "COMMITTEE_MEMBER"
-        : userRoles.has("ACCOUNTANT")
-        ? "ACCOUNTANT"
-        : null;
+      const checkRole =
+        activeRole === "COMMITTEE_MEMBER"
+          ? "COMMITTEE_MEMBER"
+          : activeRole === "ACCOUNTANT"
+          ? "ACCOUNTANT"
+          : userRoles.has("COMMITTEE_MEMBER")
+          ? "COMMITTEE_MEMBER"
+          : userRoles.has("ACCOUNTANT")
+          ? "ACCOUNTANT"
+          : null;
 
       if (checkRole) {
         const societyId = req.user.society_id;
@@ -55,8 +60,12 @@ const checkPermission = (module, action) => {
             },
           });
 
-          if (dbPermission && Array.isArray(dbPermission.actions)) {
-            grantedActions = dbPermission.actions;
+          if (dbPermission) {
+            if (Array.isArray(dbPermission.actions)) {
+              grantedActions = dbPermission.actions;
+            } else if (typeof dbPermission.actions === "boolean") {
+              grantedActions = dbPermission.actions ? (ALL_MODULE_ACTIONS[module] || []) : [];
+            }
           }
         }
 
@@ -66,14 +75,19 @@ const checkPermission = (module, action) => {
           grantedActions = roleDefaults[module] || [];
         }
 
-        if (grantedActions.includes(action)) {
+        const effectiveActions = Array.isArray(grantedActions) ? grantedActions : [];
+
+        // If no specific action required or view action requested, check if module has any permitted actions
+        if (!action) {
+          if (effectiveActions.length > 0) return next();
+        } else if (effectiveActions.includes(action) || (effectiveActions.length > 0 && action === "view")) {
           return next();
         }
 
         return res.status(403).json({
           success: false,
           code: "PERMISSION_DENIED",
-          message: `You don't have permission to perform this action: ${action} on ${module}`,
+          message: `Access denied. You don't have permission for ${action || "access"} on module '${module}'.`,
           required: { module, action },
         });
       }

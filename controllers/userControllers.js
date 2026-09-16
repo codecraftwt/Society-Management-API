@@ -18,6 +18,7 @@ const ParkingSlot = require("../models/ParkingSlot");
 const Vehicle = require("../models/Vehicle"); 
 const AccountantAssignment = require("../models/AccountantAssignment");
 const transporter = require("../utils/mailer");
+const { fetchEffectivePermissions } = require("./permissionController");
 
 async function sendAccountantWelcomeEmail(toEmail, name, password, societyName) {
   if (!transporter) return;
@@ -1925,10 +1926,20 @@ const deleteAccountant = async (req, res) => {
 const getMyProfile = async (req, res) => {
   try {
     const user = await User.findByPk(req.user.id, {
-      attributes: ["id", "name", "email", "role", "roles", "phone", "resident_type"],
+      attributes: ["id", "name", "email", "role", "roles", "phone", "resident_type", "society_id"],
       include: { model: Society, attributes: ["id", "name"] },
     });
-    res.json(user);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const activeRole = (req.user.activeRole || user.role || "RESIDENT").toUpperCase();
+    const dynamicPermissions = await fetchEffectivePermissions(user.society_id, activeRole);
+
+    const userObj = user.toJSON();
+    userObj.activeRole = activeRole;
+    userObj.dynamic_permissions = dynamicPermissions;
+    userObj.permissions = dynamicPermissions;
+
+    res.json(userObj);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

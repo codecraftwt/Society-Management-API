@@ -6,6 +6,7 @@ const auth    = require("../middlewares/authMiddleware");
 const role    = require("../middlewares/roleMiddleware");
 const upload  = require("../middlewares/uploadComplaint");
 const uploadAttachment = require("../middlewares/uploadCommentAttachment");
+const { checkPermission } = require("../middlewares/permissionMiddleware");
 
 const {
   getComplaints,
@@ -45,7 +46,8 @@ router.get(
 router.get(
   "/",
   auth,
-  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"),
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  checkPermission("complaints", "view"),
   getComplaints
 );
 
@@ -53,7 +55,8 @@ router.get(
 router.put(
   "/:id",
   auth,
-  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"),
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  checkPermission("complaints", "update_status"),
   updateStatus
 );
 

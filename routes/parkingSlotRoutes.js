@@ -14,6 +14,7 @@ const {
 
 const auth = require("../middlewares/authMiddleware");
 const role = require("../middlewares/roleMiddleware");
+const { checkPermission } = require("../middlewares/permissionMiddleware");
 
 /* ======
    GET AVAILABLE SLOTS (filtered by vehicle type) → GUARD
@@ -22,11 +23,9 @@ const role = require("../middlewares/roleMiddleware");
 router.get(
   "/available",
   auth,
-  role("GUARD", "SOCIETY_ADMIN", "SUPER_ADMIN"),
+  role("GUARD", "SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
   getAvailableSlots
 );
-
-
 
 /* ======
    REVOKE SLOT ASSIGNMENT
@@ -34,17 +33,19 @@ router.get(
 router.post(
   "/revoke",
   auth,
-  role("SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER"),
+  role("SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  checkPermission("parking_slots", "release"),
   revokeSlotAssignment
 );
 
 /* ======
-   CREATE SLOT → SOCIETY_ADMIN ONLY
+   CREATE SLOT → SOCIETY_ADMIN / COMMITTEE_MEMBER
 ====== */
 router.post(
   "/",
   auth,
-  role("SOCIETY_ADMIN", "SUPER_ADMIN"),
+  role("SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  checkPermission("parking_slots", "create_slot"),
   createParkingSlots
 );
 
@@ -54,27 +55,30 @@ router.post(
 router.get(
   "/",
   auth,
-  role("GUARD", "SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER"),
+  role("GUARD", "SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  checkPermission("parking_slots", "view"),
   getParkingSlots
 );
 
 /* ======
-   UPDATE SLOT → SOCIETY_ADMIN
+   UPDATE SLOT
 ====== */
 router.put(
   "/:id",
   auth,
-  role("SOCIETY_ADMIN", "SUPER_ADMIN"),
+  role("SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  checkPermission("parking_slots", "edit_slot"),
   updateParkingSlot
 );
 
 /* ======
-   DELETE SLOT → SOCIETY_ADMIN
+   DELETE SLOT
 ====== */
 router.delete(
   "/:id",
   auth,
-  role("SOCIETY_ADMIN", "SUPER_ADMIN"),
+  role("SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  checkPermission("parking_slots", "delete_slot"),
   deleteParkingSlot
 );
 

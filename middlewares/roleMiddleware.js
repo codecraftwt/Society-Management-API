@@ -30,6 +30,13 @@ module.exports = (...allowedRoles) => {
       userRoles.add("RESIDENT");
     }
 
+    // Dynamic RBAC: If route permits administrative roles (SOCIETY_ADMIN or COMMITTEE_MEMBER), also allow ACCOUNTANT through
+    // so downstream permission checks (checkPermission) can validate their dynamic permissions.
+    if ((allowedRoles.includes("COMMITTEE_MEMBER") || allowedRoles.includes("SOCIETY_ADMIN") || allowedRoles.includes("ADMIN")) && userRoles.has("ACCOUNTANT")) {
+      userRoles.add("COMMITTEE_MEMBER");
+      userRoles.add("SOCIETY_ADMIN");
+    }
+
     const hasAccess = allowedRoles.some((r) => userRoles.has(r));
 
     if (!hasAccess) {

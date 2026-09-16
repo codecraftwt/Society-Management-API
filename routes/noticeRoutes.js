@@ -4,6 +4,7 @@ const router = express.Router();
 const auth = require("../middlewares/authMiddleware");
 const role = require("../middlewares/roleMiddleware");
 const upload = require("../middlewares/uploadNotice");
+const { checkPermission } = require("../middlewares/permissionMiddleware");
 
 const {
   createNotice,
@@ -19,7 +20,8 @@ const {
 router.post(
   "/",
   auth,
-  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"),
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  checkPermission("notice", "create"),
   upload("notices").single("file"),
   createNotice
 );
@@ -28,7 +30,8 @@ router.post(
 router.put(
   "/:id",
   auth,
-  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"),
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  checkPermission("notice", "edit"),
   upload("notices").single("file"),
   updateNotice
 );
@@ -37,7 +40,8 @@ router.put(
 router.delete(
   "/:id",
   auth,
-  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"),
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  checkPermission("notice", "delete"),
   deleteNotice
 );
 
@@ -45,7 +49,7 @@ router.delete(
 router.get(
   "/",
   auth,
-  role("SUPER_ADMIN", "RESIDENT", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "FAMILY_MEMBER"),
+  role("SUPER_ADMIN", "RESIDENT", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT", "FAMILY_MEMBER"),
   getNotices
 );
 
@@ -53,7 +57,7 @@ router.get(
 router.post(
   "/:id/view",
   auth,
-  role("SUPER_ADMIN", "RESIDENT", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "FAMILY_MEMBER"),
+  role("SUPER_ADMIN", "RESIDENT", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT", "FAMILY_MEMBER"),
   viewNotice
 );
 
@@ -61,7 +65,7 @@ router.post(
 router.post(
   "/:id/acknowledge",
   auth,
-  role("SUPER_ADMIN", "RESIDENT", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "FAMILY_MEMBER"),
+  role("SUPER_ADMIN", "RESIDENT", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT", "FAMILY_MEMBER"),
   acknowledgeNotice
 );
 
@@ -69,7 +73,7 @@ router.post(
 router.get(
   "/:id/acknowledgements",
   auth,
-  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"),
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
   getNoticeAcknowledgements
 );
 
