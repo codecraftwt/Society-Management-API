@@ -190,6 +190,9 @@ FlatMembership.belongsTo(User, { foreignKey: "user_id" });
 Flat.hasMany(Complaint, { foreignKey: "flat_id" });
 Complaint.belongsTo(Flat, { foreignKey: "flat_id" });
 
+const EmergencyAlert = require("./models/EmergencyAlert");
+const EmergencyAcknowledgement = require("./models/EmergencyAcknowledgement");
+
 // 13. Notice <-> NoticeAcknowledgement & User <-> NoticeAcknowledgement
 Notice.hasMany(NoticeAcknowledgement, { foreignKey: "notice_id", as: "acknowledgements" });
 NoticeAcknowledgement.belongsTo(Notice, { foreignKey: "notice_id" });
@@ -197,6 +200,15 @@ NoticeAcknowledgement.belongsTo(Notice, { foreignKey: "notice_id" });
 User.hasMany(NoticeAcknowledgement, { foreignKey: "user_id" });
 NoticeAcknowledgement.belongsTo(User, { foreignKey: "user_id" });
 
+// 14. EmergencyAlert <-> EmergencyAcknowledgement & User
+EmergencyAlert.hasMany(EmergencyAcknowledgement, { foreignKey: "emergency_alert_id", as: "acknowledgements" });
+EmergencyAcknowledgement.belongsTo(EmergencyAlert, { foreignKey: "emergency_alert_id" });
+
+User.hasMany(EmergencyAcknowledgement, { foreignKey: "user_id" });
+EmergencyAcknowledgement.belongsTo(User, { foreignKey: "user_id" });
+
+EmergencyAlert.belongsTo(User, { foreignKey: "resolved_by", as: "Resolver" });
+
 module.exports = {
-  User, Society, Block, Floor, Flat, Bill, Payment, Complaint, Notice, VisitorLog, FlatMembership, NoticeAcknowledgement
+  User, Society, Block, Floor, Flat, Bill, Payment, Complaint, Notice, VisitorLog, FlatMembership, NoticeAcknowledgement, EmergencyAlert, EmergencyAcknowledgement
 };

@@ -346,8 +346,154 @@ sequelize
         await sequelize.query("ALTER TABLE emergency_alerts ADD COLUMN admin_id INT NULL");
         console.log("[DB Migration] Added emergency_alerts.admin_id");
       }
+      if (!eaCols.has("resolved_by")) {
+        await sequelize.query("ALTER TABLE emergency_alerts ADD COLUMN resolved_by INT NULL");
+        console.log("[DB Migration] Added emergency_alerts.resolved_by");
+      }
+      if (!eaCols.has("resolution_notes")) {
+        await sequelize.query("ALTER TABLE emergency_alerts ADD COLUMN resolution_notes TEXT NULL");
+        console.log("[DB Migration] Added emergency_alerts.resolution_notes");
+      }
+      if (!eaCols.has("other_reason")) {
+        await sequelize.query("ALTER TABLE emergency_alerts ADD COLUMN other_reason VARCHAR(255) NULL");
+        console.log("[DB Migration] Added emergency_alerts.other_reason");
+      }
     } catch (err) {
       console.log("[DB Migration] Note on emergency_alerts columns:", err.message);
+    }
+
+    /* ###################################################################
+       FINANCIAL TRACKING MODULE MIGRATIONS
+       - societies: opening balance columns
+       - Payments: society/resident/amenity references, source & status
+       - Backfill legacy payment rows (preserved, idempotent, safe to re-run)
+       All statements are guarded so they are safe to re-run.
+    ################################################################### */
+
+    // Resolve the real Payments table name (Sequelize default is 'Payments').
+    const paymentTableRows = await sequelize
+      .query("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('Payments','payments')")
+      .then(([rows]) => rows.map((r) => r.TABLE_NAME));
+    const paymentsTable = paymentTableRows.find((n) => n === "Payments") || paymentTableRows[0] || "Payments";
+
+    // --- A) societies: opening balance columns ---
+    const societyCols = await sequelize
+      .query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'societies'")
+      .then(([rows]) => new Set(rows.map((r) => r.COLUMN_NAME)));
+    const societyColMigrations = [
+      ["opening_balance", "ALTER TABLE societies ADD COLUMN opening_balance DECIMAL(14,2) NOT NULL DEFAULT 0 AFTER address"],
+      ["opening_balance_effective_date", "ALTER TABLE societies ADD COLUMN opening_balance_effective_date DATE NULL AFTER opening_balance"],
+      ["opening_balance_set_by", "ALTER TABLE societies ADD COLUMN opening_balance_set_by INT NULL AFTER opening_balance_effective_date"],
+      ["opening_balance_set_at", "ALTER TABLE societies ADD COLUMN opening_balance_set_at DATETIME NULL AFTER opening_balance_set_by"],
+    ];
+    for (const [col, sql] of societyColMigrations) {
+      if (!societyCols.has(col)) {
+        try {
+          await sequelize.query(sql);
+          console.log(`[DB Migration] Added societies.${col}`);
+        } catch (err) {
+          console.log(`[DB Migration] Note adding societies.${col}:`, err.message);
+        }
+      }
+    }
+
+    // --- B) Payments: new financial columns + relax bill_id ---
+    const paymentCols = await sequelize
+      .query(`SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '${paymentsTable}'`)
+      .then(([rows]) => new Set(rows.map((r) => r.COLUMN_NAME)));
+
+    const paymentColMigrations = [
+      ["society_id", `ALTER TABLE ${paymentsTable} ADD COLUMN society_id INT NULL AFTER bill_id`],
+      ["resident_id", `ALTER TABLE ${paymentsTable} ADD COLUMN resident_id INT NULL AFTER society_id`],
+      ["amenity_booking_id", `ALTER TABLE ${paymentsTable} ADD COLUMN amenity_booking_id INT NULL AFTER resident_id`],
+      ["source", `ALTER TABLE ${paymentsTable} ADD COLUMN source ENUM('BILL','MAINTENANCE','AMENITY') NOT NULL DEFAULT 'BILL' AFTER payment_mode`],
+      ["status", `ALTER TABLE ${paymentsTable} ADD COLUMN status ENUM('PENDING','SUCCESS','FAILED','CANCELLED') NOT NULL DEFAULT 'PENDING' AFTER source`],
+    ];
+    for (const [col, sql] of paymentColMigrations) {
+      if (!paymentCols.has(col)) {
+        try {
+          await sequelize.query(sql);
+          console.log(`[DB Migration] Added ${paymentsTable}.${col}`);
+        } catch (err) {
+          console.log(`[DB Migration] Note adding ${paymentsTable}.${col}:`, err.message);
+        }
+      }
+    }
+
+    // Allow amenity payments (bill_id NULL).
+    try {
+      await sequelize.query(`ALTER TABLE ${paymentsTable} MODIFY COLUMN bill_id INT NULL`);
+      console.log(`[DB Migration] ${paymentsTable}.bill_id is now nullable`);
+    } catch (err) {
+      console.log(`[DB Migration] Note making ${paymentsTable}.bill_id nullable:`, err.message);
+    }
+
+    // --- C) Backfill legacy payment rows (preserves all history) ---
+    const backfill = `
+      UPDATE ${paymentsTable} p
+      JOIN bills b  ON p.bill_id = b.id
+      JOIN flats f  ON b.flat_id = f.id
+      JOIN blocks bl ON f.block_id = bl.id
+      SET
+        p.society_id  = COALESCE(p.society_id, bl.society_id),
+        p.resident_id = COALESCE(p.resident_id, f.resident_id),
+        p.source      = IF(b.type = 'MAINTENANCE', 'MAINTENANCE', 'BILL'),
+        p.status      = IF(b.status = 'PAID', 'SUCCESS', 'PENDING')
+      WHERE p.society_id IS NULL OR p.society_id = 0 OR p.source = 'BILL'
+    `;
+    try {
+      const [bkRes] = await sequelize.query(backfill);
+      console.log(`[DB Migration] Backfilled ${paymentsTable} financial references (${bkRes.affectedRows} rows)`);
+    } catch (err) {
+      console.log(`[DB Migration] Note backfilling ${paymentsTable}:`, err.message);
+    }
+
+    // --- D) Indexes for the new payment lookups ---
+    try {
+      await sequelize.query(`ALTER TABLE ${paymentsTable} ADD INDEX idx_payments_society (society_id)`);
+      console.log(`[DB Migration] Added idx_payments_society`);
+    } catch (err) {
+      console.log(`[DB Migration] Note adding idx_payments_society:`, err.message);
+    }
+    try {
+      await sequelize.query(`ALTER TABLE ${paymentsTable} ADD INDEX idx_payments_amenity_booking (amenity_booking_id)`);
+      console.log(`[DB Migration] Added idx_payments_amenity_booking`);
+    } catch (err) {
+      console.log(`[DB Migration] Note adding idx_payments_amenity_booking:`, err.message);
+    }
+
+    // --- E) Amenity bookings: single-record booking columns ---
+    try {
+      const abCols = await sequelize
+        .query(
+          "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'amenity_bookings'"
+        )
+        .then(([rows]) => new Set(rows.map((r) => r.COLUMN_NAME)));
+      const abMigrations = [
+        ["from_date", "ALTER TABLE amenity_bookings ADD COLUMN from_date DATE NULL AFTER date"],
+        ["to_date",   "ALTER TABLE amenity_bookings ADD COLUMN to_date DATE NULL AFTER from_date"],
+        ["slots",     "ALTER TABLE amenity_bookings ADD COLUMN slots JSON NULL AFTER to_date"],
+      ];
+      for (const [col, sql] of abMigrations) {
+        if (!abCols.has(col)) {
+          try {
+            await sequelize.query(sql);
+            console.log(`[DB Migration] Added amenity_bookings.${col}`);
+          } catch (err) {
+            console.log(`[DB Migration] Note adding amenity_bookings.${col}:`, err.message);
+          }
+        }
+      }
+      try {
+        await sequelize.query(
+          "CREATE INDEX idx_amenity_bookings_range ON amenity_bookings (amenity_id, from_date, to_date)"
+        );
+        console.log("[DB Migration] Added idx_amenity_bookings_range");
+      } catch (err) {
+        console.log("[DB Migration] Note adding idx_amenity_bookings_range:", err.message);
+      }
+    } catch (err) {
+      console.log("[DB Migration] Note on amenity_bookings range columns:", err.message);
     }
 
     return sequelize.sync();

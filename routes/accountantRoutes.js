@@ -41,10 +41,12 @@ const resolveSocietyFromAccountant = async (req, res, next) => {
   }
 };
 
-router.get("/dashboard-stats", auth, role("ACCOUNTANT"), getDashboardStats);
-router.get("/bills", auth, role("ACCOUNTANT"), getSocietyBills);
-router.get("/payments", auth, role("ACCOUNTANT"), getPayments);
-router.get("/payments/summary", auth, role("ACCOUNTANT"), monthlyCollection);
+const financeViewRoles = ["SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"];
+
+router.get("/dashboard-stats", auth, role(...financeViewRoles), getDashboardStats);
+router.get("/bills", auth, role(...financeViewRoles), getSocietyBills);
+router.get("/payments", auth, role(...financeViewRoles), getPayments);
+router.get("/payments/summary", auth, role(...financeViewRoles), monthlyCollection);
 
 // Appoint resident as accountant
 router.post("/appoint-resident", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), appointResidentAccountant);

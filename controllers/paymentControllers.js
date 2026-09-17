@@ -3,8 +3,9 @@
 
 const { Op } = require("sequelize");
 const crypto = require("crypto");
-const { Bill, Payment, AmenityBooking, Amenity, FlatMembership } = require("../models");
+const { Bill, Payment, AmenityBooking, Amenity, FlatMembership, Flat, Block } = require("../models");
 const razorpay = require("../utils/razorpay");
+const sequelize = require("../config/db");
 
 /* ─── Demo UPI payment helper (mirrors amenityController.buildUpiPaymentData) ─── */
 function buildBillUpiData(bill) {
@@ -26,6 +27,7 @@ async function findOwnedPendingBill(billId, userId) {
 
   const bill = await Bill.findOne({
     where: { id: billId, flat_id: { [Op.in]: myFlatIds } },
+    include: [{ model: Flat, include: [{ model: Block }] }],
   });
   return bill;
 }
@@ -54,34 +56,68 @@ const createDemoUpi = async (req, res) => {
   }
 };
 
-/* === VERIFY DEMO UPI PAYMENT (marks bill PAID) === */
+/* === VERIFY DEMO UPI PAYMENT (submits payment for admin confirmation) === */
 const verifyDemoPayment = async (req, res) => {
+  const t = await sequelize.transaction();
   try {
     const { bill_id } = req.body;
     if (!bill_id) {
+      await t.rollback();
       return res.status(400).json({ success: false, message: "bill_id is required" });
     }
 
-    const bill = await findOwnedPendingBill(bill_id, req.user.id);
+    // Lock the bill row to guarantee exactly one Payment/submission per bill.
+    const bill = await Bill.findByPk(Number(bill_id), {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+      include: [{ model: Flat, include: [{ model: Block }] }],
+    });
 
     if (!bill) {
+      await t.rollback();
       return res.status(404).json({ success: false, message: "Bill not found" });
     }
 
+    // Owner check: bill must belong to one of the caller's current flats
+    const memberships = await FlatMembership.findAll({
+      where: { user_id: req.user.id, is_current: true },
+      attributes: ["flat_id"],
+      transaction: t,
+    });
+    const myFlatIds = memberships.map((m) => m.flat_id);
+    if (!myFlatIds.includes(bill.flat_id)) {
+      await t.rollback();
+      return res.status(403).json({ success: false, message: "Bill not found for this resident" });
+    }
+
     if (bill.status === "PAID" || bill.status === "PENDING_VERIFICATION") {
+      await t.rollback();
       return res.status(400).json({ success: false, message: "Payment already submitted or paid" });
     }
 
-    await Payment.create({
-      bill_id: bill.id,
-      amount: bill.amount,
-      payment_mode: "UPI",
-    });
+    const societyId = bill.Flat?.Block?.society_id || req.user.society_id;
+    const source = bill.type === "MAINTENANCE" ? "MAINTENANCE" : "BILL";
 
-    await bill.update({ status: "PENDING_VERIFICATION" });
+    await Payment.create(
+      {
+        bill_id: bill.id,
+        society_id: societyId,
+        resident_id: req.user.id,
+        amount: bill.amount,
+        payment_mode: "UPI",
+        source,
+        status: "PENDING",
+      },
+      { transaction: t }
+    );
+
+    await bill.update({ status: "PENDING_VERIFICATION" }, { transaction: t });
+
+    await t.commit();
 
     return res.status(200).json({ success: true, message: "Payment submitted successfully. Awaiting Admin confirmation." });
   } catch (err) {
+    await t.rollback();
     console.error("Verify Demo UPI Error:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
@@ -188,7 +224,9 @@ const verifyPayment = async (req, res) => {
 
     /* === BILL === */
     if (!type || type === "BILL") {
-      const bill = await Bill.findByPk(bill_id);
+      const bill = await Bill.findByPk(bill_id, {
+        include: [{ model: Flat, include: [{ model: Block }] }],
+      });
 
       if (!bill)
         return res.status(404).json({
@@ -205,8 +243,12 @@ const verifyPayment = async (req, res) => {
 
       await Payment.create({
         bill_id,
+        society_id: bill.Flat?.Block?.society_id || req.user.society_id,
+        resident_id: req.user.id,
         amount: bill.amount,
         payment_mode: "RAZORPAY",
+        source: bill.type === "MAINTENANCE" ? "MAINTENANCE" : "BILL",
+        status: "PENDING",
       });
 
       await bill.update({ status: "PENDING_VERIFICATION" });
@@ -232,6 +274,16 @@ const verifyPayment = async (req, res) => {
       booking.payment_status = "PAID";
       booking.status = "APPROVED";
       await booking.save();
+
+      await Payment.create({
+        amenity_booking_id: booking.id,
+        society_id: booking.society_id,
+        resident_id: booking.user_id,
+        amount: booking.AmenityPayment || null,
+        payment_mode: "RAZORPAY",
+        source: "AMENITY",
+        status: "SUCCESS",
+      });
     }
 
     return res.status(200).json({

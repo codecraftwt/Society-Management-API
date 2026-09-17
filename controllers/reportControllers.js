@@ -10,6 +10,7 @@ const Block      = require("../models/Block");
 const Society    = require("../models/Society");
 const User       = require("../models/User");
 const Bill       = require("../models/Bill");
+const LedgerEntry = require("../models/LedgerEntry");
 
 const PAGE_LIMIT = 15;
 
@@ -298,10 +299,47 @@ const getFinancialReport = async (req, res) => {
     const totalCollected = allBills.filter(b => b.status === "PAID").reduce((s, b) => s + Number(b.amount), 0);
     const totalDue       = allBills.filter(b => b.status !== "PAID").reduce((s, b) => s + Number(b.amount), 0);
 
+    const ledgerWhere = {};
+    if (!isGlobalSuperAdmin) {
+      ledgerWhere.society_id = req.user.society_id;
+    } else if (society_id && society_id !== "ALL") {
+      ledgerWhere.society_id = society_id;
+    }
+    if (fromDate && toDate) {
+      ledgerWhere.entry_date = {
+        [Op.between]: [`${fromDate} 00:00:00`, `${toDate} 23:59:59`],
+      };
+    }
+
+    const [creditEntries, debitEntries] = await Promise.all([
+      LedgerEntry.findAll({
+        where: { ...ledgerWhere, type: "CREDIT", status: { [Op.ne]: "REVERSED" } },
+        attributes: ["amount", "source"],
+      }),
+      LedgerEntry.findAll({
+        where: { ...ledgerWhere, type: "DEBIT", status: { [Op.ne]: "REVERSED" } },
+        attributes: ["amount", "source"],
+      }),
+    ]);
+
+    const income = { BILL: 0, MAINTENANCE: 0, AMENITY: 0 };
+    creditEntries.forEach((e) => {
+      const src = e.source || "BILL";
+      income[src in income ? src : "BILL"] += Number(e.amount);
+    });
+    const credited   = creditEntries.reduce((s, e) => s + Number(e.amount), 0);
+    const debited    = debitEntries.reduce((s, e) => s + Number(e.amount), 0);
+    const currentBalance = credited - debited;
+
     res.json({
       data: bills,
       pagination: { currentPage: page, totalPages: Math.ceil(count / limit), totalItems: count, limit },
       counts: { total: totalAll, paid: totalPaid, pending: totalPending, collected: totalCollected, due: totalDue },
+      ledger: {
+        income: { bills: income.BILL + income.MAINTENANCE, amenities: income.AMENITY, total: credited },
+        expensesTotal: debited,
+        currentBalance,
+      },
     });
   } catch (err) {
     console.error("❌ [getFinancialReport] ERROR:", err);

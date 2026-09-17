@@ -60,6 +60,21 @@ source: {
 
   resolved_at: {
     type: DataTypes.DATE
+  },
+
+  resolved_by: {
+    type: DataTypes.INTEGER,
+    allowNull: true
+  },
+
+  resolution_notes: {
+    type: DataTypes.TEXT,
+    allowNull: true
+  },
+
+  other_reason: {
+    type: DataTypes.STRING,
+    allowNull: true
   }
 
 }, {

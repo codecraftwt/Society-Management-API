@@ -4,7 +4,7 @@ const auth = require("../middlewares/authMiddleware");
 const role = require("../middlewares/roleMiddleware");
 const maintenanceController = require("../controllers/maintenanceControllers");
 
-const VIEW_ROLES = ["SOCIETY_ADMIN", "COMMITTEE_MEMBER"];
+const VIEW_ROLES = ["SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"];
 const WRITE_ROLES = ["SOCIETY_ADMIN"];
 
 // Configuration management (write = admin only)

@@ -5,7 +5,10 @@ const Flat = require("../models/Flat");
 const Floor = require("../models/Floor");
 const Notification = require("../models/Notification");
 const UserSetting = require("../models/UserSetting");
+const Payment = require("../models/Payment");
 const { sendPushNotification } = require("../utils/pushNotification");
+const { createLedgerEntry } = require("../utils/ledgerService");
+const sequelize = require("../config/db");
 
 const { Op } = require("sequelize");
 
@@ -432,9 +435,9 @@ const deleteBill = async (req, res) => {
       return res.status(404).json({ message: "Bill not found" });
     }
 
-    // Delete associated payments first to prevent foreign key errors
-    const Payment = require("../models/Payment");
-    await Payment.destroy({ where: { bill_id: id } });
+    // Remove only unconfirmed payment attempts. SUCCESS payments are permanent
+    // financial history and are intentionally preserved.
+    await Payment.destroy({ where: { bill_id: id, status: { [Op.in]: ["PENDING", "FAILED"] } } });
 
     await bill.destroy();
 
@@ -447,17 +450,81 @@ const deleteBill = async (req, res) => {
 
 /* =====
    HELPER: PROCESS SINGLE BILL PAYMENT CONFIRMATION & NOTIFY
+   Transactional: Payment => SUCCESS, Bill => PAID, Ledger => CREDIT.
+   Never leaves Bill=PAID without a SUCCESS Payment and a Ledger CREDIT.
 ===== */
 const processConfirmSingleBill = async (bill, reqUser, targetSocietyId) => {
-  await bill.update({ status: "PAID" });
+  const t = await sequelize.transaction();
+  let confirmed = false;
+  try {
+    // Lock the bill row so concurrent confirms cannot double-process.
+    const locked = await Bill.findByPk(bill.id, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+      include: [
+        { model: Flat, include: [{ model: Block }] },
+      ],
+    });
+    if (!locked) throw new Error("Bill not found");
 
-  // Update Payment record if exists
-  const Payment = require("../models/Payment");
-  const payment = await Payment.findOne({ where: { bill_id: bill.id } });
-  if (payment) {
-    await payment.update({ status: "SUCCESS" });
+    const alreadyPaid = locked.status === "PAID";
+    if (!alreadyPaid) {
+      const societyId =
+        targetSocietyId || reqUser?.society_id || locked.Flat?.Block?.society_id || locked.Flat?.society_id;
+      const residentId = locked.Flat?.resident_id || undefined;
+      const source = locked.type === "MAINTENANCE" ? "MAINTENANCE" : "BILL";
+
+      // 1. Mark the Payment as SUCCESS (create if missing for full audit).
+      const payment = await Payment.findOne({ where: { bill_id: locked.id }, transaction: t });
+      if (payment) {
+        await payment.update(
+          { status: "SUCCESS", society_id: societyId, resident_id: residentId, source },
+          { transaction: t }
+        );
+      } else {
+        await Payment.create({
+          bill_id: locked.id,
+          society_id: societyId,
+          resident_id: residentId,
+          amount: locked.amount,
+          payment_mode: "UPI",
+          source,
+          status: "SUCCESS",
+        }, { transaction: t });
+      }
+
+      // 2. Mark bill as PAID
+      await locked.update({ status: "PAID" }, { transaction: t });
+
+      // 3. Post a single Ledger CREDIT (idempotent via unique DB key).
+      await createLedgerEntry({
+        societyId,
+        type: "CREDIT",
+        source,
+        referenceId: locked.id,
+        amount: locked.amount,
+        entryDate: new Date().toISOString().slice(0, 10),
+        description: source === "MAINTENANCE" ? `Maintenance payment confirmed (${locked.title})` : `Bill payment confirmed (${locked.title})`,
+        actor: reqUser,
+        transaction: t,
+      });
+
+      confirmed = true;
+    }
+
+    await t.commit();
+  } catch (err) {
+    await t.rollback();
+    throw err;
   }
 
+  if (confirmed) {
+    // Notifications are non-critical and run after commit.
+    await notifyBillConfirmation(bill, reqUser, targetSocietyId);
+  }
+};
+
+const notifyBillConfirmation = async (bill, reqUser, targetSocietyId) => {
   // Find resident & household admins to notify (Web + Mobile Push)
   const userIdsToNotify = new Set();
   if (bill.resident_id) userIdsToNotify.add(bill.resident_id);
@@ -668,10 +735,13 @@ const bulkDeleteBills = async (req, res) => {
 
     const targetIds = bills.map((b) => b.id);
 
-    // Delete associated payments first to prevent foreign key errors
-    const Payment = require("../models/Payment");
+    // Remove only unconfirmed payment attempts. SUCCESS payments are permanent
+    // financial history and are intentionally preserved.
     await Payment.destroy({
-      where: { bill_id: { [Op.in]: targetIds } },
+      where: {
+        bill_id: { [Op.in]: targetIds },
+        status: { [Op.in]: ["PENDING", "FAILED"] },
+      },
     });
 
     await Bill.destroy({

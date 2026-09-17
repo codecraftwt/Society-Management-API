@@ -114,7 +114,12 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
     console.log("✅ Push Notification Sent:", response);
   } catch (error) {
     console.error("❌ Push Notification Error:", error.message);
-    if (error.code === 'messaging/registration-token-not-registered' || error.code === 'messaging/invalid-registration-token') {
+    const isInvalidToken =
+      error.code === 'messaging/registration-token-not-registered' ||
+      error.code === 'messaging/invalid-registration-token' ||
+      error.code === 'messaging/mismatched-credential' ||
+      (error.code === 'messaging/invalid-argument' && /registration token/i.test(error.message));
+    if (isInvalidToken) {
       try {
         await User.update({ fcm_token: null }, { where: { fcm_token: fcmToken } });
       } catch (dbError) {}

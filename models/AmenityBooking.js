@@ -38,6 +38,31 @@ const AmenityBooking = sequelize.define(
       allowNull: false,
     },
 
+    /*
+     * One booking = one row.  FULL_DAY bookings span the inclusive range
+     * [from_date, to_date]; SLOT bookings store their exact slots (each with
+     * its own date + time) in the `slots` JSON array.
+     *  - date       = first covered date (from_date) — kept for display compat.
+     *  - start_time = first slot start / "00:00:00" (FULL_DAY)
+     *  - end_time   = last slot end    / "23:59:59" (FULL_DAY)
+     */
+    from_date: {
+      type: DataTypes.DATEONLY,
+      allowNull: false,
+    },
+
+    to_date: {
+      type: DataTypes.DATEONLY,
+      allowNull: false,
+    },
+
+    /* [{ date: "YYYY-MM-DD", start_time: "HH:mm:ss", end_time: "HH:mm:ss" }] */
+    slots: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      defaultValue: null,
+    },
+
     start_time: {
       type: DataTypes.TIME,
       allowNull: true,
@@ -111,6 +136,7 @@ const AmenityBooking = sequelize.define(
     tableName: "amenity_bookings",
     indexes: [
       { fields: ["amenity_id", "date"] },
+      { fields: ["amenity_id", "from_date", "to_date"], name: "idx_amenity_bookings_range" },
       { fields: ["user_id"] },
       { fields: ["status", "payment_expires_at"], name: "idx_bookings_payment_expiry" },
     ],

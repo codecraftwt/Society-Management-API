@@ -20,8 +20,13 @@ const ALL_MODULE_ACTIONS = {
   amenities: ["view", "create", "edit", "delete", "manage_bookings"],
   reports: ["view", "export"],
   society_documents: ["view", "upload", "edit", "delete", "download"],
-  emergency: ["view", "trigger", "resolve"],
+  emergency: ["view", "trigger", "resolve", "edit", "delete", "view_history"],
   settings: ["view", "edit"],
+  accounting: ["view", "create", "edit", "delete", "view_ledger", "view_reports", "manage_opening_balance"],
+  payments: ["view", "confirm"],
+  expenses: ["view", "create", "edit", "delete"],
+  general_ledger: ["view", "export"],
+  financial_audit_log: ["view"],
 };
 
 // Default baseline section enablement per role
@@ -45,6 +50,11 @@ const DEFAULT_SECTION_ENABLEMENT = {
     society_documents: true,
     emergency: true,
     settings: true,
+    accounting: true,
+    payments: true,
+    expenses: true,
+    general_ledger: true,
+    financial_audit_log: true,
   },
   ACCOUNTANT: {
     dashboard: true,
@@ -65,6 +75,11 @@ const DEFAULT_SECTION_ENABLEMENT = {
     society_documents: true,
     emergency: false,
     settings: true,
+    accounting: true,
+    payments: true,
+    expenses: true,
+    general_ledger: true,
+    financial_audit_log: true,
   },
   GUARD: {
     dashboard: true,
@@ -85,6 +100,11 @@ const DEFAULT_SECTION_ENABLEMENT = {
     society_documents: true,
     emergency: true,
     settings: true,
+    accounting: false,
+    payments: false,
+    expenses: false,
+    general_ledger: false,
+    financial_audit_log: false,
   },
   RESIDENT: {
     dashboard: true,
@@ -105,6 +125,11 @@ const DEFAULT_SECTION_ENABLEMENT = {
     society_documents: true,
     emergency: true,
     settings: true,
+    accounting: false,
+    payments: false,
+    expenses: false,
+    general_ledger: false,
+    financial_audit_log: false,
   },
   TENANT: {
     dashboard: true,
@@ -125,6 +150,31 @@ const DEFAULT_SECTION_ENABLEMENT = {
     society_documents: true,
     emergency: true,
     settings: true,
+    payments: false,
+    expenses: false,
+    general_ledger: false,
+    financial_audit_log: false,
+  },
+};
+
+// Per-role action restrictions layered on top of the enabled sections.
+// When a section is enabled, the role receives this action subset instead of
+// the full module action list (e.g. Accountant can record expenses but not
+// delete/void them, and cannot manage the opening balance).
+const DEFAULT_ACTION_OVERRIDES = {
+  COMMITTEE_MEMBER: {
+    accounting: ["view", "create", "edit", "view_ledger", "view_reports"],
+    payments: ["view", "confirm"],
+    expenses: ["view", "create", "edit"],
+    general_ledger: ["view"],
+    financial_audit_log: ["view"],
+  },
+  ACCOUNTANT: {
+    accounting: ["view", "create", "edit", "view_ledger", "view_reports"],
+    payments: ["view", "confirm"],
+    expenses: ["view", "create", "edit"],
+    general_ledger: ["view"],
+    financial_audit_log: ["view"],
   },
 };
 
@@ -134,7 +184,12 @@ Object.keys(DEFAULT_SECTION_ENABLEMENT).forEach((role) => {
   DEFAULT_PERMISSIONS[role] = {};
   Object.keys(ALL_MODULE_ACTIONS).forEach((mod) => {
     const isEnabled = DEFAULT_SECTION_ENABLEMENT[role][mod] ?? false;
-    DEFAULT_PERMISSIONS[role][mod] = isEnabled ? [...ALL_MODULE_ACTIONS[mod]] : [];
+    const override  = DEFAULT_ACTION_OVERRIDES[role]?.[mod];
+    DEFAULT_PERMISSIONS[role][mod] = isEnabled
+      ? override
+        ? [...override]
+        : [...ALL_MODULE_ACTIONS[mod]]
+      : [];
   });
 });
 

@@ -209,10 +209,40 @@ describe("Accountant API", () => {
     expectUnauthorized(res);
   });
 
-  it("is forbidden for a resident", async () => {
-    const { headers } = await login("resident");
+  it("is forbidden for a guard", async () => {
+    const { headers } = await login("guard");
     const res = await request(app).get("/api/accountant/bills").set(headers);
     expectForbidden(res);
+  });
+
+  it("GET /api/accountant/bills succeeds for society admin", async () => {
+    const { headers } = await login("admin");
+    const res = await request(app).get("/api/accountant/bills").set(headers);
+    expectOk(res);
+  });
+
+  it("GET /api/accountant/payments succeeds for society admin", async () => {
+    const { headers } = await login("admin");
+    const res = await request(app).get("/api/accountant/payments").set(headers);
+    expectOk(res);
+  });
+
+  it("GET /api/accountant/payments succeeds for committee member", async () => {
+    const { headers } = await login("committee");
+    const res = await request(app).get("/api/accountant/payments").set(headers);
+    expectOk(res);
+  });
+
+  it("GET /api/accountant/payments is forbidden for a guard", async () => {
+    const { headers } = await login("guard");
+    const res = await request(app).get("/api/accountant/payments").set(headers);
+    expectForbidden(res);
+  });
+
+  it("GET /api/accountant/payments/summary succeeds for society admin", async () => {
+    const { headers } = await login("admin");
+    const res = await request(app).get("/api/accountant/payments/summary").set(headers);
+    expectOk(res);
   });
 
   it("GET /api/accountant/bills succeeds for accountant", async () => {
@@ -249,8 +279,8 @@ describe("Accountant API", () => {
     expectUnauthorized(res);
   });
 
-  it("GET /api/accountant/dashboard-stats is forbidden for a resident", async () => {
-    const { headers } = await login("resident");
+  it("GET /api/accountant/dashboard-stats is forbidden for a guard", async () => {
+    const { headers } = await login("guard");
     const res = await request(app).get("/api/accountant/dashboard-stats").set(headers);
     expectForbidden(res);
   });

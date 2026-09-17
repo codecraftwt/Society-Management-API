@@ -28,6 +28,25 @@ const notifyResident = async (userId, title, msg, societyId) => {
   }
 };
 
+/* ── Date range label for notifications ── */
+const dateRangeLabel = (b) => {
+  const from = b.from_date || b.date;
+  const to   = b.to_date;
+  if (to && to !== from) return `${from} – ${to}`;
+  return String(from);
+};
+const slotLabel = (b) => {
+  if (Array.isArray(b.slots) && b.slots.length) {
+    return `${b.slots.length} slot${b.slots.length > 1 ? "s" : ""}`;
+  }
+  if (b.start_time && b.start_time !== "00:00:00") {
+    const end = b.end_time && b.end_time !== "23:59:59" ? ` – ${b.end_time.slice(0, 5)}` : "";
+    return `${b.start_time.slice(0, 5)}${end}`;
+  }
+  return null;
+};
+const bookingLabel = (b) => slotLabel(b) || dateRangeLabel(b);
+
 /* ═══════════════════════════════════════
    CREATE AMENITY
 ═══════════════════════════════════════ */
@@ -161,7 +180,14 @@ exports.getAllBookings = async (req, res) => {
   try {
     const { date, amenityId, status } = req.query;
     const where = { society_id: req.user.society_id };
-    if (date)      where.date       = date;
+
+    /* Range-aware date filter: match bookings whose [from_date, to_date] overlaps the queried date */
+    if (date) {
+      where[Op.and] = [
+        { from_date: { [Op.lte]: date } },
+        { to_date:   { [Op.gte]: date } },
+      ];
+    }
     if (amenityId) where.amenity_id = amenityId;
     if (status)    where.status     = status;
 
@@ -172,7 +198,7 @@ exports.getAllBookings = async (req, res) => {
         { model: User,    attributes: ["name", "email", "phone"] },
         { model: Flat,    attributes: ["flat_number"] },
       ],
-      order: [["createdAt", "DESC"], ["start_time", "ASC"]],
+      order: [["from_date", "DESC"], ["start_time", "ASC"]],
     });
 
     /* Annotate PAYMENT_PENDING rows with remaining expiry time (seconds) */
@@ -186,8 +212,8 @@ exports.getAllBookings = async (req, res) => {
       return plain;
     });
 
-    // Group full‑day amenity bookings so a multi‑day booking (e.g. 28–31)
-    // appears as ONE record with a from → to date range (and booking_ids).
+    // Single-row bookings: pass through with computed date_count/slot_count
+    // Legacy multi-row: groupAmenityBookings merges as before
     const data = groupAmenityBookings(enriched);
 
     res.json({ success: true, data });
@@ -210,7 +236,7 @@ exports.getPendingBookings = async (req, res) => {
         { model: User,    attributes: ["name", "phone"] },
         { model: Flat,    attributes: ["flat_number"] },
       ],
-      order: [["date", "ASC"]],
+      order: [["from_date", "ASC"]],
     });
     res.json({ success: true, data: groupAmenityBookings(bookings) });
   } catch (e) {
@@ -247,7 +273,7 @@ exports.approveBooking = async (req, res) => {
     await notifyResident(
       first.user_id,
       "Booking Approved ✅",
-      `✅ Your booking for ${first.Amenity.name} on ${first.date} has been approved.`,
+      `✅ Your booking for ${first.Amenity.name} on ${bookingLabel(first)} has been approved.`,
       req.user.society_id
     );
 
@@ -285,7 +311,7 @@ exports.rejectBooking = async (req, res) => {
     await notifyResident(
       first.user_id,
       "Booking Rejected",
-      `❌ Your booking for ${first.Amenity.name} on ${first.date} has been rejected.`,
+      `❌ Your booking for ${first.Amenity.name} on ${bookingLabel(first)} has been rejected.`,
       req.user.society_id
     );
 
@@ -319,7 +345,7 @@ exports.cancelBooking = async (req, res) => {
     await notifyResident(
       first.user_id,
       "Booking Cancelled",
-      `⚠️ Your booking for ${first.Amenity.name} on ${first.date} has been cancelled by the admin.`,
+      `⚠️ Your booking for ${first.Amenity.name} on ${bookingLabel(first)} has been cancelled by the admin.`,
       req.user.society_id
     );
 
@@ -340,11 +366,15 @@ exports.getAdminAvailability = async (req, res) => {
     const amenity = await Amenity.findOne({ where: { id, society_id: req.user.society_id } });
     if (!amenity) return res.status(404).json({ message: "Amenity not found" });
 
+    /* Fetch all active bookings whose range overlaps the queried date */
     const dayBookings = await AmenityBooking.findAll({
       where: {
         amenity_id: id,
-        date,
         status: { [Op.notIn]: ["CANCELLED", "REJECTED"] },
+        [Op.or]: [
+          { from_date: { [Op.lte]: date }, to_date: { [Op.gte]: date } },
+          { from_date: null, date },
+        ],
       },
     });
 
@@ -354,9 +384,18 @@ exports.getAdminAvailability = async (req, res) => {
 
     while (addMinutes(currentTime, duration) <= amenity.closing_time) {
       const endTime = addMinutes(currentTime, duration);
-      const count   = dayBookings.filter(
-        (b) => b.start_time < endTime && b.end_time > currentTime
-      ).length;
+      let count = 0;
+
+      for (const b of dayBookings) {
+        if (Array.isArray(b.slots) && b.slots.length) {
+          /* New single-row: check if any slot in the JSON matches this time window */
+          if (b.slots.some((s) => s.date === date && s.start_time < endTime && s.end_time > currentTime)) {
+            count++;
+          }
+        } else if (b.date === date && b.start_time < endTime && b.end_time > currentTime) {
+          count++;
+        }
+      }
 
       slots.push({
         start_time:  currentTime,

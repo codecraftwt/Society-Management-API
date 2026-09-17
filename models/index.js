@@ -32,6 +32,10 @@ const BillingRule = require("./BillingRule");
 const MaintenanceRate = require("./MaintenanceRate");
 const AccountantAssignment = require("./AccountantAssignment");
 const RolePermission = require("./RolePermission");
+const EmergencyAcknowledgement = require("./EmergencyAcknowledgement");
+const Expense = require("./Expense");
+const LedgerEntry = require("./LedgerEntry");
+const FinancialAuditLog = require("./FinancialAuditLog");
 
 
 
@@ -184,6 +188,28 @@ User.hasMany(EmergencyAlert, { foreignKey: "admin_id", as: "AdminAlerts" });
 
 EmergencyAlert.belongsTo(Flat, {
   foreignKey: "flat_id",
+});
+
+EmergencyAlert.belongsTo(User, {
+  foreignKey: "resolved_by",
+  as: "Resolver",
+});
+User.hasMany(EmergencyAlert, { foreignKey: "resolved_by", as: "ResolvedAlerts" });
+
+EmergencyAlert.hasMany(EmergencyAcknowledgement, {
+  foreignKey: "emergency_alert_id",
+  as: "acknowledgements",
+  onDelete: "CASCADE",
+});
+EmergencyAcknowledgement.belongsTo(EmergencyAlert, {
+  foreignKey: "emergency_alert_id",
+});
+
+User.hasMany(EmergencyAcknowledgement, {
+  foreignKey: "user_id",
+});
+EmergencyAcknowledgement.belongsTo(User, {
+  foreignKey: "user_id",
 });
 
 
@@ -390,6 +416,23 @@ AccountantAssignment.belongsTo(Society, { foreignKey: "society_id", as: "society
 Society.hasMany(RolePermission, { foreignKey: "society_id", as: "rolePermissions" });
 RolePermission.belongsTo(Society, { foreignKey: "society_id", as: "society" });
 
+/* ====
+   FINANCIAL MODULE ASSOCIATIONS
+==== */
+// Payment -> Society / Resident / AmenityBooking
+Payment.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+Payment.belongsTo(require("./User"), { foreignKey: "resident_id", as: "resident" });
+AmenityBooking.hasOne(Payment, { foreignKey: "amenity_booking_id", as: "payment" });
+Payment.belongsTo(AmenityBooking, { foreignKey: "amenity_booking_id", as: "booking" });
+
+// Society -> Expense / LedgerEntry / FinancialAuditLog
+Society.hasMany(Expense, { foreignKey: "society_id", as: "expenses" });
+Expense.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+Society.hasMany(LedgerEntry, { foreignKey: "society_id", as: "ledgerEntries" });
+LedgerEntry.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+Society.hasMany(FinancialAuditLog, { foreignKey: "society_id", as: "auditLogs" });
+FinancialAuditLog.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
 module.exports = {
   sequelize,
   User,
@@ -424,4 +467,8 @@ module.exports = {
   MaintenanceRate,
   AccountantAssignment,
   RolePermission,
+  EmergencyAcknowledgement,
+  Expense,
+  LedgerEntry,
+  FinancialAuditLog,
 };

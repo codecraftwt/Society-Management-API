@@ -1,5 +1,5 @@
 const { RolePermission } = require("../models");
-const { DEFAULT_PERMISSIONS } = require("../controllers/permissionController");
+const { DEFAULT_PERMISSIONS, ALL_MODULE_ACTIONS } = require("../controllers/permissionController");
 
 /**
  * Dynamic Permission Enforcement Middleware
