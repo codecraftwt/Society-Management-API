@@ -35,6 +35,7 @@ const MANAGEMENT_ROLES = [
   "SOCIETY_ADMIN",
   "COMMITTEE_MEMBER",
   "GUARD",
+  "ACCOUNTANT",
 ];
 
 // ✅ All roles can post emergency alerts

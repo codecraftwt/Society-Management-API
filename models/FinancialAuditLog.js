@@ -16,7 +16,11 @@ const FinancialAuditLog = sequelize.define("FinancialAuditLog", {
       "EXPENSE_UPDATE",
       "EXPENSE_VOID",
       "PAYMENT_REVERSED",
-      "MANUAL_ADJUSTMENT"
+      "MANUAL_ADJUSTMENT",
+      "MAINTENANCE_CONFIG_CREATED",
+      "MAINTENANCE_CONFIG_UPDATED",
+      "MAINTENANCE_CONFIG_DELETED",
+      "MAINTENANCE_GENERATED",
     ),
     allowNull: false,
   },

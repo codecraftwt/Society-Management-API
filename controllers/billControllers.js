@@ -1,4 +1,4 @@
-const { User, Block, HouseHoldMember, Society } = require("../models");
+const { User, Block, HouseHoldMember, Society, FlatMembership } = require("../models");
 
 const Bill = require("../models/Bill");
 const Flat = require("../models/Flat");
@@ -50,14 +50,22 @@ const createBill = async (req, res) => {
 
       const flat = await Flat.findByPk(flat_id);
 
-      if (!flat?.resident_id) {
+      let residentId = flat?.resident_id;
+      if (!residentId && flat_id) {
+        const membership = await FlatMembership.findOne({
+          where: { flat_id, is_current: true },
+        });
+        residentId = membership?.user_id;
+      }
+
+      if (!residentId) {
         return res.status(400).json({
           message: "Cannot create bill. No resident assigned to this flat.",
         });
       }
 
       // Block billing for tenant-occupied flats
-      if (flat.occupancy_status === "RENTED") {
+      if (flat?.occupancy_status === "RENTED") {
         return res.status(400).json({
           message: "Cannot create bill for a tenant-occupied flat. Only owner-occupied flats are billed.",
         });
@@ -65,7 +73,7 @@ const createBill = async (req, res) => {
 
       const bill = await Bill.create({
         flat_id,
-        resident_id: flat.resident_id,
+        resident_id: residentId,
         title,
         amount,
         billing_month,
@@ -77,7 +85,7 @@ const createBill = async (req, res) => {
       });
 
       const userIdsToNotify = new Set();
-      if (flat.resident_id) userIdsToNotify.add(flat.resident_id);
+      if (residentId) userIdsToNotify.add(residentId);
 
       const adminMembers = await HouseHoldMember.findAll({
         where: { flat_id: flat.id, isAdmin: true },
@@ -128,22 +136,34 @@ const createBill = async (req, res) => {
       // Only bill owner-occupied flats — exclude RENTED (tenant) flats
       const flats = await Flat.findAll({
         where: {
-          resident_id:      { [Op.ne]: null },
           occupancy_status: { [Op.in]: ["OWNER_OCCUPIED"] },
         },
-        include: {
-          model: Block,
-          where: { society_id: req.user.society_id },
-          attributes: [],
-        },
+        include: [
+          {
+            model: Block,
+            where: { society_id: req.user.society_id },
+            attributes: [],
+          },
+          {
+            model: FlatMembership,
+            required: false,
+            where: { is_current: true },
+            include: [{ model: User, attributes: ["id", "fcm_token"] }],
+          },
+        ],
       });
 
       const createdBills = [];
 
       for (let flat of flats) {
+        const activeMember = flat.FlatMemberships?.find(m => m.is_current) || flat.FlatMemberships?.[0];
+        const residentId = activeMember?.user_id || flat.resident_id;
+
+        if (!residentId) continue;
+
         const bill = await Bill.create({
           flat_id: flat.id,
-          resident_id: flat.resident_id,
+          resident_id: residentId,
           title,
           amount,
           billing_month,
@@ -156,8 +176,8 @@ const createBill = async (req, res) => {
 
         createdBills.push(bill);
 
-        const user = await User.findByPk(flat.resident_id, { attributes: ["id", "fcm_token"] });
-        const settings = await UserSetting.findOne({ where: { user_id: flat.resident_id } });
+        const user = activeMember?.User || (residentId ? await User.findByPk(residentId, { attributes: ["id", "fcm_token"] }) : null);
+        const settings = residentId ? await UserSetting.findOne({ where: { user_id: residentId } }) : null;
 
         if (!settings || settings.payment_updates !== false) {
           const notification = await Notification.create({
@@ -168,11 +188,11 @@ const createBill = async (req, res) => {
             action_route: "/resident/bills",
             society_id: req.user.society_id,
             receiver_role: "RESIDENT",
-            receiver_user_id: flat.resident_id,
+            receiver_user_id: residentId,
           });
 
           if (global.io) {
-            global.io.to(`user_${flat.resident_id}`).emit("new_notification", notification);
+            global.io.to(`user_${residentId}`).emit("new_notification", notification);
           }
 
           if (user && user.fcm_token) {
@@ -216,70 +236,110 @@ const getSocietyBills = async (req, res) => {
     // ── Filter: ALL | PAID | PENDING ──
     const filter = req.query.filter || "ALL";
 
+    // ── Filter: category / type ──
+    const category = req.query.category || req.query.type;
+
     // ── Society scope ──
     const targetSocId = req.headers["x-society-id"] || req.query.society_id || req.user.society_id;
     const isGlobalSuperAdmin = req.user.activeRole === "SUPER_ADMIN" && !targetSocId;
 
-    // ── Status WHERE (society scoping happens via Flat → Block includes below) ──
+    // ── Status & Society WHERE ──
     const billWhere = {};
 
     if (filter === "PAID") billWhere.status = "PAID";
     else if (filter === "PENDING") billWhere.status = "PENDING";
     else if (filter === "PENDING_VERIFICATION") billWhere.status = "PENDING_VERIFICATION";
 
-    // ── Search: title or billing_month ──
-    if (search) {
-      billWhere[Op.or] = [
-        { title:         { [Op.like]: `%${search}%` } },
-        { billing_month: { [Op.like]: `%${search}%` } },
-      ];
+    let targetFlatIds = null;
+    if (!isGlobalSuperAdmin && targetSocId) {
+      const societyBlocks = await Block.findAll({
+        where: { society_id: targetSocId },
+        attributes: ["id"],
+      });
+      const blockIds = societyBlocks.map(b => b.id);
+      if (blockIds.length > 0) {
+        const flats = await Flat.findAll({
+          where: { block_id: { [Op.in]: blockIds } },
+          attributes: ["id"],
+        });
+        targetFlatIds = flats.map(f => f.id);
+      } else {
+        targetFlatIds = [];
+      }
+      billWhere.flat_id = { [Op.in]: targetFlatIds };
     }
 
-    // ── Base include (scoped to society via Flat → Block) ──
-    const scopeBlockInclude = (baseInclude) => {
-      if (!isGlobalSuperAdmin && targetSocId) {
-        baseInclude.where    = { society_id: targetSocId };
-        baseInclude.required = true;
+    if (category && category !== "ALL") {
+      if (category === "MAINTENANCE") {
+        billWhere[Op.or] = [
+          { type: "MAINTENANCE" },
+          { bill_category: "MAINTENANCE" },
+          { title: { [Op.like]: "%Maintenance%" } },
+        ];
+      } else {
+        billWhere[Op.or] = [
+          { bill_category: category },
+          { type: category },
+        ];
       }
-      return baseInclude;
-    };
+    }
+
+    // ── Search: title, billing_month, or other_bill_type ──
+    if (search) {
+      billWhere[Op.or] = [
+        ...(billWhere[Op.or] || []),
+        { title:           { [Op.like]: `%${search}%` } },
+        { billing_month:   { [Op.like]: `%${search}%` } },
+        { other_bill_type: { [Op.like]: `%${search}%` } },
+        { bill_category:   { [Op.like]: `%${search}%` } },
+      ];
+    }
 
     const flatInclude = {
       model:      Flat,
       required:   false,
       attributes: ["id", "flat_number", "floor_id", "block_id"],
       include: [
-        scopeBlockInclude({ model: Block, required: false, attributes: ["id", "name"], include: [{ model: Society, attributes: ["id", "name"] }] }),
+        { model: Block, required: false, attributes: ["id", "name"], include: [{ model: Society, attributes: ["id", "name"] }] },
         { model: Floor, required: false, attributes: ["id", "floor_number"], include: [{ model: Block, required: false, attributes: ["id", "name"] }] },
-        { model: User, required: false, attributes: ["id", "name"] },
+        {
+          model: FlatMembership,
+          required: false,
+          where: { is_current: true },
+          include: [{ model: User, required: false, attributes: ["id", "name", "email", "phone"] }],
+        },
+      ],
+    };
+
+    const paymentInclude = {
+      model: Payment,
+      required: false,
+      attributes: ["id", "amount", "payment_mode", "payment_date", "source", "status", "resident_id"],
+      include: [
+        {
+          model: User,
+          as: "resident",
+          required: false,
+          attributes: ["id", "name", "email", "phone"],
+        },
       ],
     };
 
     // ── Paginated query ──
     const { count, rows: bills } = await Bill.findAndCountAll({
       where:    billWhere,
-      include:  [flatInclude],
+      include:  [flatInclude, paymentInclude],
       order:    [["created_at", "DESC"]],
       limit,
       offset,
       distinct: true,
+      col:      "id",
     });
 
-    // ── Unfiltered counts for stat strip & tab badges (society-scoped via Flat → Block) ──
+    // ── Unfiltered counts for stat strip & tab badges ──
     const allBillsForCounts = await Bill.findAll({
       attributes: ["id", "status", "amount"],
-      ...(!isGlobalSuperAdmin && targetSocId
-        ? {
-            include: [
-              {
-                model:      Flat,
-                required:   true,
-                attributes: [],
-                include:    [{ model: Block, required: true, where: { society_id: targetSocId }, attributes: [] }],
-              },
-            ],
-          }
-        : {}),
+      where: targetFlatIds !== null ? { flat_id: { [Op.in]: targetFlatIds } } : {},
     });
 
     const totalAll                 = allBillsForCounts.length;
@@ -295,8 +355,17 @@ const getSocietyBills = async (req, res) => {
     const totalAllAmount           = allBillsForCounts
       .reduce((s, b) => s + Number(b.amount || 0), 0);
 
+    const formattedBills = bills.map((bill) => {
+      const b = bill.toJSON ? bill.toJSON() : bill;
+      if (b.Flat) {
+        const activeMember = b.Flat.FlatMemberships?.find((m) => m.is_current) || b.Flat.FlatMemberships?.[0];
+        b.Flat.User = activeMember?.User || null;
+      }
+      return b;
+    });
+
     res.status(200).json({
-      data: bills,
+      data: formattedBills,
       pagination: {
         currentPage: page,
         totalPages:  Math.ceil(count / limit),

@@ -10,6 +10,17 @@ const {
   UserSetting,
 } = require("../models");
 const { sendPushNotification } = require("../utils/pushNotification");
+const { auditLog } = require("../utils/ledgerService");
+
+/* Best-effort audit stamp so a failure in the audit book never blocks the
+   actual maintenance operation (configs/bills are not transactional here). */
+async function stampAudit(payload) {
+  try {
+    await auditLog(payload);
+  } catch (err) {
+    console.error("[maintenanceController] auditLog failed:", err.message);
+  }
+}
 
 const MAINTENANCE_TYPES = ["LUMPSUM", "SQ_FEET", "FLAT"];
 const FLAT_TYPES = ["1BHK", "2BHK", "3BHK", "ROW_HOUSE", "COMMERCIAL"];
@@ -163,6 +174,16 @@ const saveConfig = async (req, res) => {
     const [rate, created] = await MaintenanceRate.findOrCreate({ where, defaults: data });
     if (!created) await rate.update(data);
 
+    await stampAudit({
+      societyId: req.user.society_id,
+      action: created ? "MAINTENANCE_CONFIG_CREATED" : "MAINTENANCE_CONFIG_UPDATED",
+      entityType: "MaintenanceRate",
+      entityId: rate.id,
+      newValue: rate.toJSON(),
+      reason: null,
+      actor: req.user,
+    });
+
     return res.status(created ? 201 : 200).json({ rate, action: created ? "created" : "updated" });
   } catch (err) {
     console.error("[saveConfig]", err);
@@ -186,6 +207,16 @@ const deleteConfig = async (req, res) => {
     const referenced = await Bill.count({ where: { maintenance_rate_id: rate.id } });
     if (referenced > 0) {
       await rate.update({ is_active: false });
+      await stampAudit({
+        societyId: req.user.society_id,
+        action: "MAINTENANCE_CONFIG_DELETED",
+        entityType: "MaintenanceRate",
+        entityId: rate.id,
+        oldValue: { is_active: true },
+        newValue: { is_active: false },
+        reason: "Configuration referenced by generated bills — deactivated instead of deleted.",
+        actor: req.user,
+      });
       return res.json({
         message: "Configuration has been used by generated bills, so it was deactivated instead of deleted.",
         rate,
@@ -193,6 +224,16 @@ const deleteConfig = async (req, res) => {
     }
 
     await rate.destroy();
+    await stampAudit({
+      societyId: req.user.society_id,
+      action: "MAINTENANCE_CONFIG_DELETED",
+      entityType: "MaintenanceRate",
+      entityId: Number(id),
+      oldValue: rate.toJSON(),
+      newValue: null,
+      reason: "Configuration permanently deleted.",
+      actor: req.user,
+    });
     return res.json({ message: "Configuration deleted", id: rate.id });
   } catch (err) {
     console.error("[deleteConfig]", err);
@@ -416,10 +457,24 @@ const generateBills = async (req, res) => {
     return res.status(400).json({ message: "billing_month must be in format like 'September 2026'" });
   }
 
-  const rateWhere = { society_id: societyId, is_active: true };
-  if (Array.isArray(rate_ids) && rate_ids.length > 0) {
-    rateWhere.id = { [Op.in]: rate_ids };
+  let parsedRateIds = rate_ids;
+  if (typeof rate_ids === "string") {
+    try {
+      parsedRateIds = JSON.parse(rate_ids);
+    } catch {
+      parsedRateIds = rate_ids.split(",").map(Number).filter(Boolean);
+    }
   }
+
+  if (!Array.isArray(parsedRateIds) || parsedRateIds.length === 0) {
+    return res.status(400).json({ message: "Please select a maintenance bill type before generating bills." });
+  }
+
+  if (parsedRateIds.length > 1) {
+    return res.status(400).json({ message: "Please select exactly one maintenance bill type to generate bills." });
+  }
+
+  const rateWhere = { society_id: societyId, is_active: true, id: parsedRateIds[0] };
 
   const rates = await MaintenanceRate.findAll({ where: rateWhere });
   if (rates.length === 0) {
@@ -667,6 +722,16 @@ const generateBills = async (req, res) => {
       }
     }
   }
+
+  await stampAudit({
+    societyId,
+    action: "MAINTENANCE_GENERATED",
+    entityType: "MaintenanceRate",
+    entityId: parsedRateIds[0],
+    newValue: { billing_month: requestedMonth, ...summary },
+    reason: null,
+    actor: req.user,
+  });
 
   return res.json({ summary, bills: results });
 };

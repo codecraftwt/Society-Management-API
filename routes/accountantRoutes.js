@@ -49,13 +49,13 @@ router.get("/payments", auth, role(...financeViewRoles), getPayments);
 router.get("/payments/summary", auth, role(...financeViewRoles), monthlyCollection);
 
 // Appoint resident as accountant
-router.post("/appoint-resident", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), appointResidentAccountant);
+router.post("/appoint-resident", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), appointResidentAccountant);
 
 // Eligible residents dropdown
-router.get("/eligible-residents", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), getEligibleAccountantResidents);
+router.get("/eligible-residents", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getEligibleAccountantResidents);
 
 // Accountant CRUD (Super Admin list / Society Admin list / Committee Member view)
-router.post("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), createAccountant);
+router.post("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), createAccountant);
 router.get("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "RESIDENT", "COMMITTEE_MEMBER"), getAccountant);
 
 // Super Admin global list
@@ -80,20 +80,20 @@ router.get("/me", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "RESIDENT", "COMMIT
 router.patch(
   "/:id/status",
   auth,
-  role("SUPER_ADMIN", "SOCIETY_ADMIN"),
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"),
   toggleAccountantStatus
 );
 router.put(
   "/:id/status",
   auth,
-  role("SUPER_ADMIN", "SOCIETY_ADMIN"),
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"),
   toggleAccountantStatus
 );
 
 router.put(
   "/:id",
   auth,
-  role("SUPER_ADMIN", "SOCIETY_ADMIN"),
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"),
   resolveSocietyFromAccountant,
   (req, res, next) => {
     req.body.society_id = req.body.society_id || req.resolvedSocietyId;
@@ -104,7 +104,7 @@ router.put(
 router.delete(
   "/:id",
   auth,
-  role("SUPER_ADMIN", "SOCIETY_ADMIN"),
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"),
   resolveSocietyFromAccountant,
   (req, res, next) => {
     req.query.society_id = req.query.society_id || req.resolvedSocietyId;

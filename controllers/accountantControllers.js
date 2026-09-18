@@ -1,4 +1,5 @@
 const { Bill, Flat, User, Block, Payment, Society, AmenityBooking, Amenity, FlatMembership, sequelize } = require("../models");
+const { Op } = require("sequelize");
 
 const getSocietyBills = async (req, res) => {
   try {
@@ -15,15 +16,26 @@ const getSocietyBills = async (req, res) => {
             where: { society_id: req.user.society_id },
           },
           {
-            model: User,
-            attributes: ["id", "name"],
+            model: FlatMembership,
+            required: false,
+            where: { is_current: true },
+            include: [{ model: User, required: false, attributes: ["id", "name"] }],
           },
         ],
       },
       order: [["created_at", "DESC"]],
     });
 
-    res.status(200).json(bills);
+    const formatted = bills.map((bill) => {
+      const b = bill.toJSON ? bill.toJSON() : bill;
+      if (b.Flat) {
+        const active = b.Flat.FlatMemberships?.find((m) => m.is_current) || b.Flat.FlatMemberships?.[0];
+        b.Flat.User = active?.User || null;
+      }
+      return b;
+    });
+
+    res.status(200).json(formatted);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -51,7 +63,14 @@ const getPayments = async (req, res) => {
               model: Flat,
               required: false,
               attributes: ["id", "flat_number"],
-              include: [{ model: User, required: false, attributes: ["id", "name"] }],
+              include: [
+                {
+                  model: FlatMembership,
+                  required: false,
+                  where: { is_current: true },
+                  include: [{ model: User, required: false, attributes: ["id", "name"] }],
+                },
+              ],
             },
           ],
         },
@@ -178,7 +197,7 @@ const getDashboardStats = async (req, res) => {
            COALESCE(SUM(CASE WHEN source = 'AMENITY' THEN amount ELSE 0 END), 0) AS amenity_income,
            COALESCE(SUM(amount), 0) AS total_collected
          FROM ${Payment.getTableName()} WHERE society_id = ? AND status = 'SUCCESS'`,
-        { replacements: [societyId] }
+        { replacements: [societyId], type: sequelize.QueryTypes.SELECT }
       ),
       sequelize.query(
         `SELECT
@@ -186,7 +205,7 @@ const getDashboardStats = async (req, res) => {
            COALESCE(SUM(CASE WHEN type = 'DEBIT' THEN amount ELSE 0 END), 0) AS total_debit,
            COALESCE(SUM(CASE WHEN type = 'DEBIT' AND source = 'EXPENSE' THEN amount ELSE 0 END), 0) AS total_expenses
          FROM ledger_entries WHERE society_id = ?`,
-        { replacements: [societyId] }
+        { replacements: [societyId], type: sequelize.QueryTypes.SELECT }
       ),
       Payment.findAll({
         attributes: ["amount"],

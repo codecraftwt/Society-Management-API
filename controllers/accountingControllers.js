@@ -11,7 +11,36 @@ const {
   AmenityBooking,
   Amenity,
 } = require("../models");
-const { createLedgerEntry, reverseLedgerEntry, auditLog } = require("../utils/ledgerService");
+const { createLedgerEntry, reverseLedgerEntry, auditLog, resolveActorRole } = require("../utils/ledgerService");
+
+/* ──  User identity enrichment ─────────────────────────────────────────────
+   Expenses store only created_by (user id). Ledger entries and audit logs
+   store created_by / performed_by. This helper batch-loads the users so every
+   finance read responds with the person's name + normalized role instead of a
+   bare id or "System". */
+async function enrichWithActors(rows, idField, nameField, roleField, includeRoles = true) {
+  const ids = [...new Set(rows.map((r) => r[idField]).filter(Boolean))];
+  const map = new Map();
+  if (ids.length > 0) {
+    const users = await User.findAll({
+      where: { id: { [Op.in]: ids } },
+      attributes: includeRoles ? ["id", "name", "role", "roles"] : ["id", "name"],
+    });
+    users.forEach((u) => {
+      const actor = { activeRole: u.role, role: u.role, roles: u.roles || [] };
+      map.set(u.id, { name: u.name, role: resolveActorRole(actor) });
+    });
+  }
+  return rows.map((r) => {
+    const j = r.toJSON ? r.toJSON() : r;
+    const info = map.get(j[idField]);
+    if (info) {
+      j[nameField] = info.name;
+      if (roleField) j[roleField] = info.role;
+    }
+    return j;
+  });
+}
 
 /* ──  Society resolution helper ────────────────────────────────────────────
    Non-Super-Admins are always scoped to their own society. Super Admin may
@@ -242,7 +271,7 @@ const getLedger = async (req, res) => {
 
     return res.json({
       success: true,
-      data: dataEntries,
+      data: await enrichWithActors(dataEntries, "created_by", "created_by_name", "created_by_role"),
       pagination: {
         currentPage: page,
         totalPages: Math.ceil(count / limit),
@@ -371,7 +400,7 @@ const listExpenses = async (req, res) => {
 
     return res.json({
       success: true,
-      data: rows,
+      data: await enrichWithActors(rows, "created_by", "created_by_name", "created_by_role"),
       pagination: { currentPage: page, totalPages: Math.ceil(count / limit), totalItems: count, limit },
       totals: totals[0],
     });
@@ -390,7 +419,8 @@ const getExpense = async (req, res) => {
     const societyId = resolveSocietyId(req);
     const expense = await Expense.findOne({ where: { id: req.params.id, society_id: societyId } });
     if (!expense) return res.status(404).json({ success: false, message: "Expense not found." });
-    return res.json({ success: true, data: expense });
+    const data = (await enrichWithActors([expense], "created_by", "created_by_name", "created_by_role"))[0];
+    return res.json({ success: true, data });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -417,14 +447,22 @@ const createExpense = async (req, res) => {
       return res.status(400).json({ success: false, message: "Amount must be a positive number." });
     }
 
+    const VALID_PAID_BY = ["SOCIETY_ADMIN", "ACCOUNTANT", "COMMITTEE_MEMBER", "SUPER_ADMIN"];
+    const VALID_PAYMENT_MODES = ["CASH", "UPI", "BANK_TRANSFER", "CHEQUE", "OTHER"];
+
+    const rawPaidBy = (req.body.paid_by || req.user.activeRole || req.user.role || "SOCIETY_ADMIN").toUpperCase();
+    const paidBy = VALID_PAID_BY.includes(rawPaidBy) ? rawPaidBy : "SOCIETY_ADMIN";
+    const rawMode = (payment_mode || "CASH").toUpperCase();
+    const resolvedPaymentMode = VALID_PAYMENT_MODES.includes(rawMode) ? rawMode : "CASH";
+
     const expense = await Expense.create({
       society_id: societyId,
       pay_to: pay_to.toString().trim(),
       reason: reason.toString().trim(),
       amount: amt,
       payment_date: payment_date || new Date().toISOString().slice(0, 10),
-      paid_by: (req.user.activeRole || req.user.role || "SOCIETY_ADMIN").toUpperCase(),
-      payment_mode: (payment_mode || "CASH").toUpperCase(),
+      paid_by: paidBy,
+      payment_mode: resolvedPaymentMode,
       receipt_url: receipt_url || null,
       status: "POSTED",
       created_by: req.user.id,
@@ -483,7 +521,10 @@ const updateExpense = async (req, res) => {
     const updates = {};
     if (req.body.pay_to !== undefined) updates.pay_to = req.body.pay_to;
     if (req.body.reason !== undefined) updates.reason = req.body.reason;
-    if (req.body.payment_mode !== undefined) updates.payment_mode = req.body.payment_mode.toUpperCase();
+    if (req.body.payment_mode !== undefined) {
+      const mode = req.body.payment_mode.toUpperCase();
+      updates.payment_mode = ["CASH", "UPI", "BANK_TRANSFER", "CHEQUE", "OTHER"].includes(mode) ? mode : "CASH";
+    }
     if (req.body.payment_date !== undefined) updates.payment_date = req.body.payment_date;
     if (req.body.receipt_url !== undefined) updates.receipt_url = req.body.receipt_url;
     if (req.body.amount !== undefined) {
@@ -681,9 +722,12 @@ const getAuditLogs = async (req, res) => {
       offset,
     });
 
+    const enriched = await enrichWithActors(rows, "performed_by", "performed_by_name", "performed_by_role");
+    enriched.forEach((r) => { r.created_by_name = r.created_by_name || r.performed_by_name; });
+
     return res.json({
       success: true,
-      data: rows,
+      data: enriched,
       pagination: { currentPage: page, totalPages: Math.ceil(count / limit), totalItems: count, limit },
     });
   } catch (error) {

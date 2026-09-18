@@ -3,6 +3,45 @@ const { LedgerEntry, FinancialAuditLog } = require("../models");
 const VALID_SOURCES = ["BILL", "MAINTENANCE", "AMENITY", "EXPENSE", "ADJUSTMENT"];
 const VALID_TYPES = ["CREDIT", "DEBIT"];
 
+/* Roles that carry finance/admin authority. Order = seniority for audit stamps. */
+const ROLE_PRIORITY = ["SUPER_ADMIN", "SOCIETY_ADMIN", "ACCOUNTANT", "COMMITTEE_MEMBER", "ADMIN"];
+/* Roles that never author finance actions on their own (consumer fallbacks). */
+const CONSUMER_ROLES = ["RESIDENT", "TENANT", "GUARD", "FAMILY_MEMBER"];
+
+/**
+ * Normalize a role string (COMMITTEE is an alias for COMMITTEE_MEMBER).
+ */
+function normalizeRole(r) {
+  const s = String(r || "").toUpperCase().replace(/\s+/g, "_").trim();
+  if (s === "COMMITTEE") return "COMMITTEE_MEMBER";
+  return s;
+}
+
+/**
+ * Resolve the role that should be stamped on a ledger / audit row.
+ *
+ * The mobile/web clients fall back to a consumer role (e.g. RESIDENT) when no
+ * active admin role header is sent, even though the actor holds a finance role.
+ * This helper prefers the actor's active finance/admin role and, when the
+ * active role is a pure consumer fallback, records the most senior finance role
+ * the actor actually holds. This keeps audit attribution correct for actions
+ * performed by accountants / committee members / super admins.
+ */
+function resolveActorRole(actor) {
+  if (!actor) return null;
+  const active = normalizeRole(actor.activeRole || actor.role);
+  const roles = (Array.isArray(actor.roles) ? actor.roles : []).map(normalizeRole);
+
+  if (ROLE_PRIORITY.includes(active)) return active;
+
+  if (!active || CONSUMER_ROLES.includes(active)) {
+    const held = roles.filter((r) => ROLE_PRIORITY.includes(r));
+    if (held.length) return ROLE_PRIORITY.find((r) => held.includes(r)) || held[0];
+  }
+
+  return active || roles[0] || null;
+}
+
 /**
  * Create a ledger entry inside the given transaction.
  * The unique DB key (society_id, source, reference_id, type) prevents
@@ -41,7 +80,7 @@ async function createLedgerEntry({
       entry_date: entryDate || new Date().toISOString().slice(0, 10),
       description,
       created_by: actor?.id ?? null,
-      created_by_role: actor?.activeRole || actor?.role || null,
+      created_by_role: resolveActorRole(actor),
     },
     transaction ? { transaction } : {}
   );
@@ -64,7 +103,7 @@ async function reverseLedgerEntry({ entry, actor, reason, transaction }) {
       entry_date: new Date().toISOString().slice(0, 10),
       description: `Reversal: ${reason || "voided"}`,
       created_by: actor?.id ?? null,
-      created_by_role: actor?.activeRole || actor?.role || null,
+      created_by_role: resolveActorRole(actor),
       status: "POSTED",
       reversal_of_id: entry.id,
     },
@@ -99,11 +138,11 @@ async function auditLog({
       new_value: newValue,
       reason,
       performed_by: actor?.id ?? null,
-      performed_by_role: actor?.activeRole || actor?.role || null,
+      performed_by_role: resolveActorRole(actor),
       performed_at: new Date(),
     },
     transaction ? { transaction } : {}
   );
 }
 
-module.exports = { createLedgerEntry, reverseLedgerEntry, auditLog, VALID_SOURCES, VALID_TYPES };
+module.exports = { createLedgerEntry, reverseLedgerEntry, auditLog, resolveActorRole, VALID_SOURCES, VALID_TYPES };

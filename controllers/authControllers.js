@@ -16,17 +16,34 @@ const { fetchEffectivePermissions } = require("./permissionController");
 /* =====
     HELPERS
     ===== */
+/* Resolve a user's effective role list. Committee members and accountants who
+   live in the society are also treated as residents (mirrors roleMiddleware). */
+function resolveUserRoles(user) {
+  const roles = Array.isArray(user.roles) && user.roles.length > 0 ? [...user.roles] : [];
+  const add = (r) => { if (r && !roles.includes(r)) roles.push(r); };
+
+  add(user.role);
+  if (roles.includes("SOCIETY_ADMIN")) add("RESIDENT");
+  if (roles.includes("COMMITTEE_MEMBER") || roles.includes("COMMITTEE")) {
+    add("COMMITTEE_MEMBER");
+    add("RESIDENT");
+  }
+  if (roles.includes("ACCOUNTANT")) add("RESIDENT");
+
+  return roles;
+}
+
 async function getAvailablePanels(user) {
-  const roles = Array.isArray(user.roles) && user.roles.length > 0 ? user.roles : [user.role];
+  const roles = resolveUserRoles(user);
   const panels = [];
-  
+
   if (roles.includes("SUPER_ADMIN")) panels.push("SUPER_ADMIN");
   if (roles.includes("SOCIETY_ADMIN")) panels.push("SOCIETY_ADMIN");
   if (roles.includes("COMMITTEE_MEMBER")) panels.push("COMMITTEE_MEMBER");
   if (roles.includes("RESIDENT")) panels.push("RESIDENT");
   if (roles.includes("FAMILY_MEMBER")) panels.push("FAMILY_MEMBER");
   if (roles.includes("GUARD")) panels.push("GUARD");
-  
+
   if (roles.includes("ACCOUNTANT")) {
     const assignment = await AccountantAssignment.findOne({
       where: { user_id: user.id, status: "ACTIVE" }
@@ -35,7 +52,7 @@ async function getAvailablePanels(user) {
       panels.push("ACCOUNTANT");
     }
   }
-  
+
   return panels.length > 0 ? panels : [user.role];
 }
 function generateOtp() {
@@ -181,12 +198,7 @@ async function sendOtpEmail(toEmail, otp, userName) {
     JWT HELPER
     ===== */
 function issueAccessToken(user, activeRole) {
-  let roles = user.roles;
-
-  if (!roles || roles.length === 0) {
-    roles = [user.role];
-    if (user.role === "SOCIETY_ADMIN") roles.push("RESIDENT");
-  }
+  const roles = resolveUserRoles(user);
 
   const resolvedActiveRole = roles.includes(activeRole) ? activeRole : roles[0];
 
@@ -263,11 +275,7 @@ exports.login = async (req, res) => {
     const expires_at = new Date(Date.now() + 2 * 60 * 1000);
     await OtpVerification.create({ email, otp_hash, expires_at });
 
-    let roles = user.roles;
-    if (!roles || roles.length === 0) {
-      roles = [user.role];
-      if (user.role === "SOCIETY_ADMIN") roles.push("RESIDENT");
-    }
+    const roles = resolveUserRoles(user);
 
     const tempToken = jwt.sign(
       {
@@ -380,7 +388,7 @@ exports.verifyOtp = async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
 
     const { token } = issueAccessToken(user, user.role);
-    const roles = user.roles ?? [user.role];
+    const roles = resolveUserRoles(user);
     const availablePanels = await getAvailablePanels(user);
     const dynamicPermissions = await fetchEffectivePermissions(user.society_id, user.role);
 
@@ -467,18 +475,18 @@ exports.switchRole = async (req, res) => {
       return res.status(400).json({ message: "role is required" });
     }
 
-    const { roles, id } = req.user;
-
-    if (!roles || !roles.includes(role)) {
-      return res.status(403).json({
-        message: `Role "${role}" is not assigned to your account. Available: ${(roles || []).join(", ")}`,
-      });
-    }
-
-    const user = await User.findByPk(id, {
+    const user = await User.findByPk(req.user.id, {
       include: [{ model: Society, attributes: ["name"] }],
     });
     if (!user) return res.status(404).json({ message: "User not found" });
+
+    const roles = resolveUserRoles(user);
+
+    if (!roles.includes(role)) {
+      return res.status(403).json({
+        message: `Role "${role}" is not assigned to your account. Available: ${roles.join(", ")}`,
+      });
+    }
 
     const { token } = issueAccessToken(user, role);
     const availablePanels = await getAvailablePanels(user);

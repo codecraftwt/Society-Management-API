@@ -5,6 +5,7 @@ const User = require("../models/User");
 const UserSetting = require("../models/UserSetting");
 const Flat = require("../models/Flat");
 const FlatMembership = require("../models/FlatMembership");
+const AccountantAssignment = require("../models/AccountantAssignment");
 const { sendPushNotification } = require("../utils/pushNotification");
 const { Op } = require("sequelize");
 
@@ -201,7 +202,7 @@ const getNotices = async (req, res) => {
     const limit = Math.min(50, parseInt(req.query.limit) || 10);
     const offset = (page - 1) * limit;
 
-    const search = req.query.search?.trim() || "";
+    const search = (req.query.search || req.query.q || "").trim();
     const targetSocId = req.headers["x-society-id"] || req.query.society_id || req.user.society_id;
     const where = targetSocId ? { society_id: targetSocId } : {};
 
@@ -385,10 +386,20 @@ const getNoticeAcknowledgements = async (req, res) => {
       userRoles.add("COMMITTEE_MEMBER");
     }
 
+    let hasAccountantAccess = userRoles.has("ACCOUNTANT");
+    if (!hasAccountantAccess && req.user.id) {
+      const assignment = await AccountantAssignment.findOne({
+        where: { user_id: req.user.id, status: "ACTIVE" }
+      });
+      if (assignment) hasAccountantAccess = true;
+    }
+
     const isAllowed =
       userRoles.has("SUPER_ADMIN") ||
       userRoles.has("SOCIETY_ADMIN") ||
-      userRoles.has("COMMITTEE_MEMBER");
+      userRoles.has("COMMITTEE_MEMBER") ||
+      userRoles.has("COMMITTEE") ||
+      hasAccountantAccess;
 
     if (!isAllowed) {
       return res.status(403).json({ message: "Access denied: Resident cannot view acknowledgement history" });

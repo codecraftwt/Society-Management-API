@@ -9,6 +9,7 @@ const Floor      = require("../models/Floor");      // ✅ ADDED
 const Block      = require("../models/Block");
 const Society    = require("../models/Society");
 const User       = require("../models/User");
+const FlatMembership = require("../models/FlatMembership");
 const Bill       = require("../models/Bill");
 const LedgerEntry = require("../models/LedgerEntry");
 
@@ -221,11 +222,11 @@ const getFinancialReport = async (req, res) => {
     const offset = (page - 1) * limit;
 
     const { status, fromDate, toDate, block_id, floor_id, flat_id, society_id } = req.query;
-    const isGlobalSuperAdmin = req.user.activeRole === "SUPER_ADMIN" && !req.headers["x-society-id"];
+    const targetSocId = req.headers["x-society-id"] || society_id || req.user.society_id;
+    const isGlobalSuperAdmin = req.user.activeRole === "SUPER_ADMIN" && !targetSocId;
 
     const billWhere = {};
     if (status) billWhere.status = status;
-    if (flat_id) billWhere.flat_id = flat_id;
     if (fromDate && toDate) {
       billWhere.created_at = {
         [Op.between]: [
@@ -235,62 +236,83 @@ const getFinancialReport = async (req, res) => {
       };
     }
 
-    const blockWhere = {};
-    if (!isGlobalSuperAdmin) {
-      blockWhere.society_id = req.user.society_id;
-    } else if (society_id && society_id !== "ALL") {
-      blockWhere.society_id = society_id;
+    // Resolve society, block, floor, flat scoping up-front to flat IDs
+    let targetFlatIds = null;
+    if (flat_id) {
+      targetFlatIds = [parseInt(flat_id)];
+    } else {
+      const blockQuery = {};
+      if (!isGlobalSuperAdmin && targetSocId && targetSocId !== "ALL") {
+        blockQuery.society_id = targetSocId;
+      }
+      if (block_id) {
+        blockQuery.id = block_id;
+      }
+
+      const hasBlockFilter = Object.keys(blockQuery).length > 0;
+      let matchedBlockIds = null;
+      if (hasBlockFilter) {
+        const blocks = await Block.findAll({ where: blockQuery, attributes: ["id"] });
+        matchedBlockIds = blocks.map((b) => b.id);
+      }
+
+      const flatQuery = {};
+      if (matchedBlockIds !== null) {
+        flatQuery.block_id = { [Op.in]: matchedBlockIds };
+      }
+      if (floor_id) {
+        flatQuery.floor_id = floor_id;
+      }
+
+      if (Object.keys(flatQuery).length > 0) {
+        const flats = await Flat.findAll({ where: flatQuery, attributes: ["id"] });
+        targetFlatIds = flats.map((f) => f.id);
+      }
     }
-    if (block_id) blockWhere.id = block_id;
 
-    const flatWhere = {};
-    if (floor_id) flatWhere.floor_id = floor_id;
+    if (targetFlatIds !== null) {
+      billWhere.flat_id = { [Op.in]: targetFlatIds };
+    }
 
-    const { count, rows: bills } = await Bill.findAndCountAll({
-      where: billWhere,
+    const flatInclude = {
+      model: Flat,
+      required: false,
+      attributes: ["id", "flat_number", "floor_id", "block_id"],
       include: [
         {
-          model: Flat,
-          required: true,
-          attributes: ["flat_number"],
-          where: flatWhere,
-          include: [
-            { 
-              model: Block, 
-              required: true, 
-              attributes: ["name"], 
-              where: blockWhere,
-              include: [{ model: Society, attributes: ["name"] }]
-            },
-            { model: User, attributes: ["name"] },
-          ],
+          model: Block,
+          required: false,
+          attributes: ["id", "name"],
+          include: [{ model: Society, attributes: ["id", "name"] }],
+        },
+        {
+          model: Floor,
+          required: false,
+          attributes: ["id", "floor_number"],
+        },
+        {
+          model: FlatMembership,
+          required: false,
+          where: { is_current: true },
+          include: [{ model: User, required: false, attributes: ["id", "name", "email", "phone"] }],
         },
       ],
+    };
+
+    const { count, rows: bills } = await Bill.findAndCountAll({
+      where:    billWhere,
+      include:  [flatInclude],
       order:    [["created_at", "DESC"]],
       limit,
       offset,
       distinct: true,
+      col:      "id",
     });
 
     // Unfiltered counts for stat strip
     const allBills = await Bill.findAll({
       attributes: ["id", "status", "amount"],
-      where: {
-        ...(flat_id && { flat_id }),
-      },
-      include: [{
-        model: Flat, required: true, attributes: [],
-        where: flatWhere,
-        include: [{ 
-          model: Block, 
-          required: true, 
-          attributes: [], 
-          where: {
-            ...blockWhere,
-            ...(isGlobalSuperAdmin && society_id && society_id !== "ALL" && { society_id })
-          } 
-        }],
-      }],
+      where: targetFlatIds !== null ? { flat_id: { [Op.in]: targetFlatIds } } : {},
     });
 
     const totalAll       = allBills.length;
@@ -300,10 +322,8 @@ const getFinancialReport = async (req, res) => {
     const totalDue       = allBills.filter(b => b.status !== "PAID").reduce((s, b) => s + Number(b.amount), 0);
 
     const ledgerWhere = {};
-    if (!isGlobalSuperAdmin) {
-      ledgerWhere.society_id = req.user.society_id;
-    } else if (society_id && society_id !== "ALL") {
-      ledgerWhere.society_id = society_id;
+    if (!isGlobalSuperAdmin && targetSocId && targetSocId !== "ALL") {
+      ledgerWhere.society_id = targetSocId;
     }
     if (fromDate && toDate) {
       ledgerWhere.entry_date = {
@@ -331,8 +351,17 @@ const getFinancialReport = async (req, res) => {
     const debited    = debitEntries.reduce((s, e) => s + Number(e.amount), 0);
     const currentBalance = credited - debited;
 
+    const formattedBills = bills.map((bill) => {
+      const b = bill.toJSON ? bill.toJSON() : bill;
+      if (b.Flat) {
+        const active = b.Flat.FlatMemberships?.find((m) => m.is_current) || b.Flat.FlatMemberships?.[0];
+        b.Flat.User = active?.User || null;
+      }
+      return b;
+    });
+
     res.json({
-      data: bills,
+      data: formattedBills,
       pagination: { currentPage: page, totalPages: Math.ceil(count / limit), totalItems: count, limit },
       counts: { total: totalAll, paid: totalPaid, pending: totalPending, collected: totalCollected, due: totalDue },
       ledger: {

@@ -5,7 +5,10 @@ const role = require("../middlewares/roleMiddleware");
 const maintenanceController = require("../controllers/maintenanceControllers");
 
 const VIEW_ROLES = ["SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"];
-const WRITE_ROLES = ["SOCIETY_ADMIN"];
+// Config & generation follow the dynamic RBAC matrix: the default permission
+// grants COMMITTEE_MEMBER / ACCOUNTANT "create / edit / delete" on maintenance,
+// and the web already exposes these actions to those roles.
+const WRITE_ROLES = ["SOCIETY_ADMIN", "ACCOUNTANT", "COMMITTEE_MEMBER"];
 
 // Configuration management (write = admin only)
 router.get("/config", auth, role(...VIEW_ROLES), maintenanceController.getConfigs);

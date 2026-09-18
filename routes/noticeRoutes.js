@@ -69,11 +69,11 @@ router.post(
   acknowledgeNotice
 );
 
-// GET /api/notices/:id/acknowledgements — get acknowledgement history report (Admin/Committee only)
+// GET /api/notices/:id/acknowledgements — get acknowledgement history report (Admin/Committee/Accountant)
 router.get(
   "/:id/acknowledgements",
   auth,
-  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT", "RESIDENT"),
   getNoticeAcknowledgements
 );
 
