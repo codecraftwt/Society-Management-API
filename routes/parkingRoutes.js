@@ -9,6 +9,7 @@ const {
   lookupResidentVehicle,
   createResidentParking,
   getParkingRequests,
+  getParkingRequestById,
   assignParkingSlot,
   rejectParkingRequest,
   markExit,
@@ -51,6 +52,9 @@ router.post(
 /* ── Guard: resident vehicle flow ── */
 router.get("/lookup-vehicle",            lookupResidentVehicle);
 router.post("/resident-entry",           createResidentParking);
+
+/* ── Detail view (must stay AFTER all static GET routes) ── */
+router.get("/:id",                       getParkingRequestById);
 
 /* ── Guard: visitor flow ── */
 router.put("/:id/assign",               assignParkingSlot);

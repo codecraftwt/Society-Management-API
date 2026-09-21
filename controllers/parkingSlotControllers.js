@@ -1,8 +1,8 @@
 
-const { ParkingSlot, Flat, Block, Floor, HouseHoldMember, User } = require("../models");
+const { ParkingSlot, Flat, Block, Floor, HouseHoldMember, User, Vehicle } = require("../models");
 const FlatMembership = require("../models/FlatMembership");
-const Vehicle        = require("../models/Vehicle");
 const { Op }         = require("sequelize");
+const { sanitizeText, isPositiveNumber } = require("../utils/validation");
 
 
 /* ── helper ── */
@@ -28,11 +28,24 @@ const createParkingSlots = async (req, res) => {
     if (!prefix || !start_number || !count || !vehicle_type) {
       return res.status(400).json({ message: "All fields are required" });
     }
+    if (!["CAR", "BIKE"].includes(vehicle_type)) {
+      return res.status(400).json({ message: "Vehicle type must be CAR or BIKE" });
+    }
+    const startNum = Number(start_number);
+    const countNum = Number(count);
+    if (!Number.isInteger(startNum) || startNum < 0) {
+      return res.status(400).json({ message: "start_number must be a non-negative integer." });
+    }
+    if (!Number.isInteger(countNum) || countNum < 1) {
+      return res.status(400).json({ message: "count must be a positive integer." });
+    }
+
+    const cleanPrefix = sanitizeText(prefix);
 
     const slotsToCreate = [];
 
     for (let i = 0; i < count; i++) {
-      const slotNumber = `${prefix}-${Number(start_number) + i}`;
+      const slotNumber = `${cleanPrefix}-${startNum + i}`;
 
       const existing = await ParkingSlot.findOne({
         where: {
@@ -87,18 +100,63 @@ const getParkingSlots = async (req, res) => {
     if (vehicleType !== "ALL") where.vehicle_type = vehicleType;
     if (statusFilter !== "ALL") where.status = statusFilter;
     if (parkingType !== "ALL") where.parking_type = parkingType;
+
     if (search) {
-      where[Op.or] = [
-        { slot_number:       { [Op.like]: `%${search}%` } },
+      const cleanSearch = search.replace(/[\s\-_]+/g, "");
+
+      // Find vehicles in this society matching vehicle number (with spaces, without spaces) or vehicle name
+      const vehicleConditions = [
+        { vehicle_number: { [Op.like]: `%${search}%` } },
+        { vehicle_name:   { [Op.like]: `%${search}%` } },
+      ];
+      if (cleanSearch && cleanSearch !== search) {
+        vehicleConditions.push({ vehicle_number: { [Op.like]: `%${cleanSearch}%` } });
+      }
+
+      const matchedVehicles = await Vehicle.findAll({
+        where: {
+          society_id: req.user.society_id,
+          [Op.or]: vehicleConditions,
+        },
+        attributes: ["id", "parking_slot_id", "flat_id", "resident_id"],
+      });
+
+      const slotIdsFromVehicle     = matchedVehicles.map((v) => v.parking_slot_id).filter(Boolean);
+      const flatIdsFromVehicle     = matchedVehicles.map((v) => v.flat_id).filter(Boolean);
+      const residentIdsFromVehicle = matchedVehicles.map((v) => v.resident_id).filter(Boolean);
+
+      const orConditions = [
+        { slot_number:                { [Op.like]: `%${search}%` } },
+        { parking_floor:              { [Op.like]: `%${search}%` } },
         { "$Flat.flat_number$":       { [Op.like]: `%${search}%` } },
         { "$resident.name$":          { [Op.like]: `%${search}%` } },
         { "$Vehicle.vehicle_number$": { [Op.like]: `%${search}%` } },
+        { "$Vehicle.vehicle_name$":   { [Op.like]: `%${search}%` } },
       ];
+
+      if (cleanSearch && cleanSearch !== search) {
+        orConditions.push(
+          { slot_number:                { [Op.like]: `%${cleanSearch}%` } },
+          { "$Vehicle.vehicle_number$": { [Op.like]: `%${cleanSearch}%` } }
+        );
+      }
+
+      if (slotIdsFromVehicle.length > 0) {
+        orConditions.push({ id: { [Op.in]: slotIdsFromVehicle } });
+      }
+      if (flatIdsFromVehicle.length > 0) {
+        orConditions.push({ flat_id: { [Op.in]: flatIdsFromVehicle } });
+      }
+      if (residentIdsFromVehicle.length > 0) {
+        orConditions.push({ resident_id: { [Op.in]: residentIdsFromVehicle } });
+      }
+
+      where[Op.or] = orConditions;
     }
 
     const include = [
-      { model: Flat,    attributes: ["id", "flat_number"], required: false },
-      { model: User,    as: "resident", attributes: ["id", "name", "email", "phone"], required: false },
+      { model: Flat, attributes: ["id", "flat_number"], required: false },
+      { model: User, as: "resident", attributes: ["id", "name", "email", "phone"], required: false },
       {
         model: Vehicle,
         as: "Vehicle",
@@ -114,34 +172,62 @@ const getParkingSlots = async (req, res) => {
     const { count, rows: slots } = await ParkingSlot.findAndCountAll({
       where,
       include,
-      order:  [["slot_number", "ASC"]],
+      order: [["slot_number", "ASC"]],
       limit,
       offset,
+      subQuery: false,
+      distinct: true,
     });
+
+    // Fallback: If slots are assigned to flat/resident but don't have direct Vehicle.parking_slot_id, resolve from flat/resident
+    const missingFlatIds = slots.filter((s) => !s.Vehicle && s.flat_id).map((s) => s.flat_id);
+    let fallbackVehiclesMap = {};
+    if (missingFlatIds.length > 0) {
+      const extraVehicles = await Vehicle.findAll({
+        where: {
+          society_id: req.user.society_id,
+          flat_id:    { [Op.in]: missingFlatIds },
+        },
+        attributes: ["id", "vehicle_number", "vehicle_name", "vehicle_type", "flat_id", "resident_id"],
+      });
+      extraVehicles.forEach((v) => {
+        if (!fallbackVehiclesMap[v.flat_id]) {
+          fallbackVehiclesMap[v.flat_id] = v;
+        }
+      });
+    }
 
     const mapSlot = (s) => {
       const j = s.toJSON();
-      const resolvedFlatNumber = j.Flat?.flat_number || j.Vehicle?.Flat?.flat_number || (j.flat_number ? j.flat_number : null);
+      const resolvedFlatNumber =
+        j.Flat?.flat_number || j.Vehicle?.Flat?.flat_number || (j.flat_number ? j.flat_number : null);
       const resolvedResident = j.resident
         ? { id: j.resident.id, name: j.resident.name, email: j.resident.email, phone: j.resident.phone }
         : j.Vehicle?.User
-          ? { id: j.Vehicle.User.id, name: j.Vehicle.User.name, email: j.Vehicle.User.email, phone: j.Vehicle.User.phone }
-          : null;
+        ? { id: j.Vehicle.User.id, name: j.Vehicle.User.name, email: j.Vehicle.User.email, phone: j.Vehicle.User.phone }
+        : null;
+
+      const resolvedVehicle = j.Vehicle || (j.flat_id ? fallbackVehiclesMap[j.flat_id] : null);
 
       return {
-        id:             j.id,
-        society_id:     j.society_id,
-        slot_number:    j.slot_number,
-        parking_floor:  j.parking_floor,
-        vehicle_type:   j.vehicle_type,
-        status:         j.status,
-        parking_type:   j.parking_type,
-        flat_id:        j.flat_id || j.Vehicle?.flat_id || null,
-        resident_id:    j.resident_id || j.Vehicle?.resident_id || null,
-        flat_number:    resolvedFlatNumber,
-        resident:       resolvedResident,
-        vehicle:        j.Vehicle
-          ? { id: j.Vehicle.id, vehicle_number: j.Vehicle.vehicle_number, vehicle_name: j.Vehicle.vehicle_name, vehicle_type: j.Vehicle.vehicle_type }
+        id:            j.id,
+        society_id:    j.society_id,
+        slot_number:   j.slot_number,
+        parking_floor: j.parking_floor,
+        vehicle_type:  j.vehicle_type,
+        status:        j.status,
+        parking_type:  j.parking_type,
+        flat_id:       j.flat_id || resolvedVehicle?.flat_id || null,
+        resident_id:   j.resident_id || resolvedVehicle?.resident_id || null,
+        flat_number:   resolvedFlatNumber,
+        resident:      resolvedResident,
+        vehicle: resolvedVehicle
+          ? {
+              id:             resolvedVehicle.id,
+              vehicle_number: resolvedVehicle.vehicle_number,
+              vehicle_name:   resolvedVehicle.vehicle_name,
+              vehicle_type:   resolvedVehicle.vehicle_type,
+            }
           : null,
       };
     };
@@ -219,7 +305,9 @@ const getAvailableSlots = async (req, res) => {
 ═══════════════════════════════════════════ */
 const deleteParkingSlot = async (req, res) => {
   try {
-    const slot = await ParkingSlot.findByPk(req.params.id);
+    const slot = await ParkingSlot.findOne({
+      where: { id: req.params.id, society_id: req.user.society_id },
+    });
     if (!slot) return res.status(404).json({ message: "Slot not found" });
 
     await slot.destroy();
@@ -314,9 +402,10 @@ const revokeSlotAssignment = async (req, res) => {
 
     if (!slot) return res.status(404).json({ message: "Slot not found" });
 
-    slot.status      = "AVAILABLE";
-    slot.flat_id     = null;
-    slot.resident_id = null;
+    slot.status       = "AVAILABLE";
+    slot.flat_id      = null;
+    slot.resident_id  = null;
+    slot.parking_type = "DEFAULT";
     await slot.save();
 
     // Also unlink any vehicles pointing to this slot

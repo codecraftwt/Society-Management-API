@@ -12,6 +12,15 @@ const {
 const Vehicle = require("../models/Vehicle");
 const { Op } = require("sequelize");
 const { sendPushNotification } = require("../utils/pushNotification");
+const {
+  sanitizeText,
+  isEmpty,
+  isValidPersonName,
+  isValidTitle,
+  isValidISODate,
+  isPositiveNumber,
+  isValidVehicleNumber,
+} = require("../utils/validation");
 
 /* ── IST helpers ── */
 const getTodayIST = () =>
@@ -74,6 +83,20 @@ const getFlatIdForUser = async (userId) => {
   return null;
 };
 
+const isFlatOfUser = async (userId, flatId) => {
+  if (!flatId) return false;
+  const primaryId = await getPrimaryResidentId(userId);
+  const candidates = new Set();
+  const directFlat = await Flat.findOne({ where: { resident_id: primaryId } });
+  if (directFlat) candidates.add(directFlat.id);
+  const memberships = await HouseHoldMember.findAll({
+    where:   { user_id: { [Op.or]: [userId, primaryId] } },
+    attributes: ["flat_id"],
+  });
+  memberships.forEach((m) => candidates.add(m.flat_id));
+  return candidates.has(Number(flatId));
+};
+
 const getPrimaryResidentId = async (userId) => {
   const flat = await Flat.findOne({ where: { resident_id: userId } });
   if (flat) return flat.resident_id;
@@ -124,9 +147,42 @@ const sendNotification = async ({ societyId, userId, title, message, actionRoute
 ═══════════════════════════════════════════════════ */
 const requestParking = async (req, res) => {
   try {
-    const { guest_name, vehicle_number, vehicle_type, expected_arrival, duration_hours } = req.body;
+    const { guest_name, vehicle_number, vehicle_type, expected_arrival, duration_hours, flat_id } = req.body;
 
-    const flatId = await getFlatIdForUser(req.user.id);
+    const cleanName = sanitizeText(guest_name);
+    const cleanVehicle = sanitizeText(vehicle_number);
+
+    if (!isValidPersonName(cleanName) && !isValidTitle(cleanName)) {
+      return res.status(400).json({
+        message: "Guest name is required and must be at least 2 characters.",
+      });
+    }
+    if (isEmpty(cleanVehicle)) {
+      return res.status(400).json({ message: "Vehicle number is required." });
+    }
+    if (!["CAR", "BIKE"].includes(vehicle_type)) {
+      return res.status(400).json({ message: "Vehicle type must be CAR or BIKE." });
+    }
+    if (isEmpty(expected_arrival)) {
+      return res.status(400).json({ message: "Expected arrival is required." });
+    }
+    if (duration_hours != null && !isPositiveNumber(duration_hours)) {
+      return res.status(400).json({ message: "Duration must be greater than 0." });
+    }
+
+    /* ── flat resolution
+       → explicit flat_id must belong to this user (isolation check)
+       → otherwise fall back to the user's primary flat            */
+    const requestedFlatId = flat_id && parseInt(flat_id, 10) > 0 ? parseInt(flat_id, 10) : null;
+
+    let flatId = null;
+    if (requestedFlatId) {
+      const owned = await isFlatOfUser(req.user.id, requestedFlatId);
+      if (!owned) return res.status(403).json({ message: "Flat does not belong to this user" });
+      flatId = requestedFlatId;
+    } else {
+      flatId = await getFlatIdForUser(req.user.id);
+    }
     if (!flatId) return res.status(400).json({ message: "Flat not found" });
 
     const primaryId = await getPrimaryResidentId(req.user.id);
@@ -135,8 +191,8 @@ const requestParking = async (req, res) => {
       society_id:       req.user.society_id,
       resident_id:      primaryId,
       flat_id:          flatId,
-      guest_name,
-      vehicle_number:   vehicle_number.toUpperCase(),
+      guest_name:       cleanName,
+      vehicle_number:   cleanVehicle.toUpperCase(),
       vehicle_type,
       expected_arrival,
       duration_hours,
@@ -150,7 +206,7 @@ const requestParking = async (req, res) => {
         societyId:   req.user.society_id,
         userId:      guardId,
         title:       "New Parking Request 🚗",
-        message:     `Guest ${guest_name} (${vehicle_number.toUpperCase()}) arriving soon.`,
+        message:     `Guest ${cleanName} (${cleanVehicle.toUpperCase()}) arriving soon.`,
         actionRoute: "/guard/parking",
       });
       global.io?.to(`user_${guardId}`).emit("parking_request_new", newRequest);
@@ -515,6 +571,25 @@ const assignParkingSlot = async (req, res) => {
     if (!slot) return res.status(400).json({ message: "Slot not available or vehicle type mismatch" });
 
     slot.status = "ASSIGNED";
+
+    if (request.parking_type === "RESIDENT") {
+      /* Resident extra-slot request approved by guard:
+         mirror admin-assign semantics so the slot is
+         permanently claimed (flat/resident/EXTRA),
+         linked to the vehicle, and NOT freed on exit. */
+      slot.flat_id      = request.flat_id;
+      slot.resident_id  = request.resident_id;
+      slot.parking_type = "EXTRA";
+
+      const residentVehicle = await Vehicle.findOne({
+        where: { vehicle_number: request.vehicle_number, society_id: request.society_id },
+      });
+      if (residentVehicle) {
+        residentVehicle.parking_slot_id = slot.id;
+        await residentVehicle.save();
+      }
+    }
+
     await slot.save();
 
     request.status        = "APPROVED";
@@ -672,7 +747,9 @@ const markExit = async (req, res) => {
 ═══════════════════════════════════════════════════ */
 const getParkingRequests = async (req, res) => {
   try {
-    const { role, id, society_id } = req.user;
+    const { id, society_id } = req.user;
+    const effectiveRole = (req.user.activeRole || req.user.role || "").toUpperCase();
+    const isResident = effectiveRole === "RESIDENT" || effectiveRole === "FAMILY_MEMBER";
 
     const page   = Math.max(1,   parseInt(req.query.page)  || 1);
     const limit  = Math.min(100, parseInt(req.query.limit) || 5);
@@ -682,28 +759,50 @@ const getParkingRequests = async (req, res) => {
 
     const where = { society_id };
 
-    if (role === "RESIDENT" || role === "FAMILY_MEMBER") {
-      where.resident_id = await getPrimaryResidentId(id);
+    if (isResident) {
+      const primaryId = await getPrimaryResidentId(id);
+      const flatId    = await getFlatIdForUser(id);
+
+      const residentIdList = [id, primaryId].filter(Boolean);
+      const residentScope = [
+        { resident_id: { [Op.in]: residentIdList } },
+      ];
+      if (flatId) {
+        residentScope.push({ flat_id: flatId });
+      }
+
+      where[Op.and] = [
+        { [Op.or]: residentScope }
+      ];
+
       if (req.query.parking_type) {
         where.parking_type = req.query.parking_type;
       } else {
         where.parking_type = "VISITOR";
       }
-    }
-
-    if ((role === "GUARD" || role === "ADMIN") && req.query.parking_type) {
-      where.parking_type = req.query.parking_type;
+    } else {
+      if (req.query.parking_type && req.query.parking_type !== "ALL") {
+        where.parking_type = req.query.parking_type;
+      }
+      if (req.query.flat_id) where.flat_id = req.query.flat_id;
     }
 
     if (filter !== "ALL") where.status = filter;
 
     if (search) {
-      where[Op.or] = [
-        { guest_name:     { [Op.like]: `%${search}%` } },
-        { vehicle_number: { [Op.like]: `%${search}%` } },
-        { vehicle_type:   { [Op.like]: `%${search}%` } },
-        { assigned_spot:  { [Op.like]: `%${search}%` } },
-      ];
+      const searchCondition = {
+        [Op.or]: [
+          { guest_name:     { [Op.like]: `%${search}%` } },
+          { vehicle_number: { [Op.like]: `%${search}%` } },
+          { vehicle_type:   { [Op.like]: `%${search}%` } },
+          { assigned_spot:  { [Op.like]: `%${search}%` } },
+        ],
+      };
+      if (where[Op.and]) {
+        where[Op.and].push(searchCondition);
+      } else {
+        where[Op.and] = [searchCondition];
+      }
     }
 
     const { count, rows: requests } = await ParkingRequest.findAndCountAll({
@@ -719,12 +818,20 @@ const getParkingRequests = async (req, res) => {
     });
 
     const baseWhere = { society_id };
-    if (role === "RESIDENT" || role === "FAMILY_MEMBER") {
-      baseWhere.resident_id  = where.resident_id;
+    if (isResident) {
+      const primaryId = await getPrimaryResidentId(id);
+      const flatId    = await getFlatIdForUser(id);
+      const residentIdList = [id, primaryId].filter(Boolean);
+      const residentScope = [{ resident_id: { [Op.in]: residentIdList } }];
+      if (flatId) residentScope.push({ flat_id: flatId });
+
+      baseWhere[Op.and] = [{ [Op.or]: residentScope }];
       baseWhere.parking_type = req.query.parking_type || "VISITOR";
-    }
-    if ((role === "GUARD" || role === "ADMIN") && req.query.parking_type) {
-      baseWhere.parking_type = req.query.parking_type;
+    } else {
+      if (req.query.parking_type && req.query.parking_type !== "ALL") {
+        baseWhere.parking_type = req.query.parking_type;
+      }
+      if (req.query.flat_id) baseWhere.flat_id = req.query.flat_id;
     }
 
     const [totalAll, totalPending, totalApproved, totalRejected, totalCompleted] =
@@ -747,6 +854,46 @@ const getParkingRequests = async (req, res) => {
   }
 };
 
+/* ───────────────────────────────────────────────
+   7b️⃣  GET PARKING REQUEST BY ID  (all roles)
+   → Residents can only view their own requests
+   → Admin / Committee / Guard see society-wide
+─────────────────────────────────────────────── */
+const getParkingRequestById = async (req, res) => {
+  try {
+    const { id, society_id } = req.user;
+    const effectiveRole = (req.user.activeRole || req.user.role || "").toUpperCase();
+    const isResident = effectiveRole === "RESIDENT" || effectiveRole === "FAMILY_MEMBER";
+
+    const where = { id: req.params.id, society_id };
+
+    if (isResident) {
+      const primaryId = await getPrimaryResidentId(id);
+      const flatId    = await getFlatIdForUser(id);
+      const residentIdList = [id, primaryId].filter(Boolean);
+      const residentScope = [{ resident_id: { [Op.in]: residentIdList } }];
+      if (flatId) residentScope.push({ flat_id: flatId });
+
+      where[Op.and] = [{ [Op.or]: residentScope }];
+    }
+
+    const request = await ParkingRequest.findOne({
+      where,
+      include: [
+        { model: Flat, attributes: ["flat_number"] },
+        { model: User, as: "resident", attributes: ["name"] },
+      ],
+    });
+
+    if (!request) return res.status(404).json({ message: "Request not found" });
+
+    res.json(request);
+  } catch (err) {
+    console.error("GET PARKING REQUEST BY ID ERROR:", err);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
 /* ═══════════════════════════════════════════════════
    8️⃣  RESIDENT REQUESTS AN EXTRA SLOT FROM ADMIN
    → Only called when vehicle has NO free pre-assigned slot
@@ -759,9 +906,14 @@ const requestResidentSlot = async (req, res) => {
   try {
     const { vehicle_number, vehicle_type, flat_id } = req.body;
 
-    if (!vehicle_number || !vehicle_type) {
+    if (isEmpty(sanitizeText(vehicle_number)) || !vehicle_type) {
       return res.status(400).json({ message: "vehicle_number and vehicle_type are required" });
     }
+    if (!["CAR", "BIKE"].includes(vehicle_type)) {
+      return res.status(400).json({ message: "Vehicle type must be CAR or BIKE." });
+    }
+
+    const cleanVehicle = sanitizeText(vehicle_number).toUpperCase();
 
     const resolvedFlatId    = flat_id || (await getFlatIdForUser(req.user.id));
     if (!resolvedFlatId) return res.status(400).json({ message: "Flat not found for this user" });
@@ -771,7 +923,7 @@ const requestResidentSlot = async (req, res) => {
     /* Guard 1: vehicle already has a slot linked → no request needed */
     const existingVehicle = await Vehicle.findOne({
       where: {
-        vehicle_number: vehicle_number.toUpperCase(),
+        vehicle_number: cleanVehicle,
         society_id:     req.user.society_id,
       },
     });
@@ -786,7 +938,7 @@ const requestResidentSlot = async (req, res) => {
     const existing = await ParkingRequest.findOne({
       where: {
         society_id:     req.user.society_id,
-        vehicle_number: vehicle_number.toUpperCase(),
+        vehicle_number: cleanVehicle,
         parking_type:   "RESIDENT",
         status:         "PENDING",
       },
@@ -826,7 +978,7 @@ const requestResidentSlot = async (req, res) => {
       resident_id:      primaryResidentId,
       flat_id:          resolvedFlatId,
       guest_name:       requester?.name || "Resident",
-      vehicle_number:   vehicle_number.toUpperCase(),
+      vehicle_number:   cleanVehicle,
       vehicle_type:     vehicle_type.toUpperCase(),
       expected_arrival: new Date(),
       duration_hours:   0,
@@ -841,7 +993,7 @@ const requestResidentSlot = async (req, res) => {
         societyId:   req.user.society_id,
         userId:      adminId,
         title:       "Extra Parking Slot Request 🅿️",
-        message:     `${requester?.name || "A resident"} needs an extra ${vehicle_type} parking slot (${vehicle_number.toUpperCase()}).`,
+        message:     `${requester?.name || "A resident"} needs an extra ${vehicle_type} parking slot (${cleanVehicle}).`,
         actionRoute: "/admin/parking",
       });
       global.io?.to(`user_${adminId}`).emit("parking_request_new", newRequest);
@@ -1157,6 +1309,7 @@ module.exports = {
   rejectParkingRequest,
   markExit,
   getParkingRequests,
+  getParkingRequestById,
   requestResidentSlot,
   adminAssignResidentSlot,
   adminRejectResidentSlot,       // ← add

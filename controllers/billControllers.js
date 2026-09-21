@@ -433,8 +433,10 @@ const getResidentBills = async (req, res) => {
 
     if (search) {
       where[Op.or] = [
-        { title:         { [Op.like]: `%${search}%` } },
-        { billing_month: { [Op.like]: `%${search}%` } },
+        { title:           { [Op.like]: `%${search}%` } },
+        { billing_month:   { [Op.like]: `%${search}%` } },
+        { other_bill_type: { [Op.like]: `%${search}%` } },
+        { bill_category:   { [Op.like]: `%${search}%` } },
       ];
     }
 
@@ -445,7 +447,13 @@ const getResidentBills = async (req, res) => {
         {
           model:      Flat,
           attributes: ["id", "flat_number"],
-          include:    [{ model: Block, attributes: ["id", "name"] }],
+          include: [
+            {
+              model:      Block,
+              attributes: ["id", "name"],
+              include:    [{ model: Society, attributes: ["id", "name"] }],
+            },
+          ],
         },
       ],
       order:  [["created_at", "DESC"]],

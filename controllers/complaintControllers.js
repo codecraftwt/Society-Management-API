@@ -378,6 +378,10 @@ const updateStatus = async (req, res) => {
     const { title, description, flat_id } = req.body;
     const user = req.user; // Attached by your auth middleware
 
+    if (!title || !title.trim()) {
+      return res.status(400).json({ message: "Complaint title is required." });
+    }
+
     let targetFlatId = flat_id;
 
     // If the user is a TENANT, auto-fetch their assigned flat
@@ -398,15 +402,56 @@ const updateStatus = async (req, res) => {
       }
     }
 
+    const photoUrl = req.file ? (req.file.path || req.file.secure_url || req.file.url) : null;
+    const photoPublicId = req.file ? req.file.filename : null;
+
     // Create the complaint
     const complaint = await Complaint.create({
       resident_id: user.id,
       society_id: user.society_id,
       flat_id: targetFlatId, // Auto-assigned for tenants, manually selected for owners
-      title,
-      description,
+      title: title.trim(),
+      description: (description || "").trim(),
+      photo_url: photoUrl,
+      photo_public_id: photoPublicId,
       status: 'OPEN'
     });
+
+    /* ✅ Notify all admins */
+    try {
+      const admins = await User.findAll({
+        where: {
+          society_id: user.society_id,
+          role: { [Op.in]: ["SOCIETY_ADMIN", "COMMITTEE_MEMBER"] },
+        },
+        attributes: ["id"],
+      });
+
+      const name = user.name || "A resident";
+      for (const admin of admins) {
+        const notification = await Notification.create({
+          title: "New Complaint Raised",
+          message: `${name} raised a complaint: "${complaint.title}"`,
+          type: "COMPLAINT",
+          action_type: "VIEW_COMPLAINT",
+          action_route: "/admin/complaints",
+          society_id: user.society_id,
+          user_id: user.id,
+          receiver_role: "SOCIETY_ADMIN",
+          receiver_user_id: admin.id,
+        });
+
+        if (global.io) {
+          global.io.to(`user_${admin.id}`).emit("new_notification", notification);
+        }
+      }
+
+      if (global.io) {
+        global.io.to(`society_${user.society_id}`).emit("new_complaint", complaint);
+      }
+    } catch (notifErr) {
+      console.warn("Complaint notification error (non-fatal):", notifErr.message);
+    }
 
     res.status(201).json({ message: "Complaint submitted successfully", complaint });
   } catch (error) {

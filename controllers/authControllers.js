@@ -12,6 +12,13 @@ const crypto = require("crypto");
 const { Op } = require("sequelize");
 const transporter = require("../utils/mailer");
 const { fetchEffectivePermissions } = require("./permissionController");
+const {
+  sanitizeText,
+  isEmpty,
+  isValidEmail,
+  isValidMobile,
+  isValidPersonName,
+} = require("../utils/validation");
 
 /* =====
     HELPERS
@@ -528,6 +535,22 @@ exports.registerResident = async (req, res) => {
 
     if (!society_id)
       return res.status(400).json({ message: "Society is required" });
+
+    if (!isValidPersonName(sanitizeText(name))) {
+      return res.status(400).json({
+        message:
+          "Full name must be at least 2 characters and contain only letters, spaces, dots, apostrophes or hyphens.",
+      });
+    }
+    if (!isValidEmail(sanitizeText(email))) {
+      return res.status(400).json({ message: "Please enter a valid email address." });
+    }
+    if (isEmpty(cleanPassword)) {
+      return res.status(400).json({ message: "Password is required." });
+    }
+    if (phone && !isValidMobile(phone)) {
+      return res.status(400).json({ message: "Please provide a valid 10-digit Indian mobile number." });
+    }
 
     const existing = await User.findOne({ where: { email } });
 

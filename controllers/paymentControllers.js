@@ -3,17 +3,33 @@
 
 const { Op } = require("sequelize");
 const crypto = require("crypto");
-const { Bill, Payment, AmenityBooking, Amenity, FlatMembership, Flat, Block } = require("../models");
+const { Bill, Payment, AmenityBooking, Amenity, FlatMembership, Flat, Block, Society } = require("../models");
 const razorpay = require("../utils/razorpay");
 const sequelize = require("../config/db");
 
 /* ─── Demo UPI payment helper (mirrors amenityController.buildUpiPaymentData) ─── */
 function buildBillUpiData(bill) {
+  const societyName = bill.Flat?.Block?.Society?.name || "Society Management";
   const upiId   = process.env.DEMO_UPI_ID   || "society@upi";
-  const upiName = process.env.DEMO_UPI_NAME || "Society Payment";
+  const upiName = process.env.DEMO_UPI_NAME || societyName || "Society Payment";
   const amount  = Number(bill.amount) || 0;
   const upiLink = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(upiName)}&am=${amount}&cu=INR`;
-  return { upiId, upiName, amount, upiLink, bill_id: bill.id };
+  return { 
+    upiId, 
+    upiName, 
+    amount, 
+    upiLink, 
+    bill_id: bill.id,
+    society_name: societyName,
+    title: bill.title,
+    bill_category: bill.bill_category,
+    other_bill_type: bill.other_bill_type,
+    type: bill.type,
+    billing_month: bill.billing_month,
+    due_date: bill.due_date,
+    flat_number: bill.Flat?.flat_number,
+    block_name: bill.Flat?.Block?.name
+  };
 }
 
 /* ─── Resolve a pending bill that belongs to the current user's flats ─── */
@@ -27,7 +43,17 @@ async function findOwnedPendingBill(billId, userId) {
 
   const bill = await Bill.findOne({
     where: { id: billId, flat_id: { [Op.in]: myFlatIds } },
-    include: [{ model: Flat, include: [{ model: Block }] }],
+    include: [
+      {
+        model: Flat,
+        include: [
+          {
+            model: Block,
+            include: [{ model: Society, attributes: ["id", "name"] }],
+          },
+        ],
+      },
+    ],
   });
   return bill;
 }

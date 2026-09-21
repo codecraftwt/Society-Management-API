@@ -8,6 +8,12 @@ const Vehicle = require("../models/Vehicle");
 const HouseHoldMember = require("../models/HouseHoldMember");
 
 const { Op } = require("sequelize");
+const {
+  sanitizeText,
+  isEmpty,
+  isValidTitle,
+  isPositiveNumber,
+} = require("../utils/validation");
 
 const TYPE_MAP = { "Apartments": "APARTMENT", "Row Houses": "ROW_HOUSE", "Commercial": "COMMERCIAL" };
 
@@ -25,6 +31,40 @@ const createBlock = async (req, res) => {
     const type = TYPE_MAP[property_type] || property_type || "APARTMENT";
 
     // ✅ VALIDATION
+    if (!isValidTitle(sanitizeText(name))) {
+      return res.status(400).json({
+        message:
+          "Block name must be at least 4 characters and cannot be numbers or symbols only.",
+      });
+    }
+    if (isEmpty(society_id)) {
+      return res.status(400).json({ message: "Society is required." });
+    }
+    if (!["APARTMENT", "ROW_HOUSE", "COMMERCIAL"].includes(type)) {
+      return res.status(400).json({ message: "Invalid property type." });
+    }
+
+    if (type === "APARTMENT" || type === "COMMERCIAL") {
+      const floorCount = parseInt(floor_count);
+      const flatsPerFloor = parseInt(flats_per_floor);
+      if (!floorCount || isNaN(floorCount) || floorCount < 1) {
+        return res.status(400).json({ message: "floor_count must be a positive number." });
+      }
+      if (!flatsPerFloor || isNaN(flatsPerFloor) || flatsPerFloor < 1) {
+        return res.status(400).json({ message: "flats_per_floor must be a positive number." });
+      }
+    }
+
+    if (type === "ROW_HOUSE") {
+      const flatsPerFloor = parseInt(flats_per_floor);
+      if (!flatsPerFloor || isNaN(flatsPerFloor) || flatsPerFloor < 1) {
+        return res.status(400).json({ message: "Number of row houses must be a positive number." });
+      }
+      if (area_sqft != null && !isPositiveNumber(area_sqft)) {
+        return res.status(400).json({ message: "area_sqft must be a positive number." });
+      }
+    }
+
     if (type === "ROW_HOUSE" && floor_count) {
       return res.status(400).json({
         message: "Row House should not have floor_count",
@@ -117,6 +157,9 @@ const deleteBlock = async (req, res) => {
   const { blockId } = req.params;
 
   try {
+    const block = await Block.findByPk(blockId);
+    if (!block) return res.status(404).json({ message: "Block not found" });
+
     const floors = await Floor.findAll({ where: { block_id: blockId } });
     const floorIds = floors.map((f) => f.id);
 

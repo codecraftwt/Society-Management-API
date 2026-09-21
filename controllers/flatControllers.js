@@ -10,6 +10,11 @@ const ResidentHistory = require("../models/ResidentHistory");
 const FlatMembership = require("../models/FlatMembership");
 const Vehicle = require("../models/Vehicle");
 const { Op } = require("sequelize");
+const {
+  sanitizeText,
+  isEmpty,
+  isPositiveNumber,
+} = require("../utils/validation");
 
 /* ─────────────────────────────────────────────────────────────
    SHARED LOCATION INCLUDES
@@ -35,8 +40,19 @@ function resolveBlockName(flat) {
 const createFlat = async (req, res) => {
   try {
     const { flat_number, block_id, floor_id, resident_id, flat_type, occupancy_status, area_sqft } = req.body;
+
+    if (isEmpty(sanitizeText(flat_number))) {
+      return res.status(400).json({ message: "Flat number is required." });
+    }
+    if (isEmpty(block_id)) {
+      return res.status(400).json({ message: "Block is required." });
+    }
+    if (area_sqft != null && !isPositiveNumber(area_sqft)) {
+      return res.status(400).json({ message: "area_sqft must be a positive number." });
+    }
+
     const payload = {
-      flat_number,
+      flat_number: sanitizeText(flat_number),
       block_id,
       floor_id: floor_id ?? null,
       resident_id: resident_id ?? null,

@@ -1,6 +1,14 @@
 
 const { Op } = require("sequelize");
 const { sendPushNotification } = require("../utils/pushNotification");
+const {
+  sanitizeText,
+  isEmpty,
+  isValidMobile,
+  isValidPersonName,
+  isValidTitle,
+  isValidISODate,
+} = require("../utils/validation");
 const VisitorPreApproval = require("../models/VisitorPreApproval");
 const VisitorLog = require("../models/VisitorLog");
 const Flat = require("../models/Flat");
@@ -184,6 +192,33 @@ const notifyOnDutyGuard = async (societyId, title, message, actionRoute) => {
       valid_date,
     } = req.body;
 
+    const cleanName = sanitizeText(visitor_name);
+    const cleanMobile = sanitizeText(mobile);
+
+    if (isEmpty(flat_id)) {
+      return res.status(400).json({ message: "Flat is required." });
+    }
+    if (!isValidPersonName(cleanName) && !isValidTitle(cleanName)) {
+      return res.status(400).json({
+        message: "Visitor name is required and must be at least 2 characters.",
+      });
+    }
+    if (!isValidMobile(cleanMobile)) {
+      return res.status(400).json({ message: "Please provide a valid 10-digit Indian mobile number." });
+    }
+    if (isEmpty(purpose)) {
+      return res.status(400).json({ message: "Purpose is required." });
+    }
+    if (!valid_date) {
+      return res.status(400).json({ message: "Valid date is required." });
+    }
+    if (!isValidISODate(String(valid_date).slice(0, 10))) {
+      return res.status(400).json({ message: "Valid date must be a valid date." });
+    }
+    if (vehicle_number && isEmpty(sanitizeText(vehicle_number))) {
+      return res.status(400).json({ message: "Vehicle number cannot be empty." });
+    }
+
     // ✅ Security: Ensure owners can't pre-approve for rented flats
     if (req.user.resident_type === "OWNER") {
       const flat = await Flat.findByPk(flat_id);
@@ -202,9 +237,9 @@ const notifyOnDutyGuard = async (societyId, title, message, actionRoute) => {
       society_id: req.user.society_id,
       flat_id,
 
-      visitor_name,
-      mobile,
-      vehicle_number: vehicle_number || null,
+      visitor_name: cleanName,
+      mobile: cleanMobile,
+      vehicle_number: vehicle_number ? sanitizeText(vehicle_number) : null,
       purpose,
       valid_date,
 

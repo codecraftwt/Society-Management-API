@@ -15,6 +15,13 @@ const FlatMembership = require("../models/FlatMembership");
 
 const { sendPushNotification } = require("../utils/pushNotification");
 const { Op }                   = require("sequelize");
+const {
+  sanitizeText,
+  isEmpty,
+  isValidMobile,
+  isValidPersonName,
+  isValidTitle,
+} = require("../utils/validation");
 
 /* ─────────────────────────────────────────────
    IST HELPERS
@@ -71,6 +78,21 @@ const addVisitor = async (req, res) => {
       vehicle_number,
       assigned_slot,   // slot_number string sent by the guard UI
     } = req.body;
+
+    const cleanName = sanitizeText(visitor_name);
+    const cleanMobile = sanitizeText(mobile);
+
+    if (isEmpty(flat_id)) {
+      return res.status(400).json({ message: "Flat is required." });
+    }
+    if (!isValidPersonName(cleanName) && !isValidTitle(cleanName)) {
+      return res.status(400).json({
+        message: "Visitor name is required and must be at least 2 characters.",
+      });
+    }
+    if (!isValidMobile(cleanMobile)) {
+      return res.status(400).json({ message: "Please provide a valid 10-digit Indian mobile number." });
+    }
 
     /* ── Shift guard ── */
     const activeShift = await getActiveShiftForGuard(
@@ -449,6 +471,11 @@ const respondToGateRequest = async (req, res) => {
   try {
     const { id }     = req.params;
     const { action } = req.body;
+
+    const ALLOWED_ACTIONS = ["approve", "deny", "leave_at_gate"];
+    if (!ALLOWED_ACTIONS.includes(action)) {
+      return res.status(400).json({ message: "Action must be one of: approve, deny, leave_at_gate." });
+    }
 
     const visitor = await VisitorLog.findByPk(id);
     if (!visitor) return res.status(404).json({ message: "Visitor not found" });

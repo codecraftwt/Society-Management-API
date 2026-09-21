@@ -451,11 +451,41 @@ const addVehicle = async (req, res) => {
     }
 
     /* ─────────────────────────────
-       No slot linked → create PENDING
-       resident request so admin sees
-       it in Extra Slot Requests panel
+       Free pre-assigned slot check
+       (defense-in-depth for raw clients)
+       If the flat still has a free slot of
+       this vehicle type, DON'T auto-create a
+       request — surface the slot so clients
+       can claim it directly. Mirrors the guard
+       in requestResidentSlot.
     ───────────────────────────── */
+    let freePreAssignedSlot = null;
+
     if (!parking_slot_id) {
+      const candidate = await ParkingSlot.findOne({
+        where: {
+          society_id:   req.user.society_id,
+          flat_id:      resolvedFlatId,
+          vehicle_type: vehicle_type.toUpperCase(),
+          status:       "ASSIGNED",
+        },
+      });
+      if (candidate) {
+        const slotInUse = await Vehicle.findOne({
+          where: { parking_slot_id: candidate.id, society_id: req.user.society_id },
+        });
+        if (!slotInUse) freePreAssignedSlot = candidate;
+      }
+    }
+
+    /* ─────────────────────────────
+       No slot linked + no free pre-assigned
+       slot → create PENDING resident request
+       so admin sees it in Extra Slot Requests
+    ───────────────────────────── */
+    let residentRequest = null;
+
+    if (!parking_slot_id && !freePreAssignedSlot) {
       const { ParkingRequest, Notification, User } = require("../models");
 
       // Guard: don't duplicate a pending request for same vehicle
@@ -467,6 +497,8 @@ const addVehicle = async (req, res) => {
           status:         "PENDING",
         },
       });
+
+      residentRequest = existingRequest;
 
       if (!existingRequest) {
         const requester = await User.findByPk(req.user.id, {
@@ -486,6 +518,8 @@ const addVehicle = async (req, res) => {
           parking_type:     "RESIDENT",
           vehicle_id:       vehicle.id,
         });
+
+        residentRequest = pendingRequest;
 
         // Notify all admins
         const adminUsers = await User.findAll({
@@ -548,8 +582,11 @@ const addVehicle = async (req, res) => {
     ───────────────────────────── */
     return res.status(201).json({
       ...vehicle.toJSON(),
-      slot_linked:  !!parking_slot_id,
-      parking_type: responseParkingType,
+      slot_linked:     !!parking_slot_id,
+      request_created: !!residentRequest,
+      request_id:      residentRequest?.id || null,
+      free_slot:       freePreAssignedSlot ? freePreAssignedSlot.slot_number : null,
+      parking_type:    responseParkingType,
       slot: linkedSlotRecord
         ? {
             id:            linkedSlotRecord.id,

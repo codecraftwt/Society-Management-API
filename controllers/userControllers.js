@@ -19,6 +19,16 @@ const Vehicle = require("../models/Vehicle");
 const AccountantAssignment = require("../models/AccountantAssignment");
 const transporter = require("../utils/mailer");
 const { fetchEffectivePermissions } = require("./permissionController");
+const {
+  sanitizeText,
+  isEmpty,
+  isValidEmail,
+  isValidMobile,
+  isValidTitle,
+  isValidPersonName,
+  isValidPassword,
+  isPositiveNumber,
+} = require("../utils/validation");
 
 async function sendAccountantWelcomeEmail(toEmail, name, password, societyName) {
   if (!transporter) return;
@@ -77,7 +87,24 @@ async function sendAccountantWelcomeEmail(toEmail, name, password, societyName) 
    ===== */
 const createSocietyAdmin = async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const rawName = sanitizeText(req.body.name);
+    const rawEmail = sanitizeText(req.body.email);
+    const password = req.body.password;
+
+    if (!isValidTitle(rawName)) {
+      return res.status(400).json({
+        message: "Name must be at least 4 characters and cannot be numbers or symbols only.",
+      });
+    }
+    if (!isValidEmail(rawEmail)) {
+      return res.status(400).json({ message: "Please enter a valid email address." });
+    }
+    if (isEmpty(password)) {
+      return res.status(400).json({ message: "Password is required." });
+    }
+
+    const name = rawName;
+    const email = rawEmail;
     const society_id = req.params.societyId;
 
     const existingUser = await User.findOne({ where: { email } });
@@ -378,7 +405,7 @@ const createSocietyAdmin = async (req, res) => {
 
 const createResident = async (req, res) => {
   try {
-    const {
+    let {
       name,
       email,
       password,
@@ -392,6 +419,40 @@ const createResident = async (req, res) => {
       vehicles,
       parking_slots,
     } = req.body;
+
+    /* ─────────────────────────────
+       Basic field validation
+    ───────────────────────────── */
+    const rawName = sanitizeText(name);
+    const rawEmail = sanitizeText(email);
+
+    if (!isValidPersonName(rawName)) {
+      return res.status(400).json({
+        message: "Name must be at least 2 characters and contain only letters, spaces, dots, apostrophes or hyphens.",
+      });
+    }
+    if (!isValidEmail(rawEmail)) {
+      return res.status(400).json({ message: "Please enter a valid email address." });
+    }
+    if (isEmpty(password)) {
+      return res.status(400).json({ message: "Password is required." });
+    }
+    if (typeof password === "string" && password.length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters." });
+    }
+    if (phone && !isValidMobile(phone)) {
+      return res.status(400).json({ message: "Please provide a valid 10-digit Indian mobile number." });
+    }
+    if (occupant_count != null && (!Number.isInteger(Number(occupant_count)) || Number(occupant_count) < 1)) {
+      return res.status(400).json({ message: "Occupant count must be a positive number." });
+    }
+    if (resident_type && !["OWNER", "TENANT"].includes(resident_type)) {
+      return res.status(400).json({ message: "resident_type must be OWNER or TENANT." });
+    }
+
+    // Copy sanitized values back onto the locals used below
+    name = rawName;
+    email = rawEmail;
 
     /* ─────────────────────────────
        Flat is COMPULSORY
@@ -631,7 +692,30 @@ const createResident = async (req, res) => {
    ===== */
 const createGuard = async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const name = sanitizeText(req.body.name);
+    const email = sanitizeText(req.body.email);
+    const password = req.body.password;
+
+    if (!isValidPersonName(name)) {
+      return res.status(400).json({
+        message: "Name must be at least 2 characters and contain only letters, spaces, dots, apostrophes or hyphens.",
+      });
+    }
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ message: "Please enter a valid email address." });
+    }
+    if (isEmpty(password)) {
+      return res.status(400).json({ message: "Password is required." });
+    }
+    if (typeof password === "string" && password.length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters." });
+    }
+
+    const existingUser = await User.findOne({ where: { email } });
+    if (existingUser) {
+      return res.status(400).json({ message: "A user with this email already exists." });
+    }
+
     const hashed = await bcrypt.hash(password, 8);
 const guard = await User.create({
         name, email, password: hashed,
@@ -687,6 +771,18 @@ const updateGuard = async (req, res) => {
     const guard = await User.findByPk(id);
     if (!guard || !(guard.roles || [guard.role]).includes("GUARD")) {
       return res.status(404).json({ message: "Guard not found" });
+    }
+
+    if (name !== undefined && !isValidPersonName(sanitizeText(name))) {
+      return res.status(400).json({
+        message: "Name must be at least 2 characters and contain only letters, spaces, dots, apostrophes or hyphens.",
+      });
+    }
+    if (email !== undefined && !isValidEmail(sanitizeText(email))) {
+      return res.status(400).json({ message: "Please enter a valid email address." });
+    }
+    if (password !== undefined && password !== "" && (typeof password !== "string" || password.length < 6)) {
+      return res.status(400).json({ message: "Password must be at least 6 characters." });
     }
 
     // Security check
