@@ -203,6 +203,13 @@ describe("Emergency API", () => {
       .set(headers)
       .send({ type: "FIRE", message: "Automated test alert" });
     expect([200, 201, 400]).toContain(res.status);
+    if (res.status === 201 && res.body?.id) {
+      const { headers: adminHeaders } = await login("admin");
+      await request(app)
+        .patch(`/api/emergency/${res.body.id}/resolve`)
+        .set(adminHeaders)
+        .send({ resolution_notes: "Automated test cleanup" });
+    }
   });
 
   it("PATCH /api/emergency/:id/resolve is forbidden for a resident", async () => {

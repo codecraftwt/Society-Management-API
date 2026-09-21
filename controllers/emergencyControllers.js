@@ -730,7 +730,12 @@ const getActiveEmergencies = async (req, res) => {
       order: [["created_at", "DESC"]],
     });
 
-    res.json(alerts);
+    const liveAlerts = alerts.filter((a) => {
+      const msg = String(a.message || "").toLowerCase();
+      return !msg.includes("automated test");
+    });
+
+    res.json(liveAlerts);
 
   } catch (err) {
     console.error("getActiveEmergencies error:", err);
