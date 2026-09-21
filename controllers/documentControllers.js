@@ -67,7 +67,7 @@ const getDocuments = async (req, res) => {
 
     // ── Pagination ──
     const page   = Math.max(1, parseInt(req.query.page)  || 1);
-    const limit  = Math.min(50, parseInt(req.query.limit) || 12);
+    const limit  = Math.min(100, parseInt(req.query.limit) || 12);
     const offset = (page - 1) * limit;
 
     // ── Search ──

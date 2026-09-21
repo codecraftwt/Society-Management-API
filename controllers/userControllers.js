@@ -947,7 +947,7 @@ const getResidents = async (req, res) => {
     const { Op } = require("sequelize");
 
     const page     = Math.max(1, parseInt(req.query.page)  || 1);
-    const limit    = Math.min(50, parseInt(req.query.limit) || 10);
+    const limit    = Math.min(100, parseInt(req.query.limit) || 10);
     const offset   = (page - 1) * limit;
     const search   = req.query.search?.trim() || "";
     
