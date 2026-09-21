@@ -38,6 +38,13 @@ const createBill = async (req, res) => {
       last_pay_date 
     } = req.body;
 
+    const parsedAmount = Number(amount);
+    if (amount === undefined || amount === null || amount === "" || isNaN(parsedAmount) || parsedAmount <= 0) {
+      return res.status(400).json({
+        message: "Bill amount must be a valid number greater than 0.",
+      });
+    }
+
     const targetFlatType = (flat_type || bill_type || "INDIVIDUAL").toUpperCase();
     const finalCategory = (bill_category || "OTHER").toUpperCase();
     const finalOtherType = finalCategory === "OTHER" ? (other_bill_type || null) : null;
@@ -360,6 +367,9 @@ const getSocietyBills = async (req, res) => {
       if (b.Flat) {
         const activeMember = b.Flat.FlatMemberships?.find((m) => m.is_current) || b.Flat.FlatMemberships?.[0];
         b.Flat.User = activeMember?.User || null;
+        if (!b.User) {
+          b.User = activeMember?.User || null;
+        }
       }
       return b;
     });

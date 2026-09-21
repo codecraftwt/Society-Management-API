@@ -83,10 +83,12 @@ const createEmergency = async (req, res) => {
     else if (isActive("FAMILY_MEMBER")) senderKind = "FAMILY_MEMBER";
     else if (isActive("SOCIETY_ADMIN") || isActive("ADMIN")) senderKind = "ADMIN";
     else if (isActive("COMMITTEE_MEMBER") || isActive("COMMITTEE")) senderKind = "COMMITTEE";
+    else if (isActive("ACCOUNTANT")) senderKind = "ADMIN";
     else if (roles.includes("GUARD")) senderKind = "GUARD";
     else if (roles.includes("FAMILY_MEMBER")) senderKind = "FAMILY_MEMBER";
     else if (roles.includes("SOCIETY_ADMIN") || roles.includes("ADMIN")) senderKind = "ADMIN";
     else if (roles.includes("COMMITTEE_MEMBER") || roles.includes("COMMITTEE")) senderKind = "COMMITTEE";
+    else if (roles.includes("ACCOUNTANT")) senderKind = "ADMIN";
     else if (roles.includes("RESIDENT")) senderKind = "RESIDENT";
     else senderKind = "RESIDENT";
 
@@ -118,16 +120,20 @@ const createEmergency = async (req, res) => {
       payload.source = "SUPER_ADMIN";
     }
 
-    // ✅ SOCIETY_ADMIN / ADMIN
+    // ✅ SOCIETY_ADMIN / ADMIN / ACCOUNTANT
     else if (senderKind === "ADMIN") {
       payload.admin_id = user.id;
       payload.source = "ADMIN";
+      const flatId = req.body.flat_id || await getFlatIdForUser(user.id);
+      if (flatId) payload.flat_id = flatId;
     }
 
     // ✅ COMMITTEE_MEMBER
     else if (senderKind === "COMMITTEE") {
       payload.admin_id = user.id;
       payload.source = "COMMITTEE";
+      const flatId = req.body.flat_id || await getFlatIdForUser(user.id);
+      if (flatId) payload.flat_id = flatId;
     }
 
     // ✅ RESIDENT (flat mandatory)

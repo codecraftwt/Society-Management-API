@@ -775,9 +775,9 @@ const getParkingRequests = async (req, res) => {
         { [Op.or]: residentScope }
       ];
 
-      if (req.query.parking_type) {
+      if (req.query.parking_type && req.query.parking_type !== "ALL") {
         where.parking_type = req.query.parking_type;
-      } else {
+      } else if (!req.query.parking_type) {
         where.parking_type = "VISITOR";
       }
     } else {
@@ -826,7 +826,11 @@ const getParkingRequests = async (req, res) => {
       if (flatId) residentScope.push({ flat_id: flatId });
 
       baseWhere[Op.and] = [{ [Op.or]: residentScope }];
-      baseWhere.parking_type = req.query.parking_type || "VISITOR";
+      if (req.query.parking_type && req.query.parking_type !== "ALL") {
+        baseWhere.parking_type = req.query.parking_type;
+      } else if (!req.query.parking_type) {
+        baseWhere.parking_type = "VISITOR";
+      }
     } else {
       if (req.query.parking_type && req.query.parking_type !== "ALL") {
         baseWhere.parking_type = req.query.parking_type;

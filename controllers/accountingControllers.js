@@ -135,6 +135,9 @@ const getLedger = async (req, res) => {
     if (req.query.source && ["BILL", "MAINTENANCE", "AMENITY", "EXPENSE", "ADJUSTMENT"].includes(req.query.source.toUpperCase())) {
       where.source = req.query.source.toUpperCase();
     }
+    if (req.query.search && req.query.search.trim()) {
+      where.description = { [Op.like]: `%${req.query.search.trim()}%` };
+    }
     if (req.query.from && req.query.to) {
       where.entry_date = { [Op.between]: [req.query.from, req.query.to] };
     } else if (req.query.from) {
@@ -248,9 +251,23 @@ const getLedger = async (req, res) => {
       return { ...r.toJSON(), running_balance: Math.round(runningBalance * 100) / 100, detail: resolveDetail(r) };
     });
 
-    // Virtual OPENING row on the first page so the cash-book starts at the correct figure.
+    // Virtual OPENING row on the first page only when filters allow opening credit entries
+    const hasTypeFilter = Boolean(req.query.type && req.query.type.trim());
+    const isCreditType = req.query.type?.toUpperCase() === "CREDIT";
+    const hasSourceFilter = Boolean(req.query.source && req.query.source.trim());
+    const isOpeningSource = req.query.source?.toUpperCase() === "OPENING";
+    const hasSearch = Boolean(req.query.search && req.query.search.trim());
+
+    const allowsOpening =
+      (!hasTypeFilter || isCreditType) &&
+      (!hasSourceFilter || isOpeningSource) &&
+      (!hasSearch || "opening balance (pre-tracking funds)".toLowerCase().includes(req.query.search.trim().toLowerCase())) &&
+      (!req.query.from || (society?.opening_balance_effective_date && society.opening_balance_effective_date >= req.query.from)) &&
+      (!req.query.to || (society?.opening_balance_effective_date && society.opening_balance_effective_date <= req.query.to));
+
     let dataEntries = entries;
-    if (page === 1) {
+    const includeOpeningRow = page === 1 && allowsOpening && opening > 0;
+    if (includeOpeningRow) {
       dataEntries = [
         {
           id: null,
@@ -269,13 +286,15 @@ const getLedger = async (req, res) => {
       ];
     }
 
+    const totalCount = count + (allowsOpening && opening > 0 ? 1 : 0);
+
     return res.json({
       success: true,
       data: await enrichWithActors(dataEntries, "created_by", "created_by_name", "created_by_role"),
       pagination: {
         currentPage: page,
-        totalPages: Math.ceil(count / limit),
-        totalItems: count,
+        totalPages: Math.ceil(totalCount / limit) || 1,
+        totalItems: totalCount,
         limit,
       },
       opening_balance: opening,

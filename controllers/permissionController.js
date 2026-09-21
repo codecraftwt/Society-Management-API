@@ -58,8 +58,8 @@ const DEFAULT_SECTION_ENABLEMENT = {
   },
   ACCOUNTANT: {
     dashboard: true,
-    resident: false,
-    property: false,
+    resident: true,
+    property: true,
     parking_slots: false,
     flat_history: false,
     tenant_management: false,
