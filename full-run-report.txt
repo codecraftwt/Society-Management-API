@@ -1,0 +1,1954 @@
+  console.log
+    [dotenv@17.3.1] injecting env (22) from .env -- tip: ΓÜÖ∩╕Å  load multiple .env files with { path: ['.env.local', '.env'] }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ≡ƒöÉ prevent committing .env to code: https://dotenvx.com/precommit
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    Γ£à Firebase Admin initialized
+
+      at Object.log (utils/pushNotification.js:24:15)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  suppress all logs with { quiet: true }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to societyadmin32@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to resident1@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to guard@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to committee@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to accountant@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] SMTP ready
+
+      at log (utils/mailer.js:28:18)
+
+FAIL tests/billing.test.js
+  Bills API
+    ΓêÜ requires authentication (32 ms)
+    ΓêÜ GET /api/bills/society lists bills for admin (222 ms)
+    ├ù GET /api/bills/society is forbidden for a resident (170 ms)
+    ΓêÜ GET /api/bills/resident lists bills for a resident (22 ms)
+    ΓêÜ POST /api/bills is forbidden for a resident (9 ms)
+    ΓêÜ POST /api/bills validates an unassigned flat for individual bills (9 ms)
+    ΓêÜ PUT /api/bills/confirm/:id handles a missing bill (8 ms)
+    ΓêÜ DELETE /api/bills/:id handles a missing bill (8 ms)
+    ΓêÜ PUT /api/bills/bulk-confirm validates required ids array (7 ms)
+    ΓêÜ PUT /api/bills/bulk-confirm handles missing bills gracefully (7 ms)
+    ΓêÜ DELETE /api/bills/bulk validates required ids array (5 ms)
+    ΓêÜ DELETE /api/bills/bulk handles missing bills gracefully (7 ms)
+    ΓêÜ POST /api/bills/bulk-delete alternative route works (7 ms)
+  Billing rules API
+    ΓêÜ requires authentication (2 ms)
+    ΓêÜ GET /api/billing-rules lists rules for admin (7 ms)
+    ΓêÜ POST /api/billing-rules requires a name (5 ms)
+    ΓêÜ POST /api/billing-rules requires a numeric amount (4 ms)
+    ΓêÜ POST /api/billing-rules rejects an invalid frequency (3 ms)
+    ΓêÜ creates and deletes a billing rule (28 ms)
+    ├ù is forbidden for a resident (9 ms)
+  Payments API
+    ΓêÜ requires authentication for create-order (5 ms)
+    ├ù POST /api/payments/create-order is forbidden for admin (6 ms)
+    ΓêÜ POST /api/payments/create-order requires bill_id (5 ms)
+    ΓêÜ POST /api/payments/verify requires authentication (3 ms)
+    ΓêÜ POST /api/payments/demo-upi requires bill_id (4 ms)
+    ΓêÜ POST /api/payments/demo-verify requires bill_id (8 ms)
+    ΓêÜ GET /api/payments/debug-bills returns bills (4 ms)
+  Accountant API
+    ΓêÜ requires authentication (2 ms)
+    ΓêÜ is forbidden for a guard (108 ms)
+    ΓêÜ GET /api/accountant/bills succeeds for society admin (22 ms)
+    ΓêÜ GET /api/accountant/payments succeeds for society admin (83 ms)
+    ΓêÜ GET /api/accountant/payments succeeds for committee member (282 ms)
+    ΓêÜ GET /api/accountant/payments is forbidden for a guard (8 ms)
+    ΓêÜ GET /api/accountant/payments/summary succeeds for society admin (12 ms)
+    ΓêÜ GET /api/accountant/bills succeeds for accountant (225 ms)
+    ΓêÜ GET /api/accountant/payments succeeds for accountant (62 ms)
+    ΓêÜ GET /api/accountant/payments/summary succeeds for accountant (11 ms)
+    ΓêÜ GET /api/accountant/dashboard-stats succeeds for accountant (20 ms)
+    ΓêÜ GET /api/accountant/dashboard-stats requires authentication (16 ms)
+    ΓêÜ GET /api/accountant/dashboard-stats is forbidden for a guard (12 ms)
+    ΓêÜ GET /api/reports/financial succeeds for accountant (53 ms)
+
+  ΓùÅ Bills API ΓÇ║ GET /api/bills/society is forbidden for a resident
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/billing.test.js:27:5)
+
+  ΓùÅ Billing rules API ΓÇ║ is forbidden for a resident
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/billing.test.js:158:5)
+
+  ΓùÅ Payments API ΓÇ║ POST /api/payments/create-order is forbidden for admin
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 400
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/billing.test.js:171:5)
+
+  console.log
+    [dotenv@17.3.1] injecting env (22) from .env -- tip: ≡ƒ¢í∩╕Å auth for agents: https://vestauth.com
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ≡ƒñû agentic secret storage: https://dotenvx.com/as2
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    Γ£à Firebase Admin initialized
+
+      at Object.log (utils/pushNotification.js:24:15)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  specify custom .env file path with { path: '/custom/path/.env' }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to societyadmin32@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to resident1@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to guard@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to accountant@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.error
+    ValidationError [SequelizeValidationError]: notNull Violation: Parcel.flat_id cannot be null,
+    notNull Violation: Parcel.courier_name cannot be null
+        at InstanceValidator._validate (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\instance-validator.js:78:13)
+        at processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at InstanceValidator._validateAndRunHooks (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\instance-validator.js:111:7)
+        at InstanceValidator.validate (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\instance-validator.js:93:12)
+        at model.save (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\model.js:4077:7)
+        at Parcel.create (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\model.js:2305:12)
+        at createParcel (D:\SocietyApp\Society-Management-API\controllers\parcelControllers.js:257:20) {
+      errors: [
+        ValidationErrorItem {
+          message: 'Parcel.flat_id cannot be null',
+          type: 'notNull Violation',
+          path: 'flat_id',
+          value: null,
+          origin: 'CORE',
+          instance: [Parcel],
+          validatorKey: 'is_null',
+          validatorName: null,
+          validatorArgs: []
+        },
+        ValidationErrorItem {
+          message: 'Parcel.courier_name cannot be null',
+          type: 'notNull Violation',
+          path: 'courier_name',
+          value: null,
+          origin: 'CORE',
+          instance: [Parcel],
+          validatorKey: 'is_null',
+          validatorName: null,
+          validatorArgs: []
+        }
+      ]
+    }
+
+    [0m [90m 291 |[39m     res[33m.[39mstatus([35m201[39m)[33m.[39mjson(full)[33m;[39m
+     [90m 292 |[39m   } [36mcatch[39m (err) {
+    [31m[1m>[22m[39m[90m 293 |[39m     console[33m.[39merror(err)[33m;[39m
+     [90m     |[39m             [31m[1m^[22m[39m
+     [90m 294 |[39m     res[33m.[39mstatus([35m500[39m)[33m.[39mjson({ message[33m:[39m [32m"Server Error"[39m })[33m;[39m
+     [90m 295 |[39m   }
+     [90m 296 |[39m }[33m;[39m[0m
+
+      at error (controllers/parcelControllers.js:293:13)
+
+  console.log
+    [Mailer] SMTP ready
+
+      at log (utils/mailer.js:28:18)
+
+FAIL tests/reports-parking.test.js
+  Reports API
+    ΓêÜ requires authentication (28 ms)
+    ΓêÜ GET /api/reports/visitors is authorized for admin (318 ms)
+    ΓêÜ GET /api/reports/complaints succeeds for admin (33 ms)
+    ΓêÜ GET /api/reports/financial succeeds for admin (55 ms)
+    ├ù is forbidden for a resident (237 ms)
+  Resident reports API
+    ΓêÜ requires authentication (11 ms)
+    ΓêÜ GET /api/resident/my-complaints succeeds for a resident (11 ms)
+    ΓêÜ GET /api/resident/my-visitors is authorized for a resident (21 ms)
+    ΓêÜ GET /api/resident/my-bills succeeds for a resident (13 ms)
+    ├ù is forbidden for admin (16 ms)
+  Parking API
+    ΓêÜ requires authentication (6 ms)
+    ΓêÜ GET /api/parking lists requests for a resident (26 ms)
+    ΓêÜ GET /api/parking/unassigned-resident-vehicles succeeds for admin (13 ms)
+    ├ù GET /api/parking/unassigned-resident-vehicles is forbidden for a resident (11 ms)
+    ΓêÜ GET /api/parking/lookup-vehicle requires a vehicle number (124 ms)
+    ΓêÜ POST /api/parking/request-slot requires vehicle fields (10 ms)
+    ΓêÜ PUT /api/parking/:id/assign without a spot fails validation (44 ms)
+  Parking slots API
+    ΓêÜ requires authentication (5 ms)
+    ΓêÜ GET /api/parking-slots lists slots for admin (28 ms)
+    ΓêÜ GET /api/parking-slots/available succeeds for a guard (18 ms)
+    ΓêÜ GET /api/parking-slots/my-slots succeeds for a resident (31 ms)
+    ΓêÜ POST /api/parking-slots requires all fields (9 ms)
+    ΓêÜ POST /api/parking-slots is forbidden for a resident (13 ms)
+  Parcels API
+    ΓêÜ requires authentication (6 ms)
+    ΓêÜ GET /api/parcels succeeds for a guard (23 ms)
+    ΓêÜ GET /api/parcels succeeds for a resident (16 ms)
+    ├ù GET /api/parcels is forbidden for accountant (209 ms)
+    ├ù POST /api/parcels is forbidden for admin (91 ms)
+    ΓêÜ PUT /api/parcels/:id/status handles an invalid transition (12 ms)
+
+  ΓùÅ Reports API ΓÇ║ is forbidden for a resident
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/reports-parking.test.js:39:5)
+
+  ΓùÅ Resident reports API ΓÇ║ is forbidden for admin
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/reports-parking.test.js:71:5)
+
+  ΓùÅ Parking API ΓÇ║ GET /api/parking/unassigned-resident-vehicles is forbidden for a resident
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/reports-parking.test.js:96:5)
+
+  ΓùÅ Parcels API ΓÇ║ GET /api/parcels is forbidden for accountant
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/reports-parking.test.js:177:5)
+
+  ΓùÅ Parcels API ΓÇ║ POST /api/parcels is forbidden for admin
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 500
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/reports-parking.test.js:183:5)
+
+  console.log
+    [dotenv@17.3.1] injecting env (22) from .env -- tip: ≡ƒ¢á∩╕Å  run anywhere with `dotenvx run -- yourcommand`
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ≡ƒ¢á∩╕Å  run anywhere with `dotenvx run -- yourcommand`
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    Γ£à Firebase Admin initialized
+
+      at Object.log (utils/pushNotification.js:24:15)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ≡ƒñû agentic secret storage: https://dotenvx.com/as2
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to resident1@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to societyadmin32@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to guard@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to accountant@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+FAIL tests/amenities-docs.test.js
+  Settings API
+    ΓêÜ requires authentication (23 ms)
+    ΓêÜ GET /api/settings returns the resident settings (261 ms)
+    ΓêÜ PUT /api/settings updates a flag and restores it (73 ms)
+  Amenities API
+    ΓêÜ requires authentication (5 ms)
+    ΓêÜ GET /api/amenities lists amenities for a resident (12 ms)
+    ΓêÜ GET /api/amenities/my-bookings lists bookings (33 ms)
+    ΓêÜ GET /api/amenities/:id/availability requires a date (21 ms)
+    ΓêÜ POST /api/amenities/book requires amenityId (12 ms)
+    ΓêÜ POST /api/amenities/verify-payment requires booking_id (17 ms)
+  Admin amenities API
+    ΓêÜ requires authentication (7 ms)
+    ├ù is forbidden for a resident (21 ms)
+    ΓêÜ GET /api/admin/amenities/bookings succeeds for admin (239 ms)
+    ΓêÜ GET /api/admin/amenities/bookings/pending succeeds for admin (15 ms)
+    ΓêÜ POST /api/admin/amenities creates and can be left unused if name is missing (9 ms)
+    ΓêÜ creates a throwaway amenity as admin (71 ms)
+  Documents API
+    ΓêÜ requires authentication (5 ms)
+    ΓêÜ GET /api/documents succeeds for a resident (31 ms)
+    ΓêÜ GET /api/documents/admin succeeds for admin (29 ms)
+    ├ù GET /api/documents/admin is forbidden for a resident (22 ms)
+    ΓêÜ PATCH /api/documents/admin/:id handles a missing document (12 ms)
+  User documents API
+    ΓêÜ requires authentication (6 ms)
+    ΓêÜ GET /api/user-documents/my returns docs or 404 (16 ms)
+    ΓêÜ PATCH /api/user-documents/:type rejects an invalid type (11 ms)
+    ΓêÜ is forbidden for a guard (137 ms)
+  Contacts API
+    ΓêÜ requires authentication (7 ms)
+    ΓêÜ GET /api/contacts succeeds for a resident (20 ms)
+    ΓêÜ GET /api/contacts succeeds for a guard (15 ms)
+    ├ù is forbidden for accountant (231 ms)
+
+  ΓùÅ Admin amenities API ΓÇ║ is forbidden for a resident
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/amenities-docs.test.js:95:5)
+
+  ΓùÅ Documents API ΓÇ║ GET /api/documents/admin is forbidden for a resident
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/amenities-docs.test.js:155:5)
+
+  ΓùÅ Contacts API ΓÇ║ is forbidden for accountant
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/amenities-docs.test.js:215:5)
+
+  console.log
+    [dotenv@17.3.1] injecting env (22) from .env -- tip: ≡ƒ¢í∩╕Å auth for agents: https://vestauth.com
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ≡ƒ¢í∩╕Å auth for agents: https://vestauth.com
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    Γ£à Firebase Admin initialized
+
+      at Object.log (utils/pushNotification.js:24:15)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  specify custom .env file path with { path: '/custom/path/.env' }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+
+  ΓùÅ  Cannot log after tests are done. Did you forget to wait for something async in your test?
+    Attempted to log "[Mailer] SMTP ready".
+
+      26 |   transporter.verify((err) => {
+      27 |     if (err) console.error("[Mailer] SMTP connection failed:", err.message);
+    > 28 |     else console.log("[Mailer] SMTP ready");
+         |                  ^
+      29 |   });
+      30 | } else {
+      31 |   console.warn("ΓÜá∩╕Å  Email not configured ΓÇö emails will be skipped");
+
+      at console.log (node_modules/@jest/console/build/CustomConsole.js:141:10)
+      at log (utils/mailer.js:28:18)
+      at finalize (node_modules/nodemailer/lib/smtp-pool/index.js:613:24)
+      at node_modules/nodemailer/lib/smtp-pool/index.js:633:25
+      at SMTPConnection._actionAUTHComplete (node_modules/nodemailer/lib/smtp-connection/index.js:1736:9)
+      at SMTPConnection.<anonymous> (node_modules/nodemailer/lib/smtp-connection/index.js:651:26)
+      at SMTPConnection._processResponse (node_modules/nodemailer/lib/smtp-connection/index.js:1098:20)
+      at SMTPConnection._onData (node_modules/nodemailer/lib/smtp-connection/index.js:872:14)
+      at TLSSocket.SMTPConnection._onSocketData (node_modules/nodemailer/lib/smtp-connection/index.js:196:44)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to societyadmin32@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to guard@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to resident1@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    
+    --- [START] FetchING DAILY HELPS FOR SOCIETY: 6 ---
+
+      at log (controllers/dailyHelpControllers.js:72:13)
+
+  console.log
+    [DB] Found 52 flats in this society. Flat IDs: [
+        6,   7,   8,   9,  10,  11,  12,  13,  14,
+       15, 119, 120, 121, 122, 123, 124, 125, 126,
+      127, 128, 129, 130, 131, 132, 133, 134, 135,
+      136, 137, 138, 139, 140, 141, 142, 143, 144,
+      145, 146, 147, 148, 169, 170, 171, 172, 173,
+      174, 175, 176, 177, 178, 179, 180
+    ]
+
+      at log (controllers/dailyHelpControllers.js:79:13)
+
+  console.log
+    [DB] Found 0 valid helpers in HouseHoldMember table.
+
+      at log (controllers/dailyHelpControllers.js:92:13)
+
+  console.log
+    [LOGIC] Grouped helpers into 0 unique profiles based on phone.
+
+      at log (controllers/dailyHelpControllers.js:118:13)
+
+  console.log
+    [SUCCESS] Sending Payload: []
+
+      at log (controllers/dailyHelpControllers.js:145:13)
+
+  console.log
+    --- [END] FETCHING DAILY HELPS ---
+
+      at log (controllers/dailyHelpControllers.js:146:13)
+
+  console.log
+    VERIFY BODY: {
+      code: 'INVALID',
+      slot_number: undefined,
+      vehicle_type: undefined,
+      guard_id: 31,
+      society_id: 6
+    }
+
+      at log (controllers/preApprovalControllers.js:240:13)
+
+  console.log
+    [Mailer] SMTP ready
+
+      at log (utils/mailer.js:28:18)
+
+  console.error
+    createEmergency error: ValidationError [SequelizeValidationError]: notNull Violation: EmergencyAlert.message cannot be null
+        at InstanceValidator._validate (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\instance-validator.js:78:13)
+        at processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at InstanceValidator._validateAndRunHooks (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\instance-validator.js:111:7)
+        at InstanceValidator.validate (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\instance-validator.js:93:12)
+        at model.save (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\model.js:4077:7)
+        at EmergencyAlert.create (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\model.js:2305:12)
+        at createEmergency (D:\SocietyApp\Society-Management-API\controllers\emergencyControllers.js:181:23) {
+      errors: [
+        ValidationErrorItem {
+          message: 'EmergencyAlert.message cannot be null',
+          type: 'notNull Violation',
+          path: 'message',
+          value: null,
+          origin: 'CORE',
+          instance: [EmergencyAlert],
+          validatorKey: 'is_null',
+          validatorName: null,
+          validatorArgs: []
+        }
+      ]
+    }
+
+    [0m [90m 331 |[39m
+     [90m 332 |[39m   } [36mcatch[39m (error) {
+    [31m[1m>[22m[39m[90m 333 |[39m     console[33m.[39merror([32m"createEmergency error:"[39m[33m,[39m error)[33m;[39m
+     [90m     |[39m             [31m[1m^[22m[39m
+     [90m 334 |[39m     res[33m.[39mstatus([35m500[39m)[33m.[39mjson({ message[33m:[39m error[33m.[39mmessage })[33m;[39m
+     [90m 335 |[39m   }
+     [90m 336 |[39m }[33m;[39m[0m
+
+      at error (controllers/emergencyControllers.js:333:13)
+
+FAIL tests/gate.test.js
+  Visitors API
+    ΓêÜ requires authentication (32 ms)
+    ΓêÜ GET /api/visitors is authorized for admin (302 ms)
+    ΓêÜ GET /api/visitors is authorized for a guard (157 ms)
+    ├ù GET /api/visitors is forbidden for a resident (221 ms)
+    ΓêÜ GET /api/visitors/resident is authorized for a resident (22 ms)
+    ΓêÜ GET /api/visitors/block succeeds for a guard (10 ms)
+    ΓêÜ GET /api/visitors/daily-help/directory succeeds for admin (34 ms)
+    ΓêÜ POST /api/visitors is forbidden for a resident (8 ms)
+    ├ù POST /api/visitors as a guard without a valid shift is rejected (34 ms)
+    ΓêÜ PUT /api/visitors/exit/:id is forbidden for a resident (11 ms)
+    ΓêÜ POST /api/visitors/action/:id is forbidden for a guard (12 ms)
+  Pre-approval API
+    ΓêÜ requires authentication (7 ms)
+    ΓêÜ GET /api/preapproval/my lists gate passes for a resident (30 ms)
+    ΓêÜ GET /api/preapproval/my is forbidden for a guard (10 ms)
+    ΓêÜ POST /api/preapproval/verify is forbidden for a resident (8 ms)
+    ΓêÜ POST /api/preapproval/verify rejects an invalid code (34 ms)
+    ΓêÜ POST /api/preapproval creates a gate pass with required fields (45 ms)
+  Household API
+    ΓêÜ requires authentication (5 ms)
+    ΓêÜ GET /api/household lists members for a resident (12 ms)
+    ΓêÜ GET /api/household is forbidden for a guard (7 ms)
+    ΓêÜ POST /api/household/add is forbidden for a guard (10 ms)
+    ΓêÜ DELETE /api/household/:id handles a missing member (14 ms)
+  Emergency API
+    ΓêÜ requires authentication (5 ms)
+    ΓêÜ GET /api/emergency lists alerts for admin (28 ms)
+    ΓêÜ GET /api/emergency/active succeeds for a resident (13 ms)
+    ΓêÜ GET /api/emergency/mine succeeds for a resident (17 ms)
+    ├ù POST /api/emergency is forbidden for admin (90 ms)
+    ΓêÜ POST /api/emergency creates or validates an alert as a resident (303 ms)
+    ΓêÜ PATCH /api/emergency/:id/resolve is forbidden for a resident (16 ms)
+
+  ΓùÅ Visitors API ΓÇ║ GET /api/visitors is forbidden for a resident
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/gate.test.js:35:5)
+
+  ΓùÅ Visitors API ΓÇ║ POST /api/visitors as a guard without a valid shift is rejected
+
+    expect(received).toContain(expected) // indexOf
+
+    Expected value: 201
+    Received array: [400, 403, 404]
+
+      67 |       .set(headers)
+      68 |       .send({ visitor_name: "Test Guest", mobile: "9999999999", flat_id: 1 });
+    > 69 |     expect([400, 403, 404]).toContain(res.status);
+         |                             ^
+      70 |   });
+      71 |
+      72 |   it("PUT /api/visitors/exit/:id is forbidden for a resident", async () => {
+
+      at Object.toContain (tests/gate.test.js:69:29)
+
+  ΓùÅ Emergency API ΓÇ║ POST /api/emergency is forbidden for admin
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 500
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/gate.test.js:196:5)
+
+  console.log
+    [dotenv@17.3.1] injecting env (22) from .env -- tip: ≡ƒñû agentic secret storage: https://dotenvx.com/as2
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  suppress all logs with { quiet: true }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    Γ£à Firebase Admin initialized
+
+      at Object.log (utils/pushNotification.js:24:15)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜí∩╕Å secrets for agents: https://dotenvx.com/as2
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.error
+    Γ¥î Push Notification Error: Credential implementation provided to initializeApp() via the "credential" property failed to fetch a valid Google OAuth2 access token with the following error: "Unexpected Gaxios Error".
+
+    [0m [90m 114 |[39m     console[33m.[39mlog([32m"Γ£à Push Notification Sent:"[39m[33m,[39m response)[33m;[39m
+     [90m 115 |[39m   } [36mcatch[39m (error) {
+    [31m[1m>[22m[39m[90m 116 |[39m     console[33m.[39merror([32m"Γ¥î Push Notification Error:"[39m[33m,[39m error[33m.[39mmessage)[33m;[39m
+     [90m     |[39m             [31m[1m^[22m[39m
+     [90m 117 |[39m     [36mconst[39m isInvalidToken [33m=[39m
+     [90m 118 |[39m       error[33m.[39mcode [33m===[39m [32m'messaging/registration-token-not-registered'[39m [33m||[39m
+     [90m 119 |[39m       error[33m.[39mcode [33m===[39m [32m'messaging/invalid-registration-token'[39m [33m||[39m[0m
+
+      at error (utils/pushNotification.js:116:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to societyadmin32@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to resident1@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    Found flats count: 52
+
+      at log (controllers/flatControllers.js:156:13)
+
+  console.log
+    Sample flat keys: [
+      'id',        'flat_number',
+      'flat_type', 'resident_id',
+      'floor_id',  'block_id',
+      'area_sqft', 'Floor',
+      'Block',     'User'
+    ]
+
+      at log (controllers/flatControllers.js:158:15)
+
+  console.log
+    Sample flat has Floor
+
+      at log (controllers/flatControllers.js:159:35)
+
+  console.log
+    Sample flat has Block
+
+      at log (controllers/flatControllers.js:160:35)
+
+  console.log
+    Found flats count: 52
+
+      at log (controllers/flatControllers.js:156:13)
+
+  console.log
+    Sample flat keys: [
+      'id',        'flat_number',
+      'flat_type', 'resident_id',
+      'floor_id',  'block_id',
+      'area_sqft', 'Floor',
+      'Block',     'User'
+    ]
+
+      at log (controllers/flatControllers.js:158:15)
+
+  console.log
+    Sample flat has Floor
+
+      at log (controllers/flatControllers.js:159:35)
+
+  console.log
+    Sample flat has Block
+
+      at log (controllers/flatControllers.js:160:35)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to guard@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+FAIL tests/memberships-misc.test.js
+  Memberships API
+    ΓêÜ requires authentication for rates (34 ms)
+    ΓêÜ GET /api/rates lists rates for admin (274 ms)
+    ΓêÜ POST /api/rates without payload is a client error or 500 from validation (10 ms)
+    ΓêÜ POST /api/rates/batch without payload is a client error or 500 from validation (9 ms)
+    ΓêÜ GET /api/users/me/units succeeds for a resident (287 ms)
+    ΓêÜ GET /api/flats/:flatId/memberships requires auth (10 ms)
+    ΓêÜ GET /api/flats/:flatId/memberships succeeds for admin (69 ms)
+    ΓêÜ GET /api/users/:userId/memberships succeeds for admin (17 ms)
+    ΓêÜ PATCH /api/memberships/:id handles a missing membership (18 ms)
+    ΓêÜ DELETE /api/memberships/:id handles a missing membership (12 ms)
+  Flat history API
+    ΓêÜ requires authentication (6 ms)
+    ├ù is forbidden for a resident (15 ms)
+    ΓêÜ GET /api/flat-history/:flat_id succeeds for admin (47 ms)
+    ΓêÜ POST /api/flat-history/move-in without ids still responds (16 ms)
+    ΓêÜ POST /api/flat-history/move-out is forbidden for a guard (175 ms)
+  Download API
+    ΓêÜ GET /api/download without url returns 400 (11 ms)
+    ΓêÜ GET /api/download rejects an invalid URL (18 ms)
+    ΓêÜ GET /api/download rejects a non-Cloudinary origin (9 ms)
+
+  ΓùÅ Flat history API ΓÇ║ is forbidden for a resident
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/memberships-misc.test.js:85:5)
+
+  console.log
+    [dotenv@17.3.1] injecting env (22) from .env -- tip: ΓÜÖ∩╕Å  suppress all logs with { quiet: true }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  specify custom .env file path with { path: '/custom/path/.env' }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    Γ£à Firebase Admin initialized
+
+      at Object.log (utils/pushNotification.js:24:15)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  write to custom object with { processEnv: myObject }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to societyadmin32@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+
+  ΓùÅ  Cannot log after tests are done. Did you forget to wait for something async in your test?
+    Attempted to log "[Mailer] SMTP ready".
+
+      26 |   transporter.verify((err) => {
+      27 |     if (err) console.error("[Mailer] SMTP connection failed:", err.message);
+    > 28 |     else console.log("[Mailer] SMTP ready");
+         |                  ^
+      29 |   });
+      30 | } else {
+      31 |   console.warn("ΓÜá∩╕Å  Email not configured ΓÇö emails will be skipped");
+
+      at console.log (node_modules/@jest/console/build/CustomConsole.js:141:10)
+      at log (utils/mailer.js:28:18)
+      at finalize (node_modules/nodemailer/lib/smtp-pool/index.js:613:24)
+      at node_modules/nodemailer/lib/smtp-pool/index.js:633:25
+      at SMTPConnection._actionAUTHComplete (node_modules/nodemailer/lib/smtp-connection/index.js:1736:9)
+      at SMTPConnection.<anonymous> (node_modules/nodemailer/lib/smtp-connection/index.js:651:26)
+      at SMTPConnection._processResponse (node_modules/nodemailer/lib/smtp-connection/index.js:1098:20)
+      at SMTPConnection._onData (node_modules/nodemailer/lib/smtp-connection/index.js:872:14)
+      at TLSSocket.SMTPConnection._onSocketData (node_modules/nodemailer/lib/smtp-connection/index.js:196:44)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to resident1@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to guard@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.error
+    Add Tenant Error: Error: WHERE parameter "flat_id" has invalid "undefined" value
+        at MySQLQueryGenerator.whereItemQuery (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\dialects\abstract\query-generator.js:2451:13)
+        at D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\dialects\abstract\query-generator.js:2440:25
+        at Array.forEach (<anonymous>)
+        at MySQLQueryGenerator.whereItemsQuery (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\dialects\abstract\query-generator.js:2438:35)
+        at MySQLQueryGenerator.getWhereConditions (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\dialects\abstract\query-generator.js:2866:19)
+        at MySQLQueryGenerator.selectQuery (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\dialects\abstract\query-generator.js:1466:28)
+        at MySQLQueryInterface.select (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\dialects\abstract\query-interface.js:1002:27)
+        at FlatMembership.findAll (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\model.js:1824:47)
+        at processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at FlatMembership.findOne (D:\SocietyApp\Society-Management-API\node_modules\sequelize\src\model.js:1998:12)
+        at addTenantByOwner (D:\SocietyApp\Society-Management-API\controllers\userControllers.js:2096:29)
+
+    [0m [90m 2175 |[39m     res[33m.[39mstatus([35m201[39m)[33m.[39mjson({ message[33m:[39m [32m"Tenant added. Awaiting Admin approval."[39m[33m,[39m tenant })[33m;[39m
+     [90m 2176 |[39m   } [36mcatch[39m (err) {
+    [31m[1m>[22m[39m[90m 2177 |[39m     console[33m.[39merror([32m"Add Tenant Error:"[39m[33m,[39m err)[33m;[39m
+     [90m      |[39m             [31m[1m^[22m[39m
+     [90m 2178 |[39m     res[33m.[39mstatus([35m500[39m)[33m.[39mjson({ message[33m:[39m err[33m.[39mmessage })[33m;[39m
+     [90m 2179 |[39m   }
+     [90m 2180 |[39m }[33m;[39m[0m
+
+      at error (controllers/userControllers.js:2177:13)
+
+FAIL tests/users.test.js
+  Users API
+    ΓêÜ rejects unauthenticated access to protected user routes (21 ms)
+    ΓêÜ GET /api/users/me returns the logged-in profile (281 ms)
+    ΓêÜ PUT /api/users/me requires current password when changing password (204 ms)
+    ΓêÜ PUT /api/users/me updates name without a password (10 ms)
+    ΓêÜ GET /api/users/resident lists residents for admin (46 ms)
+    ├ù GET /api/users/resident is forbidden for a resident (37 ms)
+    ΓêÜ POST /api/users/resident validates missing flat assignment (16 ms)
+    ΓêÜ GET /api/users/resident/unassigned succeeds for admin (22 ms)
+    ΓêÜ GET /api/users/resident/pending succeeds for admin (40 ms)
+    ΓêÜ GET /api/users/guard lists guards for admin (29 ms)
+    ├ù POST /api/users/guard is forbidden for a resident (17 ms)
+    ΓêÜ GET /api/users/accountant succeeds for admin (34 ms)
+    ΓêÜ GET /api/users/get-flat returns the resident flat (26 ms)
+    ΓêÜ GET /api/users/get-flat is forbidden for a guard (141 ms)
+    ΓêÜ PUT /api/users/fcm-token accepts an authenticated update (13 ms)
+    ΓêÜ POST /api/users/forgot-password returns 404 for unknown email (9 ms)
+    ΓêÜ POST /api/users/forgot-password accepts a known email (26 ms)
+    ΓêÜ POST /api/users/reset-password rejects an invalid token (15 ms)
+    ΓêÜ POST /api/users/committee/promote is forbidden for a resident (12 ms)
+    ├ù POST /api/users/resident/add-tenant is forbidden for admin (175 ms)
+    ΓêÜ POST /api/users/resident/renew-tenant validates missing date (10 ms)
+    ΓêÜ PUT /api/users/resident/:id returns an error for a missing resident (15 ms)
+    ΓêÜ POST /api/users/societies/:societyId/admin is forbidden for society admin (8 ms)
+
+  ΓùÅ Users API ΓÇ║ GET /api/users/resident is forbidden for a resident
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/users.test.js:54:5)
+
+  ΓùÅ Users API ΓÇ║ POST /api/users/guard is forbidden for a resident
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 500
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/users.test.js:92:5)
+
+  ΓùÅ Users API ΓÇ║ POST /api/users/resident/add-tenant is forbidden for admin
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 500
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/users.test.js:158:5)
+
+  console.log
+    [dotenv@17.3.1] injecting env (22) from .env -- tip: ΓÜÖ∩╕Å  write to custom object with { processEnv: myObject }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  enable debug logging with { debug: true }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    Γ£à Firebase Admin initialized
+
+      at Object.log (utils/pushNotification.js:24:15)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ≡ƒ¢í∩╕Å auth for agents: https://vestauth.com
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+
+  ΓùÅ  Cannot log after tests are done. Did you forget to wait for something async in your test?
+    Attempted to log "[Mailer] SMTP ready".
+
+      26 |   transporter.verify((err) => {
+      27 |     if (err) console.error("[Mailer] SMTP connection failed:", err.message);
+    > 28 |     else console.log("[Mailer] SMTP ready");
+         |                  ^
+      29 |   });
+      30 | } else {
+      31 |   console.warn("ΓÜá∩╕Å  Email not configured ΓÇö emails will be skipped");
+
+      at console.log (node_modules/@jest/console/build/CustomConsole.js:141:10)
+      at log (utils/mailer.js:28:18)
+      at finalize (node_modules/nodemailer/lib/smtp-pool/index.js:613:24)
+      at node_modules/nodemailer/lib/smtp-pool/index.js:633:25
+      at SMTPConnection._actionAUTHComplete (node_modules/nodemailer/lib/smtp-connection/index.js:1736:9)
+      at SMTPConnection.<anonymous> (node_modules/nodemailer/lib/smtp-connection/index.js:651:26)
+      at SMTPConnection._processResponse (node_modules/nodemailer/lib/smtp-connection/index.js:1098:20)
+      at SMTPConnection._onData (node_modules/nodemailer/lib/smtp-connection/index.js:872:14)
+      at TLSSocket.SMTPConnection._onSocketData (node_modules/nodemailer/lib/smtp-connection/index.js:196:44)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to resident1@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to guard@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to societyadmin32@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.error
+    Γ¥î Push Notification Error: Credential implementation provided to initializeApp() via the "credential" property failed to fetch a valid Google OAuth2 access token with the following error: "Unexpected Gaxios Error".
+
+    [0m [90m 114 |[39m     console[33m.[39mlog([32m"Γ£à Push Notification Sent:"[39m[33m,[39m response)[33m;[39m
+     [90m 115 |[39m   } [36mcatch[39m (error) {
+    [31m[1m>[22m[39m[90m 116 |[39m     console[33m.[39merror([32m"Γ¥î Push Notification Error:"[39m[33m,[39m error[33m.[39mmessage)[33m;[39m
+     [90m     |[39m             [31m[1m^[22m[39m
+     [90m 117 |[39m     [36mconst[39m isInvalidToken [33m=[39m
+     [90m 118 |[39m       error[33m.[39mcode [33m===[39m [32m'messaging/registration-token-not-registered'[39m [33m||[39m
+     [90m 119 |[39m       error[33m.[39mcode [33m===[39m [32m'messaging/invalid-registration-token'[39m [33m||[39m[0m
+
+      at error (utils/pushNotification.js:116:13)
+
+  console.error
+    Γ¥î Push Notification Error: Credential implementation provided to initializeApp() via the "credential" property failed to fetch a valid Google OAuth2 access token with the following error: "Unexpected Gaxios Error".
+
+    [0m [90m 114 |[39m     console[33m.[39mlog([32m"Γ£à Push Notification Sent:"[39m[33m,[39m response)[33m;[39m
+     [90m 115 |[39m   } [36mcatch[39m (error) {
+    [31m[1m>[22m[39m[90m 116 |[39m     console[33m.[39merror([32m"Γ¥î Push Notification Error:"[39m[33m,[39m error[33m.[39mmessage)[33m;[39m
+     [90m     |[39m             [31m[1m^[22m[39m
+     [90m 117 |[39m     [36mconst[39m isInvalidToken [33m=[39m
+     [90m 118 |[39m       error[33m.[39mcode [33m===[39m [32m'messaging/registration-token-not-registered'[39m [33m||[39m
+     [90m 119 |[39m       error[33m.[39mcode [33m===[39m [32m'messaging/invalid-registration-token'[39m [33m||[39m[0m
+
+      at error (utils/pushNotification.js:116:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to committee@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] SMTP ready
+
+      at log (utils/mailer.js:28:18)
+
+FAIL tests/notices-complaints.test.js
+  Notices API
+    ΓêÜ requires authentication (31 ms)
+    ΓêÜ GET /api/notices lists notices for a resident (303 ms)
+    ΓêÜ GET /api/notices is forbidden for a guard (147 ms)
+    ΓêÜ POST /api/notices is forbidden for a resident (17 ms)
+    ΓêÜ creates and deletes a notice as admin (401 ms)
+    ΓêÜ DELETE /api/notices/:id handles a missing notice (15 ms)
+  Complaints API
+    ΓêÜ requires authentication (8 ms)
+    ΓêÜ GET /api/complaints lists complaints for admin (58 ms)
+    ├ù GET /api/complaints is forbidden for a resident (24 ms)
+    ΓêÜ GET /api/complaints/my lists the resident's complaints (46 ms)
+    ├ù POST /api/complaints is forbidden for admin (25 ms)
+    ΓêÜ creates a complaint as a resident (99 ms)
+    ├ù PUT /api/complaints/:id is forbidden for a resident (34 ms)
+  Committee API
+    ΓêÜ requires authentication (7 ms)
+    ΓêÜ GET /api/committee/dashboard-stats succeeds for admin (31 ms)
+    ΓêÜ GET /api/committee/dashboard-stats succeeds for committee (262 ms)
+    ├ù is forbidden for a resident (28 ms)
+  Dashboard API
+    ΓêÜ requires authentication (4 ms)
+    ΓêÜ GET /api/dashboard/stats succeeds for admin (15 ms)
+    ΓêÜ is forbidden for a guard (7 ms)
+
+  ΓùÅ Complaints API ΓÇ║ GET /api/complaints is forbidden for a resident
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/notices-complaints.test.js:79:5)
+
+  ΓùÅ Complaints API ΓÇ║ POST /api/complaints is forbidden for admin
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 201
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/notices-complaints.test.js:94:5)
+
+  ΓùÅ Complaints API ΓÇ║ PUT /api/complaints/:id is forbidden for a resident
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/notices-complaints.test.js:128:5)
+
+  ΓùÅ Committee API ΓÇ║ is forbidden for a resident
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/notices-complaints.test.js:153:5)
+
+  console.log
+    [dotenv@17.3.1] injecting env (22) from .env -- tip: ΓÜÖ∩╕Å  enable debug logging with { debug: true }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  override existing env vars with { override: true }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    Γ£à Firebase Admin initialized
+
+      at Object.log (utils/pushNotification.js:24:15)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ≡ƒöÉ encrypt with Dotenvx: https://dotenvx.com
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to societyadmin32@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to guard@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to resident1@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+FAIL tests/security-ops.test.js
+  Guard shifts API
+    ΓêÜ requires authentication (29 ms)
+    ΓêÜ GET /api/guard-shift lists shifts for admin (322 ms)
+    ΓêÜ GET /api/guard-shift/my succeeds for a guard (177 ms)
+    ΓêÜ GET /api/guard-shift/my is forbidden for admin (14 ms)
+    ΓêÜ POST /api/guard-shift requires shift fields (18 ms)
+    ΓêÜ POST /api/guard-shift rejects inverted dates (19 ms)
+    ├ù is forbidden for a resident (252 ms)
+  Guard logs API
+    ΓêÜ requires authentication (5 ms)
+    ΓêÜ GET /api/guard-logs succeeds for a guard (16 ms)
+    ΓêÜ POST /api/guard-logs requires log text (15 ms)
+    ΓêÜ creates and deletes a guard log (51 ms)
+  Notifications API
+    ΓêÜ requires authentication (9 ms)
+    ΓêÜ GET /api/notifications lists notifications (37 ms)
+    ΓêÜ PUT /api/notifications/:id/read handles a missing notification (19 ms)
+  Vehicles API
+    ΓêÜ requires authentication (6 ms)
+    ΓêÜ GET /api/vehicles/my lists vehicles for a resident (19 ms)
+    ΓêÜ GET /api/vehicles/my is forbidden for a guard (8 ms)
+    ΓêÜ POST /api/vehicles requires vehicle fields (9 ms)
+    ΓêÜ creates and deletes a vehicle (78 ms)
+  Admin API
+    ΓêÜ requires authentication (6 ms)
+    ΓêÜ GET /api/admin/tenant-history succeeds for admin (31 ms)
+    ΓêÜ PUT /api/admin/approve-resident/:userId handles a missing user (15 ms)
+    ΓêÜ PUT /api/admin/reject-resident/:userId handles a missing user (13 ms)
+
+  ΓùÅ Guard shifts API ΓÇ║ is forbidden for a resident
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/security-ops.test.js:61:5)
+
+  console.log
+    [dotenv@17.3.1] injecting env (22) from .env -- tip: ΓÜÖ∩╕Å  write to custom object with { processEnv: myObject }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  specify custom .env file path with { path: '/custom/path/.env' }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    Γ£à Firebase Admin initialized
+
+      at Object.log (utils/pushNotification.js:24:15)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  load multiple .env files with { path: ['.env.local', '.env'] }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+
+  ΓùÅ  Cannot log after tests are done. Did you forget to wait for something async in your test?
+    Attempted to log "[Mailer] SMTP ready".
+
+      26 |   transporter.verify((err) => {
+      27 |     if (err) console.error("[Mailer] SMTP connection failed:", err.message);
+    > 28 |     else console.log("[Mailer] SMTP ready");
+         |                  ^
+      29 |   });
+      30 | } else {
+      31 |   console.warn("ΓÜá∩╕Å  Email not configured ΓÇö emails will be skipped");
+
+      at console.log (node_modules/@jest/console/build/CustomConsole.js:141:10)
+      at log (utils/mailer.js:28:18)
+      at finalize (node_modules/nodemailer/lib/smtp-pool/index.js:613:24)
+      at node_modules/nodemailer/lib/smtp-pool/index.js:633:25
+      at SMTPConnection._actionAUTHComplete (node_modules/nodemailer/lib/smtp-connection/index.js:1736:9)
+      at SMTPConnection.<anonymous> (node_modules/nodemailer/lib/smtp-connection/index.js:651:26)
+      at SMTPConnection._processResponse (node_modules/nodemailer/lib/smtp-connection/index.js:1098:20)
+      at SMTPConnection._onData (node_modules/nodemailer/lib/smtp-connection/index.js:872:14)
+      at TLSSocket.SMTPConnection._onSocketData (node_modules/nodemailer/lib/smtp-connection/index.js:196:44)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to societyadmin32@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to resident1@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    Found flats count: 52
+
+      at log (controllers/flatControllers.js:156:13)
+
+  console.log
+    Sample flat keys: [
+      'id',        'flat_number',
+      'flat_type', 'resident_id',
+      'floor_id',  'block_id',
+      'area_sqft', 'Floor',
+      'Block',     'User'
+    ]
+
+      at log (controllers/flatControllers.js:158:15)
+
+  console.log
+    Sample flat has Floor
+
+      at log (controllers/flatControllers.js:159:35)
+
+  console.log
+    Sample flat has Block
+
+      at log (controllers/flatControllers.js:160:35)
+
+  console.log
+    Found flats count: 52
+
+      at log (controllers/flatControllers.js:156:13)
+
+  console.log
+    Sample flat keys: [
+      'id',        'flat_number',
+      'flat_type', 'resident_id',
+      'floor_id',  'block_id',
+      'area_sqft', 'Floor',
+      'Block',     'User'
+    ]
+
+      at log (controllers/flatControllers.js:158:15)
+
+  console.log
+    Sample flat has Floor
+
+      at log (controllers/flatControllers.js:159:35)
+
+  console.log
+    Sample flat has Block
+
+      at log (controllers/flatControllers.js:160:35)
+
+FAIL tests/structure.test.js
+  Societies API
+    ΓêÜ requires authentication (28 ms)
+    ΓêÜ is forbidden for society admin (283 ms)
+    ├ù GET /api/societies lists societies for super admin (12 ms)
+    ΓêÜ POST /api/societies is forbidden for a resident (286 ms)
+    ├ù POST /api/societies without a name fails validation (13 ms)
+    ├ù creates and deletes a throwaway society (15 ms)
+    ├ù DELETE /api/societies/:id returns 400 for a missing society (13 ms)
+  Blocks API
+    ΓêÜ requires authentication (8 ms)
+    ΓêÜ GET /api/blocks/:societyId lists blocks for admin (22 ms)
+    ΓêÜ GET /api/blocks/getname/:societyId returns the society name (16 ms)
+    ΓêÜ POST /api/blocks rejects row houses with floor_count (13 ms)
+    ├ù is forbidden for a resident (14 ms)
+  Floors API
+    ΓêÜ requires authentication (9 ms)
+    ΓêÜ GET /api/floors/:blockId succeeds when the society has blocks (36 ms)
+    ΓêÜ GET /api/floors/detail/:floorId requires auth (7 ms)
+  Flats API
+    ΓêÜ requires authentication (7 ms)
+    ΓêÜ GET /api/flats lists flats for admin (47 ms)
+    ΓêÜ GET /api/flats/getall lists flats for admin (26 ms)
+    ΓêÜ GET /api/flats/unassigned succeeds for admin (19 ms)
+    ΓêÜ GET /api/flats/assigned succeeds for admin (25 ms)
+    ΓêÜ GET /api/flats/neighbours succeeds for a resident (37 ms)
+    ├ù GET /api/flats/neighbours is forbidden for admin (27 ms)
+    ΓêÜ GET /api/flats/filter requires a valid blockId (12 ms)
+    ΓêÜ GET /api/flats/list requires a valid blockId (7 ms)
+    ΓêÜ GET /api/flats/floor/:floorId succeeds or 404s (11 ms)
+    ├ù POST /api/flats is forbidden for a resident (10 ms)
+    ΓêÜ PUT /api/flats/assign/:flatId without resident id fails validation (8 ms)
+
+  ΓùÅ Societies API ΓÇ║ GET /api/societies lists societies for super admin
+
+    Login failed for superadmin@society.com: 400 {"message":"User not found"}
+
+      21 |   const loginRes = await request(app).post("/api/auth/login").send(creds);
+      22 |   if (loginRes.status !== 200 || !loginRes.body.tempToken) {
+    > 23 |     throw new Error(
+         |           ^
+      24 |       `Login failed for ${creds.email}: ${loginRes.status} ${JSON.stringify(loginRes.body)}`
+      25 |     );
+      26 |   }
+
+      at login (tests/helpers/api.js:23:11)
+      at Object.<anonymous> (tests/structure.test.js:25:25)
+
+  ΓùÅ Societies API ΓÇ║ POST /api/societies without a name fails validation
+
+    Login failed for superadmin@society.com: 400 {"message":"User not found"}
+
+      21 |   const loginRes = await request(app).post("/api/auth/login").send(creds);
+      22 |   if (loginRes.status !== 200 || !loginRes.body.tempToken) {
+    > 23 |     throw new Error(
+         |           ^
+      24 |       `Login failed for ${creds.email}: ${loginRes.status} ${JSON.stringify(loginRes.body)}`
+      25 |     );
+      26 |   }
+
+      at login (tests/helpers/api.js:23:11)
+      at Object.<anonymous> (tests/structure.test.js:38:25)
+
+  ΓùÅ Societies API ΓÇ║ creates and deletes a throwaway society
+
+    Login failed for superadmin@society.com: 400 {"message":"User not found"}
+
+      21 |   const loginRes = await request(app).post("/api/auth/login").send(creds);
+      22 |   if (loginRes.status !== 200 || !loginRes.body.tempToken) {
+    > 23 |     throw new Error(
+         |           ^
+      24 |       `Login failed for ${creds.email}: ${loginRes.status} ${JSON.stringify(loginRes.body)}`
+      25 |     );
+      26 |   }
+
+      at login (tests/helpers/api.js:23:11)
+      at Object.<anonymous> (tests/structure.test.js:44:25)
+
+  ΓùÅ Societies API ΓÇ║ DELETE /api/societies/:id returns 400 for a missing society
+
+    Login failed for superadmin@society.com: 400 {"message":"User not found"}
+
+      21 |   const loginRes = await request(app).post("/api/auth/login").send(creds);
+      22 |   if (loginRes.status !== 200 || !loginRes.body.tempToken) {
+    > 23 |     throw new Error(
+         |           ^
+      24 |       `Login failed for ${creds.email}: ${loginRes.status} ${JSON.stringify(loginRes.body)}`
+      25 |     );
+      26 |   }
+
+      at login (tests/helpers/api.js:23:11)
+      at Object.<anonymous> (tests/structure.test.js:60:25)
+
+  ΓùÅ Blocks API ΓÇ║ is forbidden for a resident
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/structure.test.js:103:5)
+
+  ΓùÅ Flats API ΓÇ║ GET /api/flats/neighbours is forbidden for admin
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/structure.test.js:169:5)
+
+  ΓùÅ Flats API ΓÇ║ POST /api/flats is forbidden for a resident
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 500
+
+      70 |
+      71 | function expectForbidden(res) {
+    > 72 |   expect(res.status).toBe(403);
+         |                      ^
+      73 |   expect(res.body).toHaveProperty("message");
+      74 | }
+      75 |
+
+      at toBe (tests/helpers/api.js:72:22)
+      at Object.expectForbidden (tests/structure.test.js:193:5)
+
+FAIL tests/endpoint-cover.test.js
+  ΓùÅ Test suite failed to run
+
+    Cannot find module './app' from 'tests/endpoint-cover.test.js'
+
+      14 | require("dotenv/config");
+      15 | const request = require("supertest");
+    > 16 | const app = require("./app");
+         |             ^
+      17 |
+      18 | const ROUTES = [];
+      19 | function walk(stack, base) {
+
+      at Resolver._throwModNotFoundError (node_modules/jest-resolve/build/resolver.js:427:11)
+      at Object.require (tests/endpoint-cover.test.js:16:13)
+
+  console.log
+    [dotenv@17.3.1] injecting env (22) from .env -- tip: ΓÜÖ∩╕Å  load multiple .env files with { path: ['.env.local', '.env'] }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  override existing env vars with { override: true }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    Γ£à Firebase Admin initialized
+
+      at Object.log (utils/pushNotification.js:24:15)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  suppress all logs with { quiet: true }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+
+  ΓùÅ  Cannot log after tests are done. Did you forget to wait for something async in your test?
+    Attempted to log "[Mailer] SMTP ready".
+
+      26 |   transporter.verify((err) => {
+      27 |     if (err) console.error("[Mailer] SMTP connection failed:", err.message);
+    > 28 |     else console.log("[Mailer] SMTP ready");
+         |                  ^
+      29 |   });
+      30 | } else {
+      31 |   console.warn("ΓÜá∩╕Å  Email not configured ΓÇö emails will be skipped");
+
+      at console.log (node_modules/@jest/console/build/CustomConsole.js:141:10)
+      at log (utils/mailer.js:28:18)
+      at finalize (node_modules/nodemailer/lib/smtp-pool/index.js:613:24)
+      at node_modules/nodemailer/lib/smtp-pool/index.js:633:25
+      at SMTPConnection._actionAUTHComplete (node_modules/nodemailer/lib/smtp-connection/index.js:1736:9)
+      at SMTPConnection.<anonymous> (node_modules/nodemailer/lib/smtp-connection/index.js:651:26)
+      at SMTPConnection._processResponse (node_modules/nodemailer/lib/smtp-connection/index.js:1098:20)
+      at SMTPConnection._onData (node_modules/nodemailer/lib/smtp-connection/index.js:872:14)
+      at TLSSocket.SMTPConnection._onSocketData (node_modules/nodemailer/lib/smtp-connection/index.js:196:44)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to societyadmin32@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to resident1@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+PASS tests/amenities-booking.test.js
+  Amenity Booking ΓÇö single-row schema
+    ΓêÜ FULL_DAY multi-day booking creates ONE row with from_date/to_date (81 ms)
+    ΓêÜ FULL_DAY overlapping range is rejected with 409 (79 ms)
+    ΓêÜ my-bookings + admin bookings surface the multi-day booking as ONE consolidated record (126 ms)
+    ΓêÜ FULL_DAY availability supports from_date/to_date range (85 ms)
+    ΓêÜ SLOT multi-day booking creates ONE row with slots JSON; duplicate slot rejected (113 ms)
+
+  console.log
+    [dotenv@17.3.1] injecting env (22) from .env -- tip: ΓÜí∩╕Å secrets for agents: https://dotenvx.com/as2
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  suppress all logs with { quiet: true }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    Γ£à Firebase Admin initialized
+
+      at Object.log (utils/pushNotification.js:24:15)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  override existing env vars with { override: true }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to societyadmin32@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+
+  ΓùÅ  Cannot log after tests are done. Did you forget to wait for something async in your test?
+    Attempted to log "[Mailer] SMTP ready".
+
+      26 |   transporter.verify((err) => {
+      27 |     if (err) console.error("[Mailer] SMTP connection failed:", err.message);
+    > 28 |     else console.log("[Mailer] SMTP ready");
+         |                  ^
+      29 |   });
+      30 | } else {
+      31 |   console.warn("ΓÜá∩╕Å  Email not configured ΓÇö emails will be skipped");
+
+      at console.log (node_modules/@jest/console/build/CustomConsole.js:141:10)
+      at log (utils/mailer.js:28:18)
+      at finalize (node_modules/nodemailer/lib/smtp-pool/index.js:613:24)
+      at node_modules/nodemailer/lib/smtp-pool/index.js:633:25
+      at SMTPConnection._actionAUTHComplete (node_modules/nodemailer/lib/smtp-connection/index.js:1736:9)
+      at SMTPConnection.<anonymous> (node_modules/nodemailer/lib/smtp-connection/index.js:651:26)
+      at SMTPConnection._processResponse (node_modules/nodemailer/lib/smtp-connection/index.js:1098:20)
+      at SMTPConnection._onData (node_modules/nodemailer/lib/smtp-connection/index.js:872:14)
+      at TLSSocket.SMTPConnection._onSocketData (node_modules/nodemailer/lib/smtp-connection/index.js:196:44)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to resident1@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to accountant@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to committee@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to guard@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] SMTP ready
+
+      at log (utils/mailer.js:28:18)
+
+  console.error
+    Γ¥î Push Notification Error: Credential implementation provided to initializeApp() via the "credential" property failed to fetch a valid Google OAuth2 access token with the following error: "Unexpected Gaxios Error".
+
+    [0m [90m 114 |[39m     console[33m.[39mlog([32m"Γ£à Push Notification Sent:"[39m[33m,[39m response)[33m;[39m
+     [90m 115 |[39m   } [36mcatch[39m (error) {
+    [31m[1m>[22m[39m[90m 116 |[39m     console[33m.[39merror([32m"Γ¥î Push Notification Error:"[39m[33m,[39m error[33m.[39mmessage)[33m;[39m
+     [90m     |[39m             [31m[1m^[22m[39m
+     [90m 117 |[39m     [36mconst[39m isInvalidToken [33m=[39m
+     [90m 118 |[39m       error[33m.[39mcode [33m===[39m [32m'messaging/registration-token-not-registered'[39m [33m||[39m
+     [90m 119 |[39m       error[33m.[39mcode [33m===[39m [32m'messaging/invalid-registration-token'[39m [33m||[39m[0m
+
+      at error (utils/pushNotification.js:116:13)
+
+  console.error
+    Γ¥î Push Notification Error: Credential implementation provided to initializeApp() via the "credential" property failed to fetch a valid Google OAuth2 access token with the following error: "Unexpected Gaxios Error".
+
+    [0m [90m 114 |[39m     console[33m.[39mlog([32m"Γ£à Push Notification Sent:"[39m[33m,[39m response)[33m;[39m
+     [90m 115 |[39m   } [36mcatch[39m (error) {
+    [31m[1m>[22m[39m[90m 116 |[39m     console[33m.[39merror([32m"Γ¥î Push Notification Error:"[39m[33m,[39m error[33m.[39mmessage)[33m;[39m
+     [90m     |[39m             [31m[1m^[22m[39m
+     [90m 117 |[39m     [36mconst[39m isInvalidToken [33m=[39m
+     [90m 118 |[39m       error[33m.[39mcode [33m===[39m [32m'messaging/registration-token-not-registered'[39m [33m||[39m
+     [90m 119 |[39m       error[33m.[39mcode [33m===[39m [32m'messaging/invalid-registration-token'[39m [33m||[39m[0m
+
+      at error (utils/pushNotification.js:116:13)
+
+  console.error
+    Γ¥î Push Notification Error: Credential implementation provided to initializeApp() via the "credential" property failed to fetch a valid Google OAuth2 access token with the following error: "Unexpected Gaxios Error".
+
+    [0m [90m 114 |[39m     console[33m.[39mlog([32m"Γ£à Push Notification Sent:"[39m[33m,[39m response)[33m;[39m
+     [90m 115 |[39m   } [36mcatch[39m (error) {
+    [31m[1m>[22m[39m[90m 116 |[39m     console[33m.[39merror([32m"Γ¥î Push Notification Error:"[39m[33m,[39m error[33m.[39mmessage)[33m;[39m
+     [90m     |[39m             [31m[1m^[22m[39m
+     [90m 117 |[39m     [36mconst[39m isInvalidToken [33m=[39m
+     [90m 118 |[39m       error[33m.[39mcode [33m===[39m [32m'messaging/registration-token-not-registered'[39m [33m||[39m
+     [90m 119 |[39m       error[33m.[39mcode [33m===[39m [32m'messaging/invalid-registration-token'[39m [33m||[39m[0m
+
+      at error (utils/pushNotification.js:116:13)
+
+  console.error
+    Γ¥î Push Notification Error: Credential implementation provided to initializeApp() via the "credential" property failed to fetch a valid Google OAuth2 access token with the following error: "Unexpected Gaxios Error".
+
+    [0m [90m 114 |[39m     console[33m.[39mlog([32m"Γ£à Push Notification Sent:"[39m[33m,[39m response)[33m;[39m
+     [90m 115 |[39m   } [36mcatch[39m (error) {
+    [31m[1m>[22m[39m[90m 116 |[39m     console[33m.[39merror([32m"Γ¥î Push Notification Error:"[39m[33m,[39m error[33m.[39mmessage)[33m;[39m
+     [90m     |[39m             [31m[1m^[22m[39m
+     [90m 117 |[39m     [36mconst[39m isInvalidToken [33m=[39m
+     [90m 118 |[39m       error[33m.[39mcode [33m===[39m [32m'messaging/registration-token-not-registered'[39m [33m||[39m
+     [90m 119 |[39m       error[33m.[39mcode [33m===[39m [32m'messaging/invalid-registration-token'[39m [33m||[39m[0m
+
+      at error (utils/pushNotification.js:116:13)
+
+PASS tests/matrix.test.js
+  Financial Tracking E2E Matrix
+    ΓêÜ RBAC: accounting endpoints reject guard / require auth (153 ms)
+    ΓêÜ Opening balance: accountant denied manage; admin set is audited (50 ms)
+    ΓêÜ Bill: demo-pay then confirm ΓåÆ exactly 1 Payment + 1 Ledger CREDIT (210 ms)
+    ΓêÜ Amenity: bookΓåÆverify creates per-row Payment + CREDIT; repeat is idempotent (118 ms)
+    ΓêÜ Amenity: cancel a paid booking reverses its CREDIT (net zero) (130 ms)
+    ΓêÜ Expense: createΓåÆeditΓåÆvoid keeps ledger DEBIT in sync (net zero at end) (125 ms)
+    ΓêÜ Balance is always computed = opening + ╬úCREDIT ΓêÆ ╬úDEBIT (19 ms)
+    ΓêÜ Ledger paginates with running balance; reports include ledger summary (85 ms)
+    ΓêÜ Dashboard chart returns 12 months; societies overview is super-admin only (25 ms)
+    ΓêÜ Accountant payments/summary/stats stay green after finance work (137 ms)
+
+  console.log
+    [dotenv@17.3.1] injecting env (22) from .env -- tip: ≡ƒöÉ prevent committing .env to code: https://dotenvx.com/precommit
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜí∩╕Å secrets for agents: https://dotenvx.com/as2
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    Γ£à Firebase Admin initialized
+
+      at Object.log (utils/pushNotification.js:24:15)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  specify custom .env file path with { path: '/custom/path/.env' }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to societyadmin32@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to resident1@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to guard@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to societyadmin32@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to resident1@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+PASS tests/auth.test.js
+  Auth API
+    POST /api/auth/login
+      ΓêÜ returns 400 when email and password are missing (22 ms)
+      ΓêÜ returns 400 for unknown user (34 ms)
+      ΓêÜ returns 400 for invalid credentials (139 ms)
+      ΓêÜ sends OTP for valid credentials (157 ms)
+    POST /api/auth/verify-otp
+      ΓêÜ returns 400 when otp and tempToken are missing (7 ms)
+      ΓêÜ returns 401 for an invalid session token (8 ms)
+      ΓêÜ returns 400 for an incorrect OTP (211 ms)
+      ΓêÜ issues a JWT for a valid OTP (135 ms)
+    POST /api/auth/resend-otp
+      ΓêÜ returns 400 when session token is missing (11 ms)
+      ΓêÜ returns 401 for an expired/invalid session (9 ms)
+    POST /api/auth/register
+      ΓêÜ returns 400 when society is missing (7 ms)
+      ΓêÜ returns 400 for a weak password (12 ms)
+      ΓêÜ returns 400 when the email already exists (9 ms)
+    GET /api/auth/approval-status/:id
+      ΓêÜ returns 404 for a missing user (7 ms)
+    POST /api/auth/switch-role
+      ΓêÜ requires authentication (4 ms)
+      ΓêÜ rejects an invalid token (7 ms)
+      ΓêÜ returns 400 when role is missing (248 ms)
+      ΓêÜ returns 403 when switching to an unassigned role (209 ms)
+
+  console.log
+    [dotenv@17.3.1] injecting env (22) from .env -- tip: ≡ƒñû agentic secret storage: https://dotenvx.com/as2
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  specify custom .env file path with { path: '/custom/path/.env' }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    Γ£à Firebase Admin initialized
+
+      at Object.log (utils/pushNotification.js:24:15)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜí∩╕Å secrets for agents: https://dotenvx.com/as2
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+
+  ΓùÅ  Cannot log after tests are done. Did you forget to wait for something async in your test?
+    Attempted to log "[Mailer] SMTP ready".
+
+      26 |   transporter.verify((err) => {
+      27 |     if (err) console.error("[Mailer] SMTP connection failed:", err.message);
+    > 28 |     else console.log("[Mailer] SMTP ready");
+         |                  ^
+      29 |   });
+      30 | } else {
+      31 |   console.warn("ΓÜá∩╕Å  Email not configured ΓÇö emails will be skipped");
+
+      at console.log (node_modules/@jest/console/build/CustomConsole.js:141:10)
+      at log (utils/mailer.js:28:18)
+      at finalize (node_modules/nodemailer/lib/smtp-pool/index.js:613:24)
+      at node_modules/nodemailer/lib/smtp-pool/index.js:633:25
+      at SMTPConnection._actionAUTHComplete (node_modules/nodemailer/lib/smtp-connection/index.js:1736:9)
+      at SMTPConnection.<anonymous> (node_modules/nodemailer/lib/smtp-connection/index.js:651:26)
+      at SMTPConnection._processResponse (node_modules/nodemailer/lib/smtp-connection/index.js:1098:20)
+      at SMTPConnection._onData (node_modules/nodemailer/lib/smtp-connection/index.js:872:14)
+      at TLSSocket.SMTPConnection._onSocketData (node_modules/nodemailer/lib/smtp-connection/index.js:196:44)
+
+  console.log
+    [Mailer] Test mode ΓÇö skipping email to societyadmin32@yopmail.com
+
+      at log (controllers/authControllers.js:68:13)
+
+PASS tests/accountant.test.js
+  Accountant Module Integration Tests
+    ΓêÜ rejects unauthenticated access to eligible residents (43 ms)
+    ΓêÜ GET /api/accountant/eligible-residents succeeds for society admin (294 ms)
+    ΓêÜ GET /api/accountant succeeds for society admin and returns list (29 ms)
+
+  console.log
+    [dotenv@17.3.1] injecting env (22) from .env -- tip: ≡ƒöÉ prevent building .env in docker: https://dotenvx.com/prebuild
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  suppress all logs with { quiet: true }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    Γ£à Firebase Admin initialized
+
+      at Object.log (utils/pushNotification.js:24:15)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  write to custom object with { processEnv: myObject }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+PASS tests/public.test.js
+  Public API
+    ΓêÜ GET /api/public/societies lists societies without auth (72 ms)
+    ΓêÜ GET /api/public/societies/:societyId/blocks handles a missing society (10 ms)
+    ΓêÜ GET /api/public/blocks/:blockId/flats handles a missing block (17 ms)
+    ΓêÜ returns blocks for the first public society when data exists (22 ms)
+
+  console.log
+    [dotenv@17.3.1] injecting env (22) from .env -- tip: ≡ƒöÉ prevent building .env in docker: https://dotenvx.com/prebuild
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ≡ƒñû agentic secret storage: https://dotenvx.com/as2
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+  console.log
+    Γ£à Firebase Admin initialized
+
+      at Object.log (utils/pushNotification.js:24:15)
+
+  console.log
+    [dotenv@17.3.1] injecting env (0) from .env -- tip: ΓÜÖ∩╕Å  enable debug logging with { debug: true }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+PASS tests/health.test.js
+  Health
+    ΓêÜ GET / returns API running message (24 ms)
+    ΓêÜ GET unknown API path returns 404 (20 ms)
+
+Test Suites: 10 failed, 6 passed, 16 total
+Tests:       30 failed, 250 passed, 280 total
+Snapshots:   0 total
+Time:        31.509 s, estimated 114 s
+Ran all test suites.
+Force exiting Jest: Have you considered using `--detectOpenHandles` to detect async operations that kept running after all tests finished?

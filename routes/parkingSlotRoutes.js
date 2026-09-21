@@ -56,7 +56,13 @@ router.get(
   "/",
   auth,
   role("GUARD", "SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
-  checkPermission("parking_slots", "view"),
+  (req, res, next) => {
+    const roleName = (req.user?.activeRole || req.user?.role || "").toUpperCase();
+    if (roleName === "GUARD") {
+      return next();
+    }
+    return checkPermission("parking_slots", "view")(req, res, next);
+  },
   getParkingSlots
 );
 

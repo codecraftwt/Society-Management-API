@@ -339,6 +339,7 @@ const getResidentVisitors = async (req, res) => {
     const offset = (page - 1) * limit;
     const filter = req.query.filter || "ALL";
     const search = req.query.search || "";
+    const purposeParam = String(req.query.purpose || req.query.type || "").toUpperCase();
 
     const userMemberships = await FlatMembership.findAll({
       where:      { user_id: userId, is_current: true },
@@ -352,22 +353,36 @@ const getResidentVisitors = async (req, res) => {
         totalPages:    0,
         currentPage:   page,
         totalVisitors: 0,
-        counts:        { ALL: 0, INSIDE: 0, LEFT: 0 },
+        counts:        { ALL: 0, INSIDE: 0, LEFT: 0, GUEST: 0, DELIVERY: 0, CAB: 0, SERVICE: 0 },
       });
     }
 
     const baseWhere = { flat_id: { [Op.in]: myFlatIds } };
-    if (search) baseWhere.visitor_name = { [Op.like]: `%${search}%` };
+    if (search) {
+      baseWhere[Op.or] = [
+        { visitor_name: { [Op.like]: `%${search}%` } },
+        { mobile: { [Op.like]: `%${search}%` } },
+        { vehicle_number: { [Op.like]: `%${search}%` } },
+        { purpose: { [Op.like]: `%${search}%` } },
+      ];
+    }
 
-    const [allCount, insideCount, leftCount] = await Promise.all([
+    const [allCount, insideCount, leftCount, guestCount, deliveryCount, cabCount, serviceCount] = await Promise.all([
       VisitorLog.count({ where: baseWhere }),
       VisitorLog.count({ where: { ...baseWhere, exit_time: null } }),
       VisitorLog.count({ where: { ...baseWhere, exit_time: { [Op.ne]: null } } }),
+      VisitorLog.count({ where: { ...baseWhere, purpose: "GUEST" } }),
+      VisitorLog.count({ where: { ...baseWhere, purpose: "DELIVERY" } }),
+      VisitorLog.count({ where: { ...baseWhere, purpose: "CAB" } }),
+      VisitorLog.count({ where: { ...baseWhere, purpose: "SERVICE" } }),
     ]);
 
     const whereClause = { ...baseWhere };
     if (filter === "INSIDE") whereClause.exit_time = null;
     if (filter === "LEFT")   whereClause.exit_time = { [Op.ne]: null };
+    if (["GUEST", "DELIVERY", "CAB", "SERVICE"].includes(purposeParam)) {
+      whereClause.purpose = purposeParam;
+    }
 
     const { count, rows } = await VisitorLog.findAndCountAll({
       where: whereClause,
@@ -396,7 +411,15 @@ const getResidentVisitors = async (req, res) => {
       totalPages:    Math.ceil(count / limit),
       currentPage:   page,
       totalVisitors: count,
-      counts:        { ALL: allCount, INSIDE: insideCount, LEFT: leftCount },
+      counts: { 
+        ALL: allCount, 
+        INSIDE: insideCount, 
+        LEFT: leftCount,
+        GUEST: guestCount,
+        DELIVERY: deliveryCount,
+        CAB: cabCount,
+        SERVICE: serviceCount,
+      },
     });
   } catch (error) {
     console.error("❌ [getResidentVisitors] ERROR:", error);

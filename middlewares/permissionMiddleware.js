@@ -27,19 +27,28 @@ const checkPermission = (module, action) => {
         return next();
       }
 
-      // 2. SOCIETY ADMIN / ADMIN FULL ACCESS
-      if (userRoles.has("SOCIETY_ADMIN") || userRoles.has("ADMIN") || activeRole === "SOCIETY_ADMIN") {
+      // 2. SOCIETY ADMIN / ADMIN / COMMITTEE MEMBER FULL ACCESS
+      if (
+        userRoles.has("SOCIETY_ADMIN") ||
+        userRoles.has("ADMIN") ||
+        userRoles.has("COMMITTEE_MEMBER") ||
+        userRoles.has("COMMITTEE") ||
+        activeRole === "SOCIETY_ADMIN" ||
+        activeRole === "COMMITTEE_MEMBER" ||
+        activeRole === "COMMITTEE"
+      ) {
         return next();
       }
 
-      // 3. COMMITTEE MEMBER OR ACCOUNTANT DYNAMIC PERMISSION CHECK
+      // 2.1. GUARD OPERATIONAL VIEW ACCESS (for gate management such as parking slots & visitor logs)
+      if ((userRoles.has("GUARD") || activeRole === "GUARD") && (action === "view" || !action)) {
+        return next();
+      }
+
+      // 3. ACCOUNTANT DYNAMIC PERMISSION CHECK
       const checkRole =
-        activeRole === "COMMITTEE_MEMBER"
-          ? "COMMITTEE_MEMBER"
-          : activeRole === "ACCOUNTANT"
+        activeRole === "ACCOUNTANT"
           ? "ACCOUNTANT"
-          : userRoles.has("COMMITTEE_MEMBER")
-          ? "COMMITTEE_MEMBER"
           : userRoles.has("ACCOUNTANT")
           ? "ACCOUNTANT"
           : null;
@@ -77,10 +86,19 @@ const checkPermission = (module, action) => {
 
         const effectiveActions = Array.isArray(grantedActions) ? grantedActions : [];
 
-        // If no specific action required or view action requested, check if module has any permitted actions
-        if (!action) {
-          if (effectiveActions.length > 0) return next();
-        } else if (effectiveActions.includes(action) || (effectiveActions.length > 0 && action === "view")) {
+        // Check action permission with sub-action compatibility (e.g. edit_shift under edit)
+        const hasActionPermission =
+          !action ||
+          effectiveActions.includes(action) ||
+          (action === "view" && effectiveActions.length > 0) ||
+          (action === "edit_shift" && (effectiveActions.includes("edit") || effectiveActions.includes("edit_shift"))) ||
+          (action === "create_slot" && (effectiveActions.includes("create") || effectiveActions.includes("create_slot"))) ||
+          (action === "edit_slot" && (effectiveActions.includes("edit") || effectiveActions.includes("edit_slot"))) ||
+          (action === "delete_slot" && (effectiveActions.includes("delete") || effectiveActions.includes("delete_slot"))) ||
+          (action === "allocate" && (effectiveActions.includes("edit") || effectiveActions.includes("allocate"))) ||
+          (action === "release" && (effectiveActions.includes("edit") || effectiveActions.includes("release")));
+
+        if (hasActionPermission) {
           return next();
         }
 

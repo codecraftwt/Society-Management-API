@@ -162,13 +162,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
 // the full module action list (e.g. Accountant can record expenses but not
 // delete/void them, and cannot manage the opening balance).
 const DEFAULT_ACTION_OVERRIDES = {
-  COMMITTEE_MEMBER: {
-    accounting: ["view", "create", "edit", "view_ledger", "view_reports"],
-    payments: ["view", "confirm"],
-    expenses: ["view", "create", "edit"],
-    general_ledger: ["view"],
-    financial_audit_log: ["view"],
-  },
+  COMMITTEE_MEMBER: {},
   ACCOUNTANT: {
     accounting: ["view", "create", "edit", "view_ledger", "view_reports"],
     payments: ["view", "confirm"],

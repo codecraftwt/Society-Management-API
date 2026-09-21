@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { createParcel, getParcels, updateParcelStatus } = require("../controllers/parcelControllers");
+const { createParcel, getParcels, updateParcelStatus, getParcelById } = require("../controllers/parcelControllers");
 const auth = require("../middlewares/authMiddleware");
 const role = require("../middlewares/roleMiddleware");
 
@@ -9,6 +9,7 @@ router.use(auth);
 
 // Guard or Resident can create (committee/admin may log parcels too)
 router.get("/", role("GUARD", "RESIDENT", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getParcels);
+router.get("/:id", role("GUARD", "RESIDENT", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getParcelById);
 router.post("/", role("GUARD", "RESIDENT", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), createParcel);
 
 // Guard sees all, Resident sees own (handle inside controller)

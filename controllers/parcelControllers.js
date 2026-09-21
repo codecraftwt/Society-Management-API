@@ -89,7 +89,7 @@ const getCurrentShiftType = () => {
 };
 
 const getActiveShiftGuard = async (society_id) => {
-  const today     = getTodayIST();
+  const today = getTodayIST();
   const shiftType = getCurrentShiftType();
 
   const shift = await GuardShift.findOne({
@@ -109,16 +109,20 @@ const getFullParcel = (id) =>
     include: [
       {
         model: Flat,
-        attributes: ["flat_number"],
+        attributes: ["id", "flat_number", "resident_id"],
         include: [
           {
             model: Floor,
             attributes: ["floor_number"],
             include: [{ model: Block, attributes: ["name"] }],
           },
+          {
+            model: User,
+            attributes: ["id", "name", "phone", "email"],
+          },
         ],
       },
-      { model: User, as: "resident", attributes: ["name"] },
+      { model: User, as: "resident", attributes: ["id", "name", "phone", "email"] },
     ],
   });
 
@@ -196,10 +200,10 @@ const createParcel = async (req, res) => {
           ],
         });
 
-        const blockName  = flat?.Floor?.Block?.name  || "";
-        const flatNumber = flat?.flat_number          || "";
-        const floorNum   = flat?.Floor?.floor_number  ?? "";
-        const unitLabel  = [blockName, flatNumber && `Unit ${flatNumber}`, floorNum !== "" && `Floor ${floorNum}`]
+        const blockName = flat?.Floor?.Block?.name || "";
+        const flatNumber = flat?.flat_number || "";
+        const floorNum = flat?.Floor?.floor_number ?? "";
+        const unitLabel = [blockName, flatNumber && `Unit ${flatNumber}`, floorNum !== "" && `Floor ${floorNum}`]
           .filter(Boolean).join(", ");
 
         const notif = await Notification.create({
@@ -300,8 +304,8 @@ const getParcels = async (req, res) => {
     const { id, society_id } = req.user;
     const activeRole = req.user.activeRole ?? req.user.role;
 
-    const page   = Math.max(parseInt(req.query.page)  || 1, 1);
-    const limit  = Math.max(parseInt(req.query.limit) || 5, 1);
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const limit = Math.max(parseInt(req.query.limit) || 5, 1);
     const offset = (page - 1) * limit;
     const status = String(req.query.status || "ALL").toUpperCase();
     const search = String(req.query.search || "").trim();
@@ -340,16 +344,20 @@ const getParcels = async (req, res) => {
       include: [
         {
           model: Flat,
-          attributes: ["flat_number"],
+          attributes: ["id", "flat_number", "resident_id"],
           include: [
             {
               model: Floor,
               attributes: ["floor_number"],
               include: [{ model: Block, attributes: ["name"] }],
             },
+            {
+              model: User,
+              attributes: ["id", "name", "phone", "email"],
+            },
           ],
         },
-        { model: User, as: "resident", attributes: ["name"] },
+        { model: User, as: "resident", attributes: ["id", "name", "phone", "email"] },
       ],
       order: [["createdAt", "DESC"]],
       limit,
@@ -466,9 +474,9 @@ const updateParcelStatus = async (req, res) => {
       }
 
       parcel.pickup_code = generatePickupCode();
-      parcel.entry_time  = new Date();
-      parcel.status      = "AT_GATE";
-      parcel.guard_id    = activeRole === "GUARD" ? req.user.id : parcel.guard_id || req.user.id;
+      parcel.entry_time = new Date();
+      parcel.status = "AT_GATE";
+      parcel.guard_id = activeRole === "GUARD" ? req.user.id : parcel.guard_id || req.user.id;
       await parcel.save();
 
       const full = await getFullParcel(parcel.id);
@@ -477,11 +485,11 @@ const updateParcelStatus = async (req, res) => {
 
       if (parcel.resident_id) {
         const notif = await Notification.create({
-          society_id:       parcel.society_id,
+          society_id: parcel.society_id,
           receiver_user_id: parcel.resident_id,
-          title:   "Parcel Arrived 📦",
+          title: "Parcel Arrived 📦",
           message: `Your parcel from ${parcel.courier_name} is at the gate. Code: ${parcel.pickup_code}`,
-          type:    "PARCEL",
+          type: "PARCEL",
           is_read: false,
         });
         global.io?.to(`user_${parcel.resident_id}`).emit("new_notification", notif);
@@ -507,7 +515,7 @@ const updateParcelStatus = async (req, res) => {
         return res.status(400).json({ message: "Invalid OTP" });
       }
 
-      parcel.status      = "COLLECTED";
+      parcel.status = "COLLECTED";
       parcel.pickup_time = new Date();
       await parcel.save();
 
@@ -517,11 +525,11 @@ const updateParcelStatus = async (req, res) => {
 
       if (parcel.resident_id) {
         const notif = await Notification.create({
-          society_id:       parcel.society_id,
+          society_id: parcel.society_id,
           receiver_user_id: parcel.resident_id,
-          title:   "Parcel Collected ✅",
+          title: "Parcel Collected ✅",
           message: `Your parcel from ${parcel.courier_name} has been collected.`,
-          type:    "PARCEL",
+          type: "PARCEL",
           is_read: false,
         });
         global.io?.to(`user_${parcel.resident_id}`).emit("new_notification", notif);
@@ -538,4 +546,21 @@ const updateParcelStatus = async (req, res) => {
   }
 };
 
-module.exports = { createParcel, getParcels, updateParcelStatus };
+/* ═══════════════════════════════════════
+   GET PARCEL BY ID
+═══════════════════════════════════════ */
+const getParcelById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const parcel = await getFullParcel(id);
+    if (!parcel) {
+      return res.status(404).json({ success: false, message: "Parcel not found" });
+    }
+    return res.json({ success: true, data: parcel });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: "Server Error" });
+  }
+};
+
+module.exports = { createParcel, getParcels, updateParcelStatus, getParcelById };

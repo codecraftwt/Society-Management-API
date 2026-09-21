@@ -34,8 +34,17 @@ const getFlatIdForUser = async (userId) => {
   const flat = await Flat.findOne({ where: { resident_id: userId } });
   if (flat) return flat.id;
 
+  const currentMembership = await FlatMembership.findOne({ where: { user_id: userId, is_current: true } });
+  if (currentMembership) return currentMembership.flat_id;
+
+  const anyMembership = await FlatMembership.findOne({ where: { user_id: userId } });
+  if (anyMembership) return anyMembership.flat_id;
+
   const member = await HouseHoldMember.findOne({ where: { user_id: userId } });
   if (member) return member.flat_id;
+
+  const user = await User.findByPk(userId);
+  if (user && user.flat_id) return user.flat_id;
 
   return null;
 };
@@ -43,6 +52,12 @@ const getFlatIdForUser = async (userId) => {
 const getPrimaryResidentId = async (userId) => {
   const flat = await Flat.findOne({ where: { resident_id: userId } });
   if (flat) return flat.resident_id;
+
+  const currentMembership = await FlatMembership.findOne({ where: { user_id: userId, is_current: true } });
+  if (currentMembership) {
+    const f = await Flat.findByPk(currentMembership.flat_id);
+    if (f && f.resident_id) return f.resident_id;
+  }
 
   const member = await HouseHoldMember.findOne({ where: { user_id: userId } });
   if (member) {
@@ -387,7 +402,24 @@ const getEmergencyAlerts = async (req, res) => {
     const alerts = await EmergencyAlert.findAll({
       where,
       include: [
-        { model: User, as: "Resident", attributes: ["id", "name", "email", "phone"] },
+        {
+          model: User,
+          as: "Resident",
+          attributes: ["id", "name", "email", "phone"],
+          include: [
+            {
+              model: FlatMembership,
+              attributes: ["id", "flat_id", "is_current"],
+              include: [
+                {
+                  model: Flat,
+                  attributes: ["id", "flat_number"],
+                  include: [{ model: Block, attributes: ["id", "name"] }],
+                },
+              ],
+            },
+          ],
+        },
         { model: User, as: "Guard", attributes: ["id", "name", "phone"] },
         { model: User, as: "Admin", attributes: ["id", "name", "email", "phone"] },
         { model: User, as: "Resolver", attributes: ["id", "name", "email", "phone"] },
@@ -406,7 +438,18 @@ const getEmergencyAlerts = async (req, res) => {
       order: [["created_at", "DESC"]],
     });
 
-    res.json(alerts);
+    const populatedAlerts = alerts.map((alert) => {
+      const plain = alert.toJSON();
+      if (!plain.Flat && plain.Resident?.FlatMemberships?.length) {
+        const primary = plain.Resident.FlatMemberships.find((m) => m.is_current) || plain.Resident.FlatMemberships[0];
+        if (primary && primary.Flat) {
+          plain.Flat = primary.Flat;
+        }
+      }
+      return plain;
+    });
+
+    res.json(populatedAlerts);
 
   } catch (err) {
     console.error("getEmergencyAlerts error:", err);

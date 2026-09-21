@@ -22,6 +22,8 @@ const getDashboardStats = async (req, res) => {
       resolvedComplaints,
       overdueBills,
       paidBills,
+      pendingBills,
+      awaitingConfirm,
       todayVisitors,
       payments,
     ] = await Promise.all([
@@ -83,6 +85,42 @@ const getDashboardStats = async (req, res) => {
           status: "PAID",
         },
       }),
+      Bill.count({
+        include: [
+          {
+            model: require("../models/Flat"),
+            required: true,
+            include: [
+              {
+                model: require("../models/Block"),
+                required: true,
+                where: { society_id: societyId },
+              },
+            ],
+          },
+        ],
+        where: {
+          status: { [Op.ne]: "PAID" },
+        },
+      }),
+      Bill.count({
+        include: [
+          {
+            model: require("../models/Flat"),
+            required: true,
+            include: [
+              {
+                model: require("../models/Block"),
+                required: true,
+                where: { society_id: societyId },
+              },
+            ],
+          },
+        ],
+        where: {
+          status: "PENDING_VERIFICATION",
+        },
+      }),
       VisitorLog.count({
         where: {
           society_id: societyId,
@@ -126,7 +164,8 @@ const getDashboardStats = async (req, res) => {
       totalVisitors: todayVisitors,
       resolvedComplaints,
       totalRevenue,
-      pendingBills: overdueBills,
+      pendingBills,
+      awaitingConfirmations: awaitingConfirm,
       paidBills,
     });
   } catch (error) {
