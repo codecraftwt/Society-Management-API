@@ -44,7 +44,7 @@ const getComplaints = async (req, res) => {
     const limit  = Math.min(1000, parseInt(req.query.limit) || 10);
     const offset = (page - 1) * limit;
 
-    const { block_id, floor_id, flat_id, search } = req.query;
+    const { block_id, floor_id, flat_id, search, date_from, date_to } = req.query;
     const filter = req.query.filter || req.query.status || "ALL";
     
     // ✅ Logic: Super Admin with no society_id header gets EVERYTHING
@@ -69,6 +69,19 @@ const getComplaints = async (req, res) => {
         { title: { [Op.like]: q } },
         { description: { [Op.like]: q } },
       ];
+    }
+
+    if (date_from || date_to) {
+      const createdAt = {};
+      if (date_from) {
+        const from = new Date(date_from);
+        if (!Number.isNaN(from.getTime())) createdAt[Op.gte] = from;
+      }
+      if (date_to) {
+        const to = new Date(date_to);
+        if (!Number.isNaN(to.getTime())) createdAt[Op.lte] = to;
+      }
+      if (Object.keys(createdAt).length) where.created_at = createdAt;
     }
 
     if (flat_id) {
