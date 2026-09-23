@@ -231,6 +231,7 @@ const createEmergency = async (req, res) => {
     const emergencyPushData = {
       type: "EMERGENCY",
       alertId: String(emergency.id),
+      senderId: String(user.id),
       title: alertTitle,
       message: payload.message || alertBody,
       senderName: user.name || "Resident",
@@ -786,10 +787,13 @@ const resolveEmergency = async (req, res) => {
       if (global.io) {
         global.io
           .to(`user_${alert.resident_id}`)
-          .emit("new_notification", notification);
+          .emit("new_notification", {
+            ...notification.toJSON(),
+            alertId: String(alert.id),
+          });
         global.io
           .to(`society_${alert.society_id}`)
-          .emit("emergency_resolved", { id: alert.id, status: "RESOLVED" });
+          .emit("emergency_resolved", { id: alert.id, alertId: String(alert.id), status: "RESOLVED" });
       }
 
       const resident = await User.findByPk(alert.resident_id, { attributes: ['fcm_token'] });

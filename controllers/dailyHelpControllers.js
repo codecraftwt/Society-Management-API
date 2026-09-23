@@ -1,8 +1,7 @@
 const { HouseHoldMember, Flat, Block, VisitorLog, User, Notification, UserSetting } = require("../models");
 const { Op } = require("sequelize");
 const { sendPushNotification } = require("../utils/pushNotification");
-
-const VALID_HELPER_ROLES = ['Maid', 'Cook', 'Driver', 'Cleaner', 'Helper', 'Nanny', 'Daily Help'];
+const { DAILY_HELP_ROLES } = require("../utils/dailyHelpUtils");
 
 /* ====
    HELPER: Send Notifications to Flat Residents
@@ -71,21 +70,56 @@ exports.getSocietyDailyHelps = async (req, res) => {
   try {
     console.log(`\n--- [START] FetchING DAILY HELPS FOR SOCIETY: ${req.user.society_id} ---`);
 
-    // 1. Find all flats in the guard's society
-    const flats = await Flat.findAll({
-      include: [{ model: Block, where: { society_id: req.user.society_id }, attributes: ["name"] }]
-    });
+    // Guards / community admins see every helper in the society.
+    // Residents / family / committee see ONLY helpers of their own flat(s),
+    // so the list stays consistent with the "My Household" screen.
+    const isCommunityRole =
+      req.user.role === "GUARD" ||
+      req.user.role === "SUPER_ADMIN" ||
+      req.user.role === "SOCIETY_ADMIN" ||
+      (Array.isArray(req.user.roles) &&
+        ["GUARD", "SUPER_ADMIN", "SOCIETY_ADMIN"].some((r) => req.user.roles.includes(r)));
+
+    // 1. Find all flats in scope
+    let flats;
+    if (isCommunityRole) {
+      flats = await Flat.findAll({
+        include: [{ model: Block, where: { society_id: req.user.society_id }, attributes: ["name"] }]
+      });
+    } else {
+      const primaryFlats = await Flat.findAll({ where: { resident_id: req.user.id }, attributes: ["id"] });
+      const memberRows = await HouseHoldMember.findAll({ where: { user_id: req.user.id }, attributes: ["flat_id"] });
+      const ownIds = [
+        ...new Set([
+          ...primaryFlats.map((f) => f.id),
+          ...memberRows.map((m) => m.flat_id).filter(Boolean),
+        ]),
+      ];
+
+      flats = ownIds.length
+        ? await Flat.findAll({
+            where: { id: { [Op.in]: ownIds } },
+            include: [{ model: Block, attributes: ["name"] }]
+          })
+        : [];
+    }
+
     const flatIds = flats.map(f => f.id);
-    console.log(`[DB] Found ${flats.length} flats in this society. Flat IDs:`, flatIds);
+
+    if (flatIds.length === 0) {
+      console.log(`[DB] No flats in scope for user ${req.user.id}.`);
+      return res.json({ success: true, data: [] });
+    }
+
+    console.log(`[DB] Found ${flats.length} flats in scope. Flat IDs:`, flatIds);
 
     // 2. Find all Household members in these flats who are Helpers
-    const VALID_HELPER_ROLES = ['Maid', 'Cook', 'Driver', 'Cleaner', 'Helper', 'Nanny', 'Daily Help'];
     const helpers = await HouseHoldMember.findAll({
       where: {
         flat_id: { [Op.in]: flatIds },
         [Op.or]: [
-          { relation: { [Op.in]: VALID_HELPER_ROLES } },
-          { work: { [Op.in]: VALID_HELPER_ROLES } }
+          { relation: { [Op.in]: DAILY_HELP_ROLES } },
+          { work: { [Op.in]: DAILY_HELP_ROLES } }
         ]
       }
     });

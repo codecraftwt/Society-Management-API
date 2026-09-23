@@ -389,9 +389,14 @@ const verifyGatePass = async (req, res) => {
       });
     }
 
-    const flat = await Flat.findOne({
-      where: { resident_id: approval.resident_id },
-    });
+    // ✅ FIX: Resolve the ACTUAL flat the pass was created for. Pre-approvals
+    //    store flat_id, so a multi-property resident's pass must be logged
+    //    against that flat — NOT the first flat found by resident_id (which
+    //    could be a different / rented-out unit). Only fall back to the
+    //    resident lookup for legacy passes created before flat_id was added.
+    const flat = approval.flat_id
+      ? await Flat.findByPk(approval.flat_id)
+      : await Flat.findOne({ where: { resident_id: approval.resident_id } });
 
     if (!flat) {
       return res.status(400).json({ message: "Flat not found" });
@@ -522,27 +527,46 @@ const getMyGatePasses = async (req, res) => {
       },
     );
 
-    // 3. Fetch all active passes for user's flats
+    // 3. Fetch ALL passes for user's flats (Pending + Used + Expired)
+    //    This is the single source of truth for both Web and App, so they
+    //    display the exact same set of passes.
     const passes = await VisitorPreApproval.findAll({
       where: {
         flat_id: { [Op.in]: myFlatIds },
-        status: "PENDING",
-        valid_date: { [Op.gte]: today },
       },
+      include: [
+        {
+          model: Flat,
+          attributes: ["flat_number"],
+        },
+      ],
       order: [["createdAt", "DESC"]],
     });
 
-    // 4. Attach society names
+    // 4. Attach society names + flat number
     const societyIds = [...new Set(passes.map((p) => p.society_id))];
     const societies = await Society.findAll({ where: { id: societyIds }, attributes: ["id", "name"] });
     const societyMap = Object.fromEntries(societies.map((s) => [s.id, s.name]));
 
-    const passesWithSociety = passes.map((p) => ({
-      ...p.toJSON(),
-      society_name: societyMap[p.society_id] || null,
-    }));
+    const passesWithFlat = passes.map((p) => {
+      const json = p.toJSON();
+      const { Flat, ...rest } = json;
+      return {
+        ...rest,
+        flat_number: Flat?.flat_number || null,
+        society_name: societyMap[p.society_id] || null,
+      };
+    });
 
-    res.json(passesWithSociety);
+    // PENDING first, then by created date desc within each status
+    const statusRank = { PENDING: 0, USED: 1, EXPIRED: 2 };
+    const ranked = passesWithFlat.sort((a, b) => {
+      const diff = (statusRank[a.status] ?? 3) - (statusRank[b.status] ?? 3);
+      if (diff !== 0) return diff;
+      return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+    });
+
+    res.json(ranked);
   } catch (err) {
     console.error("❌ ERROR in getMyGatePasses:", err);
     res.status(500).json({ message: "Server Error" });

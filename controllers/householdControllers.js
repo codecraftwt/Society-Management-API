@@ -2,6 +2,7 @@ const { HouseHoldMember, User, Flat } = require("../models");
 const bcrypt = require("bcryptjs");
 const { Op } = require("sequelize");
 const { sendEmail } = require("../services/emailService");
+const { isDailyHelpMember } = require("../utils/dailyHelpUtils");
 
 // ✅ Helper: safely parse roles — always returns a plain array
 const parseRoles = (roles) => {
@@ -25,7 +26,14 @@ exports.getMyHousehold = async (req, res) => {
       order: [["created_at", "ASC"]],
     });
 
-    res.json(members);
+    // Annotate each member with the unified Daily Help classification so
+    // clients (App/Web) don't each re-derive their own predicate.
+    res.json(
+      members.map((member) => {
+        const plain = member.toJSON();
+        return { ...plain, isDailyHelp: isDailyHelpMember(plain) };
+      })
+    );
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -42,7 +50,29 @@ exports.addHouseholdMember = async (req, res) => {
       });
     }
 
-    const { name, phone, email, relation, work } = req.body;
+    const { name, phone, email, relation, work, flat_id } = req.body;
+
+    // Multi-flat support: the client may specify which flat the member
+    // belongs to. Only flats owned by the user (as resident or household
+    // member) are valid; otherwise fall back to the middleware flat.
+    let targetFlatId = req.flatId;
+
+    if (flat_id !== undefined && flat_id !== null && flat_id !== "") {
+      const ownedFlatIds = [
+        ...(await Flat.findAll({ where: { resident_id: req.user.id }, attributes: ["id"] })).map((f) => f.id),
+        ...(await HouseHoldMember.findAll({ where: { user_id: req.user.id }, attributes: ["flat_id"] }))
+          .map((m) => m.flat_id)
+          .filter(Boolean),
+      ];
+
+      if (!ownedFlatIds.map(String).includes(String(flat_id))) {
+        return res.status(403).json({
+          message: "You can only add members to your own flats",
+        });
+      }
+
+      targetFlatId = Number(flat_id);
+    }
 
     let createdUser = null;
 
@@ -80,7 +110,7 @@ exports.addHouseholdMember = async (req, res) => {
       relation: work ? "Daily Help" : relation,
       work: work || null,
       email: email || null,
-      flat_id: req.flatId,
+      flat_id: targetFlatId,
       user_id: createdUser ? createdUser.id : null,
       isAdmin: false,
     });
