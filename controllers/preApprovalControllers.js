@@ -22,28 +22,10 @@ const Society = require("../models/Society");
 // const VisitorPreApproval = require("../models/VisitorPreApproval");
 const FlatMembership = require("../models/FlatMembership");
 
-/* ── IST date helper ── */
-const getTodayIST = () =>
-  new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-
-/* ── Current IST hour (0-23) ── */
-const getCurrentISTHour = () =>
-  parseInt(
-    new Date().toLocaleString("en-IN", {
-      timeZone: "Asia/Kolkata",
-      hour: "numeric",
-      hour12: false,
-    }),
-    10,
-  );
-
-/* ── Shift logic ── */
-const getCurrentShiftType = () => {
-  const hour = getCurrentISTHour();
-  if (hour >=  8 && hour < 16) return "MORNING";
-  if (hour >= 16 && hour < 24) return "AFTERNOON";
-  return "NIGHT";
-};
+/* ── IST helpers + shift timing (single source of truth) ── */
+const { getCurrentISTDate, getCurrentISTMinutes } = require("../utils/istTime");
+const { getShiftTimings, isTimeInShift } = require("../utils/shiftTiming");
+const getTodayIST = () => getCurrentISTDate();
 
 /* ── Generate gate pass ── */
 const generateGatePass = () =>
@@ -65,28 +47,28 @@ const getPrimaryResidentId = async (userId) => {
 
 /* ── Get on-duty guard for society ── */
 const getOnDutyGuard = async (society_id) => {
-  const today = getTodayIST();
-  const shiftType = getCurrentShiftType();
+  const today   = getTodayIST();
+  const timings = await getShiftTimings(society_id);
+  const minutes = getCurrentISTMinutes();
 
-  console.log(`[getOnDutyGuard] society_id=${society_id}, shift_type=${shiftType}, today=${today}`);
-
-  const shift = await GuardShift.findOne({
+  const shifts = await GuardShift.findAll({
     where: {
       society_id,
-      shift_type: shiftType,
       start_date: { [Op.lte]: today },
       end_date: { [Op.gte]: today },
     },
   });
 
-  if (!shift) {
+  const active = shifts.find((s) => isTimeInShift(timings, s.shift_type, minutes));
+
+  if (!active) {
     const allShifts = await GuardShift.findAll({ where: { society_id }, attributes: ["id", "guard_id", "shift_type", "start_date", "end_date"] });
     console.log(`[getOnDutyGuard] No active shift found. All shifts for society:`, JSON.stringify(allShifts));
   } else {
-    console.log(`[getOnDutyGuard] Found shift: guard_id=${shift.guard_id}, shift_type=${shift.shift_type}`);
+    console.log(`[getOnDutyGuard] Found shift: guard_id=${active.guard_id}, shift_type=${active.shift_type}`);
   }
 
-  return shift;
+  return active;
 };
 
 /* ── SEND NOTIFICATION (COMMON) ── */
@@ -274,20 +256,20 @@ const verifyGatePass = async (req, res) => {
 
     console.log("VERIFY BODY:", { code, slot_number, vehicle_type, guard_id: req.user.id, society_id: req.user.society_id });
 
-    const today = getTodayIST();
-    const currentShiftType = getCurrentShiftType();
-    const myShift = await GuardShift.findOne({
+    const today    = getTodayIST();
+    const timings  = await getShiftTimings(req.user.society_id);
+    const minutes  = getCurrentISTMinutes();
+    const myShift  = await GuardShift.findOne({
       where: {
         guard_id: req.user.id,
         society_id: req.user.society_id,
-        shift_type: currentShiftType,
         start_date: { [Op.lte]: today },
         end_date: { [Op.gte]: today },
       },
     });
 
-    if (!myShift) {
-      return res.status(403).json({ message: `No active ${currentShiftType} shift assigned to you for today. You are off duty.` });
+    if (!myShift || !isTimeInShift(timings, myShift.shift_type, minutes)) {
+      return res.status(403).json({ message: `No active shift assigned to you right now. You are off duty.` });
     }
 
     const approval = await VisitorPreApproval.findOne({

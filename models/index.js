@@ -13,6 +13,7 @@ const HouseHoldMember = require("./HouseHoldMember");
 const EmergencyAlert = require("./EmergencyAlert");
 const VisitorPreApproval = require("./VisitorPreApproval");
 const GuardShift = require("./GuardShift");
+const GuardShiftTiming = require("./GuardShiftTiming");
 const Notification = require("./Notification"); 
 const Vehicle = require("./Vehicle");
 const ParkingRequest = require("./ParkingRequest");
@@ -220,6 +221,9 @@ GuardShift.belongsTo(User, { foreignKey: "guard_id" });
 
 Society.hasMany(GuardShift, { foreignKey: "society_id" });
 GuardShift.belongsTo(Society, { foreignKey: "society_id" });
+
+Society.hasMany(GuardShiftTiming, { foreignKey: "society_id" });
+GuardShiftTiming.belongsTo(Society, { foreignKey: "society_id" });
 
 
 Society.hasMany(Notification, { foreignKey: "society_id" });
@@ -453,6 +457,7 @@ module.exports = {
   ParkingRequest,
   Parcel,
   GuardShift,
+  GuardShiftTiming,
   ParkingSlot,
   Amenity,
   AmenityBooking,

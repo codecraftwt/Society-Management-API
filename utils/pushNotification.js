@@ -54,15 +54,17 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
   // Determine notification type and channel
   const type = String(stringifiedData.type || stringifiedData.alert_type || '').toUpperCase();
   const actionType = String(stringifiedData.action_type || '').toUpperCase();
+  const isEmergencyResolved = type === 'EMERGENCY_RESOLVED' || type === 'RESOLVED';
   const isEmergency =
-    type === 'EMERGENCY' ||
+    !isEmergencyResolved &&
+    (type === 'EMERGENCY' ||
     type === 'SOS' ||
     type === 'EMERGENCY_ALERT' ||
     type === 'FIRE' ||
     type === 'MEDICAL' ||
     type === 'SECURITY' ||
     type === 'GATE_PANIC' ||
-    actionType === 'VIEW_EMERGENCY';
+    actionType === 'VIEW_EMERGENCY');
 
   const channelId = isEmergency ? 'emergency_channel_v3' : 'default_channel_id';
 

@@ -11,6 +11,8 @@ const {
   getMyShift,
   getSocietyShifts,
   getGuardShiftByGuard,
+  getShiftTimingsCtrl,
+  upsertShiftTimings,
 } = require("../controllers/guardShiftControllers");
 
 
@@ -19,6 +21,11 @@ router.post("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"),
 
 // Guard sees his own active shift
 router.get("/my", auth, role("GUARD"), getMyShift);
+
+// Society shift-timing config — MUST stay before GET /:guardId or "timings"
+// would be captured as a guardId param.
+router.get("/timings", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getShiftTimingsCtrl);
+router.put("/timings", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), upsertShiftTimings);
 
 // Admin / Committee views all shifts
 router.get("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getSocietyShifts);

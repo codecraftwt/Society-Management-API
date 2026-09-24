@@ -24,32 +24,26 @@ const {
 } = require("../utils/validation");
 
 /* ─────────────────────────────────────────────
-   IST HELPERS
+   IST HELPERS  (single source of truth)
 ───────────────────────────────────────────── */
 
-const getTodayIST = () =>
-  new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+const { getCurrentISTDate, getCurrentISTMinutes } = require("../utils/istTime");
+const {
+  getShiftTimings,
+  getCurrentShiftTypeFromTimings,
+  isTimeInShift,
+} = require("../utils/shiftTiming");
 
-const getCurrentISTHour = () =>
-  parseInt(
-    new Date().toLocaleString("en-IN", {
-      timeZone: "Asia/Kolkata",
-      hour: "numeric",
-      hour12: false,
-    }),
-    10
-  );
+const getTodayIST = () => getCurrentISTDate();
 
-const getCurrentShiftType = () => {
-  const hour = getCurrentISTHour();
-  if (hour >= 8  && hour < 16) return "MORNING";
-  if (hour >= 16 && hour < 24) return "AFTERNOON";
-  return "NIGHT";
-};
-
+/* Return the guard's shift covering today ONLY if they are actually on duty
+   for that shift right now (per the society's configured windows). */
 const getActiveShiftForGuard = async (guardId, societyId) => {
-  const today     = getTodayIST();
-  return await GuardShift.findOne({
+  const today   = getTodayIST();
+  const timings = await getShiftTimings(societyId);
+  const minutes = getCurrentISTMinutes();
+
+  const shifts = await GuardShift.findAll({
     where: {
       guard_id:   guardId,
       society_id: societyId,
@@ -57,6 +51,16 @@ const getActiveShiftForGuard = async (guardId, societyId) => {
       end_date:   { [Op.gte]: today },
     },
   });
+
+  return (
+    shifts.find((s) => isTimeInShift(timings, s.shift_type, minutes)) || null
+  );
+};
+
+/* Current shift type label for error messages. */
+const getCurrentShiftTypeLabel = async (societyId) => {
+  const timings = await getShiftTimings(societyId);
+  return getCurrentShiftTypeFromTimings(timings);
 };
 
 /* ─────────────────────────────────────────────
@@ -100,8 +104,9 @@ const addVisitor = async (req, res) => {
       req.user.society_id
     );
     if (!activeShift) {
+      const currentShift = await getCurrentShiftTypeLabel(req.user.society_id);
       return res.status(403).json({
-        message: `You are not on duty right now (${getCurrentShiftType()} shift).`,
+        message: `You are not on duty right now (${currentShift} shift).`,
       });
     }
 
@@ -216,8 +221,9 @@ const markExit = async (req, res) => {
 
     const activeShift = await getActiveShiftForGuard(req.user.id, req.user.society_id);
     if (!activeShift) {
+      const currentShift = await getCurrentShiftTypeLabel(req.user.society_id);
       return res.status(403).json({
-        message: `You are not on duty right now (${getCurrentShiftType()} shift).`,
+        message: `You are not on duty right now (${currentShift} shift).`,
       });
     }
 

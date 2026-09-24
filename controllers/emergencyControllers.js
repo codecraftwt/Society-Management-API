@@ -7,27 +7,24 @@ const { User, Flat, Block, HouseHoldMember, Notification, Society, FlatMembershi
 const { Op } = require("sequelize");
 const { sendPushNotification } = require("../utils/pushNotification");
 
-const getCurrentShiftType = () => {
-  const hour = new Date().getHours();
-  if (hour >= 8 && hour < 16) return "MORNING";
-  if (hour >= 16) return "AFTERNOON";
-  return "NIGHT";
-};
+const { getCurrentISTDate, getCurrentISTMinutes } = require("../utils/istTime");
+const { getShiftTimings, isTimeInShift } = require("../utils/shiftTiming");
 
 const getOnShiftGuardId = async (societyId) => {
-  const today = new Date().toISOString().split("T")[0];
-  const shiftType = getCurrentShiftType();
+  const today   = getCurrentISTDate();
+  const timings = await getShiftTimings(societyId);
+  const minutes = getCurrentISTMinutes();
 
-  const shift = await GuardShift.findOne({
+  const shifts = await GuardShift.findAll({
     where: {
       society_id: societyId,
-      shift_type: shiftType,
       start_date: { [Op.lte]: today },
       end_date: { [Op.gte]: today },
     },
   });
 
-  return shift ? shift.guard_id : null;
+  const active = shifts.find((s) => isTimeInShift(timings, s.shift_type, minutes));
+  return active ? active.guard_id : null;
 };
 
 const getFlatIdForUser = async (userId) => {
@@ -347,7 +344,7 @@ const createEmergency = async (req, res) => {
     res.status(201).json({
       ...emergency.toJSON(),
       shiftInfo: payload.guard_id
-        ? `Alert routed to on-shift guard (${getCurrentShiftType()} shift)`
+        ? `Alert routed to on-shift guard`
         : "⚠️ No guard on shift right now — alert visible to admins and neighbors",
     });
 

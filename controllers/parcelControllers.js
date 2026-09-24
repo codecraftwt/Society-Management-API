@@ -71,36 +71,26 @@ const getPrimaryResidentId = async (userId) => {
 const generatePickupCode = () =>
   Math.floor(1000 + Math.random() * 9000).toString();
 
-const getTodayIST = () =>
-  new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+const { getCurrentISTDate, getCurrentISTMinutes } = require("../utils/istTime");
+const { getShiftTimings, isTimeInShift } = require("../utils/shiftTiming");
 
-const getCurrentShiftType = () => {
-  const hour = parseInt(
-    new Date().toLocaleString("en-IN", {
-      timeZone: "Asia/Kolkata",
-      hour: "numeric",
-      hour12: false,
-    }),
-    10,
-  );
-  if (hour >= 8 && hour < 16) return "MORNING";
-  if (hour >= 16 && hour < 24) return "AFTERNOON";
-  return "NIGHT";
-};
+const getTodayIST = () => getCurrentISTDate();
 
 const getActiveShiftGuard = async (society_id) => {
-  const today = getTodayIST();
-  const shiftType = getCurrentShiftType();
+  const today   = getTodayIST();
+  const timings = await getShiftTimings(society_id);
+  const minutes = getCurrentISTMinutes();
 
-  const shift = await GuardShift.findOne({
+  const shifts = await GuardShift.findAll({
     where: {
       society_id,
-      shift_type: shiftType,
       start_date: { [Op.lte]: today },
       end_date: { [Op.gte]: today },
     },
   });
-  return shift ? shift.guard_id : null;
+
+  const active = shifts.find((s) => isTimeInShift(timings, s.shift_type, minutes));
+  return active ? active.guard_id : null;
 };
 
 /* helper — fetch full parcel row with associations for socket payloads */

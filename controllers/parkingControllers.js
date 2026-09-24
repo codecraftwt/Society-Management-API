@@ -22,56 +22,47 @@ const {
   isValidVehicleNumber,
 } = require("../utils/validation");
 
-/* ── IST helpers ── */
-const getTodayIST = () =>
-  new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+/* ── IST helpers + shift timing (single source of truth) ── */
+const { getCurrentISTDate, getCurrentISTMinutes } = require("../utils/istTime");
+const { getShiftTimings, isTimeInShift } = require("../utils/shiftTiming");
+const getTodayIST = () => getCurrentISTDate();
 
-const getCurrentISTHour = () =>
-  parseInt(
-    new Date().toLocaleString("en-IN", {
-      timeZone: "Asia/Kolkata",
-      hour:     "numeric",
-      hour12:   false,
-    }),
-    10
-  );
-
-const getCurrentShiftType = () => {
-  const hour = getCurrentISTHour();
-  if (hour >= 8  && hour < 16) return "MORNING";
-  if (hour >= 16 && hour < 24) return "AFTERNOON";
-  return "NIGHT";
-};
-
-/* ── Check guard is on active shift (matches current shift type) ── */
+/* ── Check guard is on an active shift right now ── */
 const getActiveShiftForGuard = async (guardId, societyId) => {
-  const today     = getTodayIST();
-  const shiftType = getCurrentShiftType();
-  return await GuardShift.findOne({
+  const today   = getTodayIST();
+  const timings = await getShiftTimings(societyId);
+  const minutes = getCurrentISTMinutes();
+
+  const shifts = await GuardShift.findAll({
     where: {
       guard_id:   guardId,
       society_id: societyId,
-      shift_type: shiftType,
       start_date: { [Op.lte]: today },
       end_date:   { [Op.gte]: today },
     },
   });
+
+  return (
+    shifts.find((s) => isTimeInShift(timings, s.shift_type, minutes)) || null
+  );
 };
 
 /* ── Get all on-duty guard IDs ── */
 const getOnDutyGuardIds = async (societyId) => {
-  const today     = getTodayIST();
-  const shiftType = getCurrentShiftType();
+  const today   = getTodayIST();
+  const timings = await getShiftTimings(societyId);
+  const minutes = getCurrentISTMinutes();
+
   const shifts = await GuardShift.findAll({
     where: {
       society_id: societyId,
-      shift_type: shiftType,
       start_date: { [Op.lte]: today },
       end_date:   { [Op.gte]: today },
     },
-    attributes: ["guard_id"],
   });
-  return shifts.map((s) => s.guard_id);
+
+  return shifts.filter((s) => isTimeInShift(timings, s.shift_type, minutes))
+    .map((s) => s.guard_id);
 };
 
 /* ── User → flat helpers ── */

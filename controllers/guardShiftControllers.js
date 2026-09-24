@@ -1,25 +1,19 @@
 const GuardShift = require("../models/GuardShift");
+const GuardShiftTiming = require("../models/GuardShiftTiming");
 const User = require("../models/User");
 const { Op } = require("sequelize");
-
-/* ── IST date helper ── */
-const getTodayIST = () =>
-  new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-
-/* ── CURRENT SHIFT HELPER (IST) — used only for guard's own "am I on duty now?" check ── */
-const getCurrentShiftType = () => {
-  const hour = parseInt(
-    new Date().toLocaleString("en-IN", {
-      timeZone: "Asia/Kolkata",
-      hour: "numeric",
-      hour12: false,
-    }),
-    10
-  );
-  if (hour >= 8 && hour < 16)  return "MORNING";
-  if (hour >= 16 && hour < 24) return "AFTERNOON";
-  return "NIGHT";
-};
+const {
+  getCurrentISTDate,
+  getCurrentISTMinutes,
+  getCurrentISTDateTime,
+} = require("../utils/istTime");
+const {
+  SHIFT_TYPES,
+  getShiftTimings,
+  getCurrentShiftTypeFromTimings,
+  isTimeInShift,
+  validateTimingsConfig,
+} = require("../utils/shiftTiming");
 
 /* ── Date overlap check: true if [aStart..aEnd] overlaps [bStart..bEnd] ── */
 const datesOverlap = (aStart, aEnd, bStart, bEnd) =>
@@ -136,29 +130,11 @@ const updateShift = async (req, res) => {
 /* === GET MY SHIFT (guard's own active shift with isOnDuty status) === */
 const getMyShift = async (req, res) => {
   try {
-    const today = getTodayIST();
-    const currentShiftType = getCurrentShiftType();
+    const today = getCurrentISTDate();
 
-    /* First: try to find the currently active shift type */
-    let shift = await GuardShift.findOne({
-      where: {
-        guard_id:   req.user.id,
-        society_id: req.user.society_id,
-        shift_type: currentShiftType,
-        start_date: { [Op.lte]: today },
-        end_date:   { [Op.gte]: today },
-      },
-    });
-
-    if (shift) {
-      return res.json({
-        ...shift.toJSON(),
-        isOnDuty: true,
-      });
-    }
-
-    /* Fallback: find ANY shift covering today (different type) */
-    shift = await GuardShift.findOne({
+    /* Find ANY shift covering today — duty is decided by the configured
+       window for that shift's type, not by matching a hardcoded window. */
+    const shifts = await GuardShift.findAll({
       where: {
         guard_id:   req.user.id,
         society_id: req.user.society_id,
@@ -168,14 +144,34 @@ const getMyShift = async (req, res) => {
       order: [["updatedAt", "DESC"]],
     });
 
-    if (shift) {
-      return res.json({
-        ...shift.toJSON(),
-        isOnDuty: false,
-      });
+    if (!shifts.length) {
+      return res.json(null);
     }
 
-    res.json(null);
+    const timings = await getShiftTimings(req.user.society_id);
+    const minutes = getCurrentISTMinutes();
+
+    let shift = shifts[0];
+    for (const s of shifts) {
+      if (s.shift_type && isTimeInShift(timings, s.shift_type, minutes)) {
+        shift = s;
+        break;
+      }
+    }
+
+    const t = timings[shift.shift_type] || {};
+    const startTime = t.start || "00:00";
+    const endTime = t.end || "00:00";
+
+    return res.json({
+      ...shift.toJSON(),
+      isOnDuty: isTimeInShift(timings, shift.shift_type, minutes),
+      start_time: startTime,
+      end_time: endTime,
+      window: `${startTime} - ${endTime}`,
+      server_now: getCurrentISTDateTime(),
+      timezone: "Asia/Kolkata",
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -231,6 +227,67 @@ const deleteShift = async (req, res) => {
   }
 };
 
+/* ─────────────────────────────────────────────
+   SOCIETY SHIFT-TIMING CONFIG  (assignment ≠ timing)
+   ───────────────────────────────────────────── */
+const resolveSocietyId = (req) => {
+  /* Non-super-admins are always scoped to their own society and must NOT
+     pick another via query/body param. */
+  if (String(req.user.role) !== "SUPER_ADMIN") {
+    return req.user.society_id;
+  }
+  const raw = req.query.society_id || req.body?.society_id;
+  const id = raw != null ? parseInt(raw, 10) : null;
+  if (!id) {
+    throw new Error("Super Admin must provide a society_id.");
+  }
+  return id;
+};
+
+/* === GET SOCIETY SHIFT TIMINGS === */
+const getShiftTimingsCtrl = async (req, res) => {
+  try {
+    const societyId = resolveSocietyId(req);
+    const timings = await getShiftTimings(societyId);
+    res.json({
+      society_id: societyId,
+      timings,
+      server_now: getCurrentISTDateTime(),
+      timezone: "Asia/Kolkata",
+    });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+/* === PUT SOCIETY SHIFT TIMINGS (upsert all three types) === */
+const upsertShiftTimings = async (req, res) => {
+  try {
+    const societyId = resolveSocietyId(req);
+    const valid = validateTimingsConfig(req.body?.timings || req.body);
+
+    for (const type of SHIFT_TYPES) {
+      const e = valid[type];
+      const [row] = await GuardShiftTiming.findOrCreate({
+        where: { society_id: societyId, shift_type: type },
+        defaults: { start_time: e.start, end_time: e.end },
+      });
+      await row.update({ start_time: e.start, end_time: e.end });
+    }
+
+    const timings = await getShiftTimings(societyId);
+    res.json({
+      society_id: societyId,
+      timings,
+      message: "Shift timings updated.",
+      server_now: getCurrentISTDateTime(),
+      timezone: "Asia/Kolkata",
+    });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
 
 module.exports = {
   upsertShift,
@@ -239,4 +296,6 @@ module.exports = {
   getMyShift,
   getSocietyShifts,
   getGuardShiftByGuard,
+  getShiftTimingsCtrl,
+  upsertShiftTimings,
 };
