@@ -97,7 +97,22 @@ const getFlatHistory = async (req, res) => {
       order: [["created_at", "DESC"]],
     });
 
-    const filteredHistory = history.filter(h => h.User?.approval_status !== "REJECTED");
+    // Clean up orphaned records in DB where user_id no longer exists or user is null
+    const orphanedIds = history
+      .filter((h) => !h.User || !h.User.name || h.User.name.toLowerCase() === "unknown")
+      .map((h) => h.id);
+
+    if (orphanedIds.length > 0) {
+      await ResidentHistory.destroy({ where: { id: orphanedIds } });
+    }
+
+    const filteredHistory = history.filter(
+      (h) =>
+        h.User &&
+        h.User.name &&
+        h.User.name.toLowerCase() !== "unknown" &&
+        h.User.approval_status !== "REJECTED"
+    );
 
     res.json(filteredHistory);
   } catch (error) {

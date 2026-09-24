@@ -956,18 +956,65 @@ const updateVehicle = async (req, res) => {
 const getMyVehicles = async (req, res) => {
   try {
     const primaryResidentId = await getPrimaryResidentId(req.user.id);
+    const userFlats = await Flat.findAll({ where: { resident_id: req.user.id } });
+    const memberFlats = await HouseHoldMember.findAll({ where: { user_id: req.user.id } });
+    const allFlatIds = [...new Set([
+      ...userFlats.map((f) => f.id),
+      ...memberFlats.map((m) => m.flat_id),
+    ])];
+
+    const whereConditions = [
+      { resident_id: req.user.id },
+    ];
+    if (primaryResidentId && primaryResidentId !== req.user.id) {
+      whereConditions.push({ resident_id: primaryResidentId });
+    }
+    if (allFlatIds.length > 0) {
+      whereConditions.push({ flat_id: { [Op.in]: allFlatIds } });
+    }
 
     const vehicles = await Vehicle.findAll({
       where: {
-        resident_id: primaryResidentId,
-        society_id:  req.user.society_id,
+        society_id: req.user.society_id,
+        [Op.or]: whereConditions,
       },
       order: [["createdAt", "ASC"]],
     });
 
+    const { ParkingRequest } = require("../models");
+
     const enriched = await Promise.all(
       vehicles.map(async (v) => {
         let slotInfo = null;
+
+        // If no slot is linked directly on the vehicle row, check if an approved request exists
+        if (!v.parking_slot_id) {
+          const reqSlot = await ParkingRequest.findOne({
+            where: {
+              society_id: req.user.society_id,
+              parking_type: "RESIDENT",
+              status: "APPROVED",
+              [Op.or]: [
+                { vehicle_id: v.id },
+                { vehicle_number: v.vehicle_number },
+                { vehicle_number: v.vehicle_number.trim() },
+              ],
+            },
+          });
+
+          if (reqSlot && reqSlot.assigned_spot) {
+            const foundSlot = await ParkingSlot.findOne({
+              where: {
+                slot_number: reqSlot.assigned_spot.trim(),
+                society_id: req.user.society_id,
+              },
+            });
+            if (foundSlot) {
+              v.parking_slot_id = foundSlot.id;
+              await v.save();
+            }
+          }
+        }
 
         if (v.parking_slot_id) {
           const slot = await ParkingSlot.findByPk(v.parking_slot_id, {
@@ -976,7 +1023,7 @@ const getMyVehicles = async (req, res) => {
               "slot_number",
               "vehicle_type",
               "parking_floor",
-              "parking_type", // ✅ parking_type lives here, on the slot
+              "parking_type",
               "status",
             ],
           });
@@ -988,7 +1035,6 @@ const getMyVehicles = async (req, res) => {
         return {
           ...vehicleJson,
           slot:         slotInfo,
-          // ✅ parking_type sourced from the linked slot, not from the vehicle row
           parking_type: slotInfo?.parking_type || null,
         };
       })

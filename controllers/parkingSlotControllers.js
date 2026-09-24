@@ -688,19 +688,19 @@ const getMyAllocatedSlots = async (req, res) => {
     const primaryResidentId = await getPrimaryResidentId(userId);
 
     /* 1️⃣ Collect flat IDs */
-    const [memberships, directFlat] = await Promise.all([
+    const [memberships, directFlats] = await Promise.all([
       FlatMembership.findAll({
         where:      { user_id: primaryResidentId, is_current: true },
         attributes: ["flat_id"],
       }),
-      Flat.findOne({
-        where:      { resident_id: primaryResidentId },
+      Flat.findAll({
+        where:      { [Op.or]: [{ resident_id: userId }, { resident_id: primaryResidentId }] },
         attributes: ["id"],
       }),
     ]);
 
     const flatIdSet = new Set(memberships.map((m) => m.flat_id));
-    if (directFlat) flatIdSet.add(directFlat.id);
+    directFlats.forEach((f) => flatIdSet.add(f.id));
     const flatIds = [...flatIdSet];
 
     if (flatIds.length === 0) return res.json({ slots: [], flats: [] });
@@ -711,8 +711,12 @@ const getMyAllocatedSlots = async (req, res) => {
                            when freed, flat_id=null so they won't appear here    */
     const slots = await ParkingSlot.findAll({
       where: {
-        flat_id:    { [Op.in]: flatIds },
         society_id: societyId,
+        [Op.or]: [
+          { flat_id: { [Op.in]: flatIds } },
+          { resident_id: userId },
+          { resident_id: primaryResidentId },
+        ],
       },
       attributes: [
         "id", "slot_number", "vehicle_type",

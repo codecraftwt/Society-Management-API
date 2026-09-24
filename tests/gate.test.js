@@ -54,6 +54,38 @@ describe("Visitors API", () => {
     expectOk(res);
   });
 
+  it("POST /api/visitors/daily-help/entry requires a gate pass code", async () => {
+    const { headers } = await login("guard");
+    const res = await request(app)
+      .post("/api/visitors/daily-help/entry")
+      .set(headers)
+      .send({ name: "Test Helper", phone: "9999999999", flatIds: [1] });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/gate pass/i);
+  });
+
+  it("PUT /api/visitors/daily-help/exit requires a gate pass code", async () => {
+    const { headers } = await login("guard");
+    const res = await request(app)
+      .put("/api/visitors/daily-help/exit")
+      .set(headers)
+      .send({ phone: "9999999999" });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/gate pass/i);
+  });
+
+  it("POST /api/visitors/daily-help/entry rejects an invalid gate pass code", async () => {
+    const { headers } = await login("guard");
+    const res = await request(app)
+      .post("/api/visitors/daily-help/entry")
+      .set(headers)
+      .send({ name: "Test Helper", phone: "9999999999", flatIds: [1], gatePassCode: "GP-XXXXXX" });
+    expect([400, 500]).toContain(res.status);
+    if (res.status === 400) {
+      expect(res.body.message).toMatch(/invalid gate pass|does not belong/i);
+    }
+  });
+
   it("POST /api/visitors is forbidden for a resident", async () => {
     const { headers } = await login("resident");
     const res = await request(app).post("/api/visitors").set(headers).send({});

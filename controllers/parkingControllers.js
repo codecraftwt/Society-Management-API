@@ -66,26 +66,35 @@ const getOnDutyGuardIds = async (societyId) => {
 };
 
 /* ── User → flat helpers ── */
+const getAllFlatIdsForUser = async (userId) => {
+  const primaryId = await getPrimaryResidentId(userId);
+  const userIds = [userId, primaryId].filter(Boolean);
+
+  const flatIds = new Set();
+  const directFlats = await Flat.findAll({
+    where: { resident_id: { [Op.in]: userIds } },
+    attributes: ["id"],
+  });
+  directFlats.forEach((f) => flatIds.add(f.id));
+
+  const memberships = await HouseHoldMember.findAll({
+    where: { user_id: { [Op.in]: userIds } },
+    attributes: ["flat_id"],
+  });
+  memberships.forEach((m) => flatIds.add(m.flat_id));
+
+  return Array.from(flatIds);
+};
+
 const getFlatIdForUser = async (userId) => {
-  const flat = await Flat.findOne({ where: { resident_id: userId } });
-  if (flat) return flat.id;
-  const member = await HouseHoldMember.findOne({ where: { user_id: userId } });
-  if (member) return member.flat_id;
-  return null;
+  const allIds = await getAllFlatIdsForUser(userId);
+  return allIds.length > 0 ? allIds[0] : null;
 };
 
 const isFlatOfUser = async (userId, flatId) => {
   if (!flatId) return false;
-  const primaryId = await getPrimaryResidentId(userId);
-  const candidates = new Set();
-  const directFlat = await Flat.findOne({ where: { resident_id: primaryId } });
-  if (directFlat) candidates.add(directFlat.id);
-  const memberships = await HouseHoldMember.findAll({
-    where:   { user_id: { [Op.or]: [userId, primaryId] } },
-    attributes: ["flat_id"],
-  });
-  memberships.forEach((m) => candidates.add(m.flat_id));
-  return candidates.has(Number(flatId));
+  const allFlatIds = await getAllFlatIdsForUser(userId);
+  return allFlatIds.includes(Number(flatId));
 };
 
 const getPrimaryResidentId = async (userId) => {
@@ -752,14 +761,14 @@ const getParkingRequests = async (req, res) => {
 
     if (isResident) {
       const primaryId = await getPrimaryResidentId(id);
-      const flatId    = await getFlatIdForUser(id);
+      const flatIds   = await getAllFlatIdsForUser(id);
 
       const residentIdList = [id, primaryId].filter(Boolean);
       const residentScope = [
         { resident_id: { [Op.in]: residentIdList } },
       ];
-      if (flatId) {
-        residentScope.push({ flat_id: flatId });
+      if (flatIds.length > 0) {
+        residentScope.push({ flat_id: { [Op.in]: flatIds } });
       }
 
       where[Op.and] = [
@@ -811,10 +820,10 @@ const getParkingRequests = async (req, res) => {
     const baseWhere = { society_id };
     if (isResident) {
       const primaryId = await getPrimaryResidentId(id);
-      const flatId    = await getFlatIdForUser(id);
+      const flatIds   = await getAllFlatIdsForUser(id);
       const residentIdList = [id, primaryId].filter(Boolean);
       const residentScope = [{ resident_id: { [Op.in]: residentIdList } }];
-      if (flatId) residentScope.push({ flat_id: flatId });
+      if (flatIds.length > 0) residentScope.push({ flat_id: { [Op.in]: flatIds } });
 
       baseWhere[Op.and] = [{ [Op.or]: residentScope }];
       if (req.query.parking_type && req.query.parking_type !== "ALL") {
@@ -864,10 +873,10 @@ const getParkingRequestById = async (req, res) => {
 
     if (isResident) {
       const primaryId = await getPrimaryResidentId(id);
-      const flatId    = await getFlatIdForUser(id);
+      const flatIds   = await getAllFlatIdsForUser(id);
       const residentIdList = [id, primaryId].filter(Boolean);
       const residentScope = [{ resident_id: { [Op.in]: residentIdList } }];
-      if (flatId) residentScope.push({ flat_id: flatId });
+      if (flatIds.length > 0) residentScope.push({ flat_id: { [Op.in]: flatIds } });
 
       where[Op.and] = [{ [Op.or]: residentScope }];
     }

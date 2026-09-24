@@ -1,7 +1,56 @@
-const { HouseHoldMember, Flat, Block, VisitorLog, User, Notification, UserSetting } = require("../models");
+const { HouseHoldMember, Flat, Block, VisitorLog, User, Notification, UserSetting, VisitorPreApproval } = require("../models");
 const { Op } = require("sequelize");
 const { sendPushNotification } = require("../utils/pushNotification");
+const { getCurrentISTDate } = require("../utils/istTime");
 const { DAILY_HELP_ROLES } = require("../utils/dailyHelpUtils");
+
+/* ====
+   GATE PASS VALIDATION FOR DAILY HELP
+   The resident generates a daily gate pass (GP-XXXXXX) from "My Household".
+   The guard MUST enter that code before checking a helper in or out.
+==== */
+const normalizeMobile = (m) => String(m || "").replace(/\D/g, "");
+
+const verifyDailyHelpGatePass = async ({ societyId, phone, code }) => {
+  if (!code) {
+    return { ok: false, message: "Gate pass code is required." };
+  }
+
+  const today = getCurrentISTDate();
+  const phoneDigits = normalizeMobile(phone);
+
+  const approval = await VisitorPreApproval.findOne({
+    where: {
+      otp: code,
+      society_id: societyId,
+      status: { [Op.in]: ["PENDING", "USED"] },
+    },
+  });
+
+  if (!approval) {
+    return { ok: false, message: "Invalid gate pass code." };
+  }
+
+  if (normalizeMobile(approval.mobile) !== phoneDigits) {
+    return {
+      ok: false,
+      message: `This gate pass code does not belong to ${approval.visitor_name || "this helper"}.`,
+    };
+  }
+
+  const isDaily = String(approval.pass_type || "SINGLE").toUpperCase() === "DAILY";
+
+  if (today < approval.valid_date) {
+    return { ok: false, message: `Gate pass is not active yet. Valid from ${approval.valid_date}.` };
+  }
+  if ((isDaily && approval.valid_until && approval.valid_until < today) || (!isDaily && today > approval.valid_date)) {
+    approval.status = "EXPIRED";
+    await approval.save();
+    return { ok: false, message: "Gate pass has expired." };
+  }
+
+  return { ok: true, approval };
+};
 
 /* ====
    HELPER: Send Notifications to Flat Residents
@@ -191,10 +240,20 @@ exports.getSocietyDailyHelps = async (req, res) => {
 ==== */
 exports.markDailyHelpEntry = async (req, res) => {
   try {
-    const { name, phone, flatIds } = req.body;
+    const { name, phone, flatIds, gatePassCode } = req.body;
 
     if (!phone || !flatIds || !flatIds.length) {
       return res.status(400).json({ success: false, message: "Phone and flat assignments required." });
+    }
+
+    // Gate pass code required before check-in
+    const gateCheck = await verifyDailyHelpGatePass({
+      societyId: req.user.society_id,
+      phone,
+      code: gatePassCode,
+    });
+    if (!gateCheck.ok) {
+      return res.status(400).json({ success: false, message: gateCheck.message });
     }
 
     const createdLogs = [];
@@ -232,10 +291,20 @@ exports.markDailyHelpEntry = async (req, res) => {
 ==== */
 exports.markDailyHelpExit = async (req, res) => {
   try {
-    const { phone } = req.body;
+    const { phone, gatePassCode } = req.body;
 
     if (!phone) {
       return res.status(400).json({ success: false, message: "Phone number required for checkout." });
+    }
+
+    // Gate pass code required before check-out
+    const gateCheck = await verifyDailyHelpGatePass({
+      societyId: req.user.society_id,
+      phone,
+      code: gatePassCode,
+    });
+    if (!gateCheck.ok) {
+      return res.status(400).json({ success: false, message: gateCheck.message });
     }
 
     // Find ALL active entries for this phone number today

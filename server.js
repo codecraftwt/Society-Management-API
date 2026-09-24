@@ -13,6 +13,9 @@ const { startOtpCleanup } = require("./controllers/authControllers");
 // Payment expiry job
 require("./utils/paymentExpiryJob");
 
+// Visitor dwell-time overstay job (guard alerts)
+require("./utils/passDwellJob");
+
 /* ─────────────────────────────────────────────
    SOCKET SERVER
 ───────────────────────────────────────────── */
@@ -494,6 +497,61 @@ sequelize
       }
     } catch (err) {
       console.log("[DB Migration] Note on amenity_bookings range columns:", err.message);
+    }
+
+    // ── Daily Pass + dwell-limit columns (gate passes) ────────────────────
+    try {
+      const vpaCols = await sequelize
+        .query(
+          "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'visitor_preapprovals'"
+        )
+        .then(([rows]) => new Set(rows.map((r) => r.COLUMN_NAME)));
+
+      const vpaMigrations = [
+        ["pass_type", "ALTER TABLE visitor_preapprovals ADD COLUMN pass_type VARCHAR(10) NOT NULL DEFAULT 'SINGLE' AFTER valid_date"],
+        ["valid_until", "ALTER TABLE visitor_preapprovals ADD COLUMN valid_until DATE NULL AFTER valid_date"],
+        ["daily_limit", "ALTER TABLE visitor_preapprovals ADD COLUMN daily_limit INT NOT NULL DEFAULT 2 AFTER valid_until"],
+        ["dwell_minutes", "ALTER TABLE visitor_preapprovals ADD COLUMN dwell_minutes INT NOT NULL DEFAULT 45 AFTER daily_limit"],
+      ];
+
+      for (const [col, sql] of vpaMigrations) {
+        if (!vpaCols.has(col)) {
+          try {
+            await sequelize.query(sql);
+            console.log(`[DB Migration] Added visitor_preapprovals.${col}`);
+          } catch (err) {
+            console.log(`[DB Migration] Note adding visitor_preapprovals.${col}:`, err.message);
+          }
+        }
+      }
+    } catch (err) {
+      console.log("[DB Migration] Note on visitor_preapprovals columns:", err.message);
+    }
+
+    try {
+      const vlogCols = await sequelize
+        .query(
+          "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'visitorlogs'"
+        )
+        .then(([rows]) => new Set(rows.map((r) => r.COLUMN_NAME)));
+
+      const vlogMigrations = [
+        ["dwell_minutes", "ALTER TABLE visitorlogs ADD COLUMN dwell_minutes INT NULL AFTER preapproval_id"],
+        ["dwell_alerted", "ALTER TABLE visitorlogs ADD COLUMN dwell_alerted TINYINT(1) NOT NULL DEFAULT 0 AFTER dwell_minutes"],
+      ];
+
+      for (const [col, sql] of vlogMigrations) {
+        if (!vlogCols.has(col)) {
+          try {
+            await sequelize.query(sql);
+            console.log(`[DB Migration] Added visitorlogs.${col}`);
+          } catch (err) {
+            console.log(`[DB Migration] Note adding visitorlogs.${col}:`, err.message);
+          }
+        }
+      }
+    } catch (err) {
+      console.log("[DB Migration] Note on visitorlogs columns:", err.message);
     }
 
     return sequelize.sync();

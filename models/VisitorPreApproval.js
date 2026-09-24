@@ -59,6 +59,38 @@ const VisitorPreApproval = sequelize.define(
       type: DataTypes.DATEONLY,
       allowNull: false,
     },
+
+    /* ── Daily Pass fields ──
+       pass_type  : 'SINGLE' (legacy one-day pass) | 'DAILY' (multi-day range,
+                    max `daily_limit` scans per IST day — entry + exit).
+       valid_until: end of the date range for DAILY passes (null for SINGLE).
+       daily_limit: max scans allowed per calendar day for DAILY passes. */
+    pass_type: {
+      type: DataTypes.STRING(10),
+      allowNull: false,
+      defaultValue: "SINGLE",
+    },
+
+    valid_until: {
+      type: DataTypes.DATEONLY,
+      allowNull: true,
+    },
+
+    daily_limit: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 2,
+    },
+
+    /* ── Dwell limit ──
+       Allowed minutes the visitor may stay inside. When exceeded, the
+       backend notifies the on-duty guard. Default 45 preserves the legacy
+       frontend behaviour for existing passes. */
+    dwell_minutes: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 45,
+    },
   },
   {
     tableName: "visitor_preapprovals",
