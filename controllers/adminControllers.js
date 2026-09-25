@@ -223,6 +223,8 @@ exports.approveResident = async (req, res) => {
     if (!["SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER"].includes(callerRole)) {
       return res.status(403).json({ message: "Access denied. Admin or Committee Member required." });
     }
+    const isSuperAdmin = req.user.activeRole === "SUPER_ADMIN" || req.user.role === "SUPER_ADMIN" ||
+      (Array.isArray(req.user.roles) && req.user.roles.includes("SUPER_ADMIN"));
 
     const resident = await User.findByPk(userId, { transaction });
     if (!resident) {
@@ -230,7 +232,7 @@ exports.approveResident = async (req, res) => {
       return res.status(404).json({ message: "Resident not found" });
     }
 
-    if (Number(resident.society_id) !== Number(req.user.society_id)) {
+    if (!isSuperAdmin && Number(resident.society_id) !== Number(req.user.society_id)) {
       await transaction.rollback();
       return res.status(403).json({ message: "Invalid society access" });
     }
@@ -355,9 +357,15 @@ exports.rejectResident = async (req, res) => {
     if (!["SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER"].includes(callerRole)) {
       return res.status(403).json({ message: "Access denied. Admin or Committee Member required." });
     }
+    const isSuperAdmin = req.user.activeRole === "SUPER_ADMIN" || req.user.role === "SUPER_ADMIN" ||
+      (Array.isArray(req.user.roles) && req.user.roles.includes("SUPER_ADMIN"));
 
     const user = await User.findByPk(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (!isSuperAdmin && Number(user.society_id) !== Number(req.user.society_id)) {
+      return res.status(403).json({ message: "Invalid society access" });
+    }
 
     // 1. Set the User to REJECTED and INACTIVE
     await user.update({

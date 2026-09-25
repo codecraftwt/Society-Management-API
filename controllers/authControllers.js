@@ -262,8 +262,20 @@ exports.login = async (req, res) => {
     });
 
     if (!user) return res.status(400).json({ message: "User not found" });
-    if (user.status !== "ACTIVE")
+    if (user.status !== "ACTIVE") {
+      const appStatus = (user.approval_status || "").toUpperCase();
+      if (appStatus === "PENDING") {
+        return res.status(400).json({
+          message: "Your registration is pending approval by the society admin. You can log in once approved.",
+        });
+      }
+      if (appStatus === "REJECTED") {
+        return res.status(400).json({
+          message: "Your registration was rejected by the society admin. Please contact the admin for more information.",
+        });
+      }
       return res.status(400).json({ message: "Account is inactive." });
+    }
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch)
