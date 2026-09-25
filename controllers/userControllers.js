@@ -435,7 +435,7 @@ const createResident = async (req, res) => {
       return res.status(400).json({ message: "Please enter a valid email address." });
     }
     if (isEmpty(password)) {
-      return res.status(400).json({ message: "Password is required." });
+      password = "Admin@123";
     }
     if (typeof password === "string" && password.length < 6) {
       return res.status(400).json({ message: "Password must be at least 6 characters." });

@@ -752,23 +752,26 @@ const bulkConfirmPayment = async (req, res) => {
       return res.status(404).json({ success: false, message: "No matching bills found." });
     }
 
+    const pendingBills = bills.filter((b) => b.status === "PENDING");
+    if (pendingBills.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot approve: ${pendingBills.length} of the selected bill(s) are still PENDING (unpaid). All selected bills must have status as PAID or Awaiting Confirmation before approving.`,
+        pendingCount: pendingBills.length,
+      });
+    }
+
     let approvedCount = 0;
-    let skippedCount = 0;
 
     for (const bill of bills) {
-      if (bill.status === "PAID") {
-        skippedCount++;
-        continue;
-      }
       await processConfirmSingleBill(bill, req.user, targetSocietyId);
       approvedCount++;
     }
 
     return res.status(200).json({
       success: true,
-      message: `Successfully approved ${approvedCount} bill(s).${skippedCount > 0 ? ` (${skippedCount} already paid bill(s) were skipped)` : ""}`,
+      message: `Successfully approved ${approvedCount} bill(s).`,
       approvedCount,
-      skippedCount,
       totalRequested: ids.length,
     });
   } catch (err) {

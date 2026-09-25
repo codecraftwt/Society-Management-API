@@ -7,11 +7,12 @@ module.exports = (...allowedRoles) => {
     const { activeRole, roles, role, is_committee_member, is_committee } = req.user;
 
     // 🔥 GLOBAL BYPASS: Super Admin has absolute access to everything
-    if (activeRole === "SUPER_ADMIN" && req.headers["x-society-id"]) {
-      req.user.society_id = parseInt(req.headers["x-society-id"], 10);
-      return next();
-    }
-    if (activeRole === "SUPER_ADMIN" || role === "SUPER_ADMIN" || (roles && roles.includes("SUPER_ADMIN"))) {
+    const targetSocId = req.headers["x-society-id"] || req.query?.society_id || req.body?.society_id;
+    const isSuperAdmin = activeRole === "SUPER_ADMIN" || role === "SUPER_ADMIN" || (roles && roles.includes("SUPER_ADMIN"));
+    if (isSuperAdmin) {
+      if (targetSocId && targetSocId !== "ALL") {
+        req.user.society_id = parseInt(targetSocId, 10);
+      }
       return next();
     }
 
