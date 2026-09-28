@@ -8,6 +8,7 @@ const Block = require("../models/Block");
 const Floor = require("../models/Floor");
 const sequelize = require("../config/db");
 const transporter = require("../utils/mailer");
+const { resolveSocietyAdminContact } = require("../utils/approvalGuard");
 
 /* =====
     EMAIL HELPERS
@@ -114,7 +115,7 @@ async function sendApprovalEmail(toEmail, userName, societyName) {
   });
 }
 
-async function sendRejectionEmail(toEmail, userName, societyName, reason) {
+async function sendRejectionEmail(toEmail, userName, societyName, reason, adminContact) {
   if (!transporter) return;
   const appName = process.env.APP_NAME || "SocietyApp";
 
@@ -193,6 +194,23 @@ async function sendRejectionEmail(toEmail, userName, societyName, reason) {
           <p style="margin:0;font-size:12px;color:#94a3b8;text-align:center;line-height:1.6;">
             If you believe this is a mistake, please reach out to your society admin directly.
           </p>
+
+          ${
+            adminContact && (adminContact.email || adminContact.phone)
+              ? `
+          <!-- Admin contact -->
+          <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:18px 20px;margin:0 0 16px;">
+            <p style="margin:0 0 10px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#475569;">
+              Contact for Assistance
+            </p>
+            <p style="margin:0;font-size:14px;color:#334155;line-height:1.7;">
+              ${adminContact.name || "Society Admin"}
+              ${adminContact.email ? `<br/>Email: <a href="mailto:${adminContact.email}" style="color:#2563eb;">${adminContact.email}</a>` : ""}
+              ${adminContact.phone ? `<br/>Phone: <a href="tel:${adminContact.phone}" style="color:#2563eb;">${adminContact.phone}</a>` : ""}
+            </p>
+          </div>`
+              : ""
+          }
 
         </td></tr>
 
@@ -360,6 +378,17 @@ exports.rejectResident = async (req, res) => {
     const isSuperAdmin = req.user.activeRole === "SUPER_ADMIN" || req.user.role === "SUPER_ADMIN" ||
       (Array.isArray(req.user.roles) && req.user.roles.includes("SUPER_ADMIN"));
 
+    // A rejection without a reason produces an empty "Reason for Rejection" box
+    // in the email and a blank reason on the app/web rejection screens, so the
+    // reason is mandatory.
+    const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+    if (!reason) {
+      return res.status(400).json({
+        code: "REJECTION_REASON_REQUIRED",
+        message: "Rejection reason is required. Please tell the resident why their registration was rejected.",
+      });
+    }
+
     const user = await User.findByPk(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
 
@@ -367,10 +396,11 @@ exports.rejectResident = async (req, res) => {
       return res.status(403).json({ message: "Invalid society access" });
     }
 
-    // 1. Set the User to REJECTED and INACTIVE
+    // 1. Set the User to REJECTED and INACTIVE, persisting the reason
     await user.update({
       approval_status: "REJECTED",
       status: "INACTIVE",
+      rejection_reason: reason,
       approved_by_user_id: req.user.id,
       approved_by_name: req.user.name || (callerRole === "COMMITTEE_MEMBER" ? "Committee Member" : "Society Admin"),
       approved_by_role: callerRole,
@@ -437,7 +467,35 @@ exports.rejectResident = async (req, res) => {
       }
     }
 
-    res.status(200).json({ message: "Tenant verification rejected and successfully wiped from the flat history." });
+    // 4. Email the resident the reason so they are not left guessing.
+    // The rejection is already committed at this point; an SMTP failure must not
+    // roll it back, so it is reported back to the admin instead.
+    let emailSent = false;
+    if (user.email) {
+      try {
+        const society = await Society.findByPk(user.society_id, { attributes: ["name"] });
+        const contact = await resolveSocietyAdminContact(user.society_id);
+        await sendRejectionEmail(
+          user.email,
+          user.name,
+          society?.name || "your society",
+          reason,
+          contact
+        );
+        emailSent = true;
+      } catch (mailErr) {
+        console.error("[rejectResident] rejection email failed:", mailErr.message);
+      }
+    }
+
+    res.status(200).json({
+      message: "Registration rejected and removed from the flat history.",
+      rejection_reason: reason,
+      emailSent,
+      ...(emailSent ? {} : {
+        emailError: "The resident was rejected, but the rejection email could not be sent. Ask them to check with the admin.",
+      }),
+    });
   } catch (error) {
     console.error("Error in rejectResident:", error);
     res.status(500).json({ error: "Internal Server Error while rejecting resident." });

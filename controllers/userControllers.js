@@ -29,6 +29,7 @@ const {
   isValidPassword,
   isPositiveNumber,
 } = require("../utils/validation");
+const { ensureAssignable, ensureNotRejected } = require("../utils/approvalGuard");
 
 async function sendAccountantWelcomeEmail(toEmail, name, password, societyName) {
   if (!transporter) return;
@@ -1209,6 +1210,13 @@ const updateResident = async (req, res) => {
       return res.status(400).json({ message: "emergency_contact must include both name and phone." });
     }
 
+    // Editing other profile fields on a rejected resident is fine, but moving
+    // them into a flat is not.
+    if (flat_id) {
+      const assignable = await ensureAssignable(resident.id);
+      if (!assignable.ok) return res.status(assignable.status).json(assignable.payload);
+    }
+
     const userUpdatePayload = { name, phone, resident_type };
     if (vehicle_count  != null) userUpdatePayload.vehicle_count  = Number(vehicle_count);
     if (occupant_count != null) userUpdatePayload.occupant_count = Number(occupant_count);
@@ -1621,6 +1629,10 @@ const appointResidentAccountant = async (req, res) => {
     }
 
     const roles = Array.isArray(resident.roles) && resident.roles.length > 0 ? [...resident.roles] : [resident.role];
+
+    // A rejected registration must be re-approved before it can hold a role.
+    const notRejected = await ensureNotRejected(resident_id);
+    if (!notRejected.ok) return res.status(notRejected.status).json(notRejected.payload);
 
     // Rule: Cannot be Admin
     if (roles.includes("SOCIETY_ADMIN") || roles.includes("SUPER_ADMIN")) {
@@ -2129,6 +2141,11 @@ const promoteToCommittee = async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
     if (user.role !== "RESIDENT" && !user.roles?.includes("RESIDENT"))
       return res.status(400).json({ message: "Only residents can be promoted to committee member" });
+
+    // A rejected registration must be re-approved before it can hold a role,
+    // not just before it can be given a flat.
+    const notRejected = await ensureNotRejected(userId);
+    if (!notRejected.ok) return res.status(notRejected.status).json(notRejected.payload);
 
     let roles = Array.isArray(user.roles) && user.roles.length > 0 ? [...user.roles] : ["RESIDENT"];
 

@@ -650,10 +650,76 @@ const deleteComplaint = async (req, res) => {
 };
 
 
+/* =====
+   ✅ RESIDENT UPDATE COMPLAINT
+   Only complaints in status OPEN or PENDING can be edited.
+   IN_PROGRESS or RESOLVED complaints cannot be edited.
+===== */
+const updateComplaint = async (req, res) => {
+  try {
+    const { title, description, flat_id } = req.body;
+    const user = req.user;
+    const primaryId = await getPrimaryResidentId(user.id);
+
+    const complaint = await Complaint.findByPk(req.params.id);
+    if (!complaint) {
+      return res.status(404).json({ message: "Complaint not found" });
+    }
+
+    // Verify ownership
+    if (complaint.resident_id !== primaryId && complaint.resident_id !== user.id) {
+      return res.status(403).json({ message: "Unauthorized to edit this complaint." });
+    }
+
+    // Status check: ONLY OPEN or PENDING can be edited
+    if (complaint.status !== "OPEN" && complaint.status !== "PENDING") {
+      return res.status(400).json({ message: "Only pending complaints can be edited. Complaints in progress or resolved cannot be modified." });
+    }
+
+    if (title && title.trim()) {
+      complaint.title = title.trim();
+    }
+    if (description !== undefined) {
+      complaint.description = description.trim();
+    }
+
+    if (flat_id && user.resident_type === "OWNER") {
+      const flat = await Flat.findByPk(flat_id);
+      if (flat && flat.occupancy_status === "RENTED") {
+        return res.status(400).json({ message: "Owners cannot set complaints for rented units." });
+      }
+      complaint.flat_id = flat_id;
+    }
+
+    if (req.file) {
+      if (complaint.photo_public_id) {
+        await cloudinary.uploader.destroy(complaint.photo_public_id).catch(err =>
+          console.error("[updateComplaint] Cloudinary destroy failed:", err)
+        );
+      }
+      complaint.photo_url = req.file.path || req.file.secure_url || req.file.url;
+      complaint.photo_public_id = req.file.filename;
+    }
+
+    await complaint.save();
+
+    if (global.io) {
+      global.io.to(`society_${user.society_id}`).emit("complaint_updated", complaint);
+    }
+
+    res.status(200).json({ message: "Complaint updated successfully", complaint });
+  } catch (err) {
+    console.error("updateComplaint error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+
 module.exports = {
   getComplaints,
   updateStatus,
   createComplaint,
   getMyComplaints,
   deleteComplaint,
+  updateComplaint,
 };

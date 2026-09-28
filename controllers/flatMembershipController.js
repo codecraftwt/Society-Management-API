@@ -6,6 +6,7 @@ const { Op } = require("sequelize");
 const FlatMembership = require("../models/FlatMembership");
 const Flat = require("../models/Flat");
 const Block = require("../models/Block");
+const { ensureAssignable } = require("../utils/approvalGuard");
 const Floor = require("../models/Floor");
 const User = require("../models/User");
 
@@ -62,6 +63,10 @@ const createMembership = async (req, res) => {
     if (!["OWNER", "TENANT"].includes(role)) {
       return res.status(400).json({ message: "role must be OWNER or TENANT" });
     }
+
+    // A rejected registration must never gain a flat membership.
+    const assignable = await ensureAssignable(user_id);
+    if (!assignable.ok) return res.status(assignable.status).json(assignable.payload);
 
     const flat = await Flat.findByPk(flatId);
     if (!flat) return res.status(404).json({ message: "Flat not found" });

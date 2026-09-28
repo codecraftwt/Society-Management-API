@@ -14,6 +14,7 @@ const {
   createComplaint,
   getMyComplaints,
   deleteComplaint,
+  updateComplaint,
 } = require("../controllers/complaintControllers");
 
 const {
@@ -35,6 +36,15 @@ router.get(
   auth,
   role("RESIDENT", "FAMILY_MEMBER"),
   getMyComplaints
+);
+
+// ✅ Resident - Update Complaint (only PENDING/OPEN)
+router.put(
+  "/my/:id",
+  auth,
+  role("RESIDENT"),
+  upload.single("photo"),
+  updateComplaint
 );
 
 

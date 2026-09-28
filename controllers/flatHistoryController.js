@@ -1,12 +1,17 @@
 
 const { Flat, User } = require("../models");
 const ResidentHistory = require("../models/ResidentHistory");
+const { ensureAssignable } = require("../utils/approvalGuard");
 
 
 // 🟢 MOVE-IN (assign new resident)
 const moveInResident = async (req, res) => {
   try {
     const { flat_id, user_id } = req.body;
+
+    // A rejected registration must never be moved into a flat.
+    const assignable = await ensureAssignable(user_id);
+    if (!assignable.ok) return res.status(assignable.status).json(assignable.payload);
 
     // 1. Close previous resident (if exists)
     await ResidentHistory.update(

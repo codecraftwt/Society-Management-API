@@ -5,6 +5,7 @@ const Notification = require("../models/Notification");
 const HouseHoldMember = require("../models/HouseHoldMember");
 const OtpVerification = require("../models/OtpVerification");
 const AccountantAssignment = require("../models/AccountantAssignment");
+const { resolveSocietyAdminContact } = require("../utils/approvalGuard");
 
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -264,17 +265,32 @@ exports.login = async (req, res) => {
     if (!user) return res.status(400).json({ message: "User not found" });
     if (user.status !== "ACTIVE") {
       const appStatus = (user.approval_status || "").toUpperCase();
+      // Machine-readable codes so the client can branch on account state
+      // instead of pattern-matching the message text.
       if (appStatus === "PENDING") {
         return res.status(400).json({
+          code: "APPROVAL_PENDING",
           message: "Your registration is pending approval by the society admin. You can log in once approved.",
         });
       }
       if (appStatus === "REJECTED") {
+        // Surface the stored reason and a real contact so the client can show a
+        // useful rejection screen instead of a generic "login failed" toast.
+        const adminContact = await resolveSocietyAdminContact(user.society_id);
         return res.status(400).json({
+          code: "APPROVAL_REJECTED",
           message: "Your registration was rejected by the society admin. Please contact the admin for more information.",
+          rejection_reason: user.rejection_reason || null,
+          society_name: user.Society?.name || null,
+          admin_contact: adminContact
+            ? { name: adminContact.name, email: adminContact.email, phone: adminContact.phone }
+            : null,
         });
       }
-      return res.status(400).json({ message: "Account is inactive." });
+      return res.status(400).json({
+        code: "ACCOUNT_INACTIVE",
+        message: "Account is inactive.",
+      });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);

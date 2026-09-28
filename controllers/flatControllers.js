@@ -10,6 +10,7 @@ const ResidentHistory = require("../models/ResidentHistory");
 const FlatMembership = require("../models/FlatMembership");
 const Vehicle = require("../models/Vehicle");
 const { Op } = require("sequelize");
+const { ensureAssignable } = require("../utils/approvalGuard");
 const {
   sanitizeText,
   isEmpty,
@@ -221,6 +222,10 @@ const assignResident = async (req, res) => {
 
     if (!resident_id)
       return res.status(400).json({ message: "Resident ID is missing" });
+
+    // A rejected registration must never be placed into a flat.
+    const assignable = await ensureAssignable(resident_id);
+    if (!assignable.ok) return res.status(assignable.status).json(assignable.payload);
 
     const flat = await Flat.findByPk(flatId);
     if (!flat)
