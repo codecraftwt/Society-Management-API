@@ -484,6 +484,119 @@ exports.resendOtp = async (req, res) => {
 };
 
 /* =====
+    POST /auth/send-registration-otp
+
+    Registration OTP is emailed to the applicant's email address (never SMS'd to
+    their mobile). Stores the hashed OTP against the email in otp_verifications
+    and mails a short-lived code that must be verified before /auth/register runs.
+    ===== */
+exports.sendRegistrationOtp = async (req, res) => {
+  try {
+    const { email, name, phone } = req.body;
+
+    const cleanEmail = sanitizeText(email).toLowerCase();
+    if (!cleanEmail) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+    if (!isValidEmail(cleanEmail)) {
+      return res.status(400).json({ message: "Please enter a valid email address." });
+    }
+    if (phone && !isValidMobile(String(phone))) {
+      return res
+        .status(400)
+        .json({ message: "Please provide a valid 10-digit Indian mobile number." });
+    }
+
+    // Don't leak account existence to an unauthenticated caller.
+    const existing = await User.findOne({ where: { email: cleanEmail } });
+    if (existing && existing.status === "ACTIVE") {
+      return res.status(400).json({ message: "User already exists" });
+    }
+
+    const otp = generateOtp();
+    const expires_at = new Date(Date.now() + 2 * 60 * 1000);
+
+    // Replace any prior registration code for this email, then hash the new one.
+    await OtpVerification.destroy({ where: { email: cleanEmail } });
+    const otp_hash = await bcrypt.hash(otp, 8);
+
+    await Promise.all([
+      sendOtpEmail(cleanEmail, otp, sanitizeText(name) || "Resident"),
+      OtpVerification.create({ email: cleanEmail, otp_hash, expires_at }),
+    ]);
+
+    return res.status(200).json({
+      message: "OTP sent to your email address",
+      email: cleanEmail,
+      expiresIn: 120,
+    });
+  } catch (err) {
+    console.error("Registration OTP send error:", err);
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+/* =====
+    POST /auth/verify-registration-otp
+
+    Confirms the emailed code for an applicant who does not have an account yet,
+    so it cannot reuse verifyOtp (which requires a real userId). On success the
+    code is burned (used = true) and the client may call /auth/register.
+    ===== */
+exports.verifyRegistrationOtp = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    const cleanEmail = sanitizeText(email).toLowerCase();
+    if (!cleanEmail || !otp) {
+      return res.status(400).json({ message: "Email and OTP are required" });
+    }
+
+    const record = await OtpVerification.findOne({
+      where: {
+        email: cleanEmail,
+        used: false,
+        expires_at: { [Op.gt]: new Date() },
+      },
+      order: [["created_at", "DESC"]],
+    });
+
+    if (!record) {
+      return res
+        .status(400)
+        .json({ message: "OTP has expired or is invalid. Please request a new one." });
+    }
+
+    if (record.attempts >= 5) {
+      await record.destroy();
+      return res
+        .status(429)
+        .json({ message: "Too many failed attempts. Please request a new OTP." });
+    }
+
+    const isValid = await bcrypt.compare(String(otp).trim(), record.otp_hash);
+    if (!isValid) {
+      await record.update({ attempts: record.attempts + 1 });
+      const remaining = 4 - record.attempts;
+      return res.status(400).json({
+        message: `Incorrect OTP. ${
+          remaining > 0
+            ? `${remaining} attempt(s) remaining.`
+            : "No attempts remaining. Please request a new OTP."
+        }`,
+      });
+    }
+
+    await record.update({ used: true });
+
+    return res.status(200).json({ message: "Email verified successfully", email: cleanEmail });
+  } catch (err) {
+    console.error("Registration OTP verify error:", err);
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+/* =====
     POST /auth/switch-role
     ===== */
 exports.switchRole = async (req, res) => {

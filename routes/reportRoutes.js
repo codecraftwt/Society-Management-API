@@ -9,6 +9,8 @@ const {
   getVisitorReport,
   getComplaintReport,
   getFinancialReport,
+  getPaymentReport,
+  getExpenseReport,
 } = require("../controllers/reportControllers");
 
 
@@ -39,6 +41,26 @@ router.get(
   role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
   checkPermission("reports", "view"),
   getFinancialReport
+);
+
+
+/* === PAYMENT REPORT (money-in, from `payments`) === */
+router.get(
+  "/payments",
+  auth,
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  checkPermission("reports", "view"),
+  getPaymentReport
+);
+
+
+/* === EXPENSE REPORT (money-out, from `expenses`) === */
+router.get(
+  "/expenses",
+  auth,
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  checkPermission("reports", "view"),
+  getExpenseReport
 );
 
 module.exports = router;

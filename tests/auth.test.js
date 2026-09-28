@@ -97,6 +97,92 @@ describe("Auth API", () => {
     });
   });
 
+  describe("POST /api/auth/send-registration-otp", () => {
+    it("returns 400 when email is missing", async () => {
+      const res = await request(app).post("/api/auth/send-registration-otp").send({});
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/email is required/i);
+    });
+
+    it("returns 400 for an invalid email", async () => {
+      const res = await request(app)
+        .post("/api/auth/send-registration-otp")
+        .send({ email: "not-an-email" });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/valid email/i);
+    });
+
+    it("returns 400 for an invalid mobile number", async () => {
+      const res = await request(app)
+        .post("/api/auth/send-registration-otp")
+        .send({ email: "newcomer@example.com", phone: "123" });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/valid 10-digit/i);
+    });
+
+    it("returns 400 when the email is already registered", async () => {
+      const res = await request(app)
+        .post("/api/auth/send-registration-otp")
+        .send({ email: ACCOUNTS.admin.email });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/already exists/i);
+    });
+
+    it("sends the OTP to the given email for a new applicant", async () => {
+      const email = `applicant-${Date.now()}@example.com`;
+      const res = await request(app)
+        .post("/api/auth/send-registration-otp")
+        .send({ email, name: "Test Applicant", phone: "9876543210" });
+      expectOk(res);
+      expect(res.body.email).toBe(email);
+      // The code must never be echoed back to the client.
+      expect(res.body.otp).toBeUndefined();
+    });
+  });
+
+  describe("POST /api/auth/verify-registration-otp", () => {
+    it("returns 400 when email and otp are missing", async () => {
+      const res = await request(app).post("/api/auth/verify-registration-otp").send({});
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/email and otp are required/i);
+    });
+
+    it("returns 400 for an unknown email", async () => {
+      const res = await request(app)
+        .post("/api/auth/verify-registration-otp")
+        .send({ email: "never-registered@example.com", otp: "123456" });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/expired or is invalid/i);
+    });
+
+    it("returns 400 for an incorrect OTP", async () => {
+      const email = `wrong-otp-${Date.now()}@example.com`;
+      await request(app).post("/api/auth/send-registration-otp").send({ email });
+      const res = await request(app)
+        .post("/api/auth/verify-registration-otp")
+        .send({ email, otp: "000000" });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/incorrect otp/i);
+    });
+
+    it("verifies the emailed OTP and burns it for reuse", async () => {
+      const email = `verify-${Date.now()}@example.com`;
+      await request(app).post("/api/auth/send-registration-otp").send({ email });
+
+      const first = await request(app)
+        .post("/api/auth/verify-registration-otp")
+        .send({ email, otp: "123456" });
+      expectOk(first);
+      expect(first.body.email).toBe(email);
+
+      // A second attempt must fail because the code was consumed.
+      const second = await request(app)
+        .post("/api/auth/verify-registration-otp")
+        .send({ email, otp: "123456" });
+      expect(second.status).toBe(400);
+    });
+  });
+
   describe("POST /api/auth/register", () => {
     it("returns 400 when society is missing", async () => {
       const res = await request(app).post("/api/auth/register").send({

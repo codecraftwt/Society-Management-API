@@ -6,6 +6,8 @@ const {
   login,
   verifyOtp,
   resendOtp,
+  sendRegistrationOtp,
+  verifyRegistrationOtp,
   switchRole,
   registerResident,
   checkApprovalStatus,
@@ -17,6 +19,8 @@ const auth = require("../middlewares/authMiddleware");
 router.post("/login",             login);
 router.post("/verify-otp",        verifyOtp);
 router.post("/resend-otp",        resendOtp);
+router.post("/send-registration-otp",    sendRegistrationOtp);
+router.post("/verify-registration-otp",  verifyRegistrationOtp);
 router.post("/register",          registerResident);
 router.get("/approval-status/:id", checkApprovalStatus);
 
