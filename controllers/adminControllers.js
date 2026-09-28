@@ -448,13 +448,37 @@ exports.rejectResident = async (req, res) => {
 /* =====
     TENANT HISTORY — Full list of tenants (current + past + pending) for society
     GET /admin/tenant-history?status=living|removed|expired|pending|rejected|all
+    GET /admin/tenant-history?society_id=3   (SUPER_ADMIN only — society-wise filter)
     ===== */
 exports.getTenantHistory = async (req, res) => {
   try {
     const { Op } = require("sequelize");
     const UserDocuments = require("../models/UserDocuments");
     const status = req.query.status || "all"; // all, living, removed, expired, pending, approved, rejected
-    const societyId = req.user.society_id;
+
+    const isSuperAdmin =
+      req.user?.activeRole === "SUPER_ADMIN" ||
+      req.user?.role === "SUPER_ADMIN" ||
+      (Array.isArray(req.user?.roles) && req.user.roles.includes("SUPER_ADMIN"));
+
+    // Only a Super Admin may target another society (x-society-id header / ?society_id).
+    // For everyone else the society is pinned to their own. A Super Admin with no
+    // explicit target ("ALL" / absent) gets the global cross-society view.
+    const rawSocietyId = isSuperAdmin
+      ? (req.headers["x-society-id"] || req.query.society_id)
+      : req.user.society_id;
+    const societyId = rawSocietyId && rawSocietyId !== "ALL" ? parseInt(rawSocietyId, 10) || null : null;
+
+    if (!societyId && !isSuperAdmin) {
+      return res.status(400).json({ message: "Society could not be resolved." });
+    }
+
+    const societyScope = societyId ? { society_id: societyId } : {};
+
+    // Society names (so the UI can label rows when viewing globally)
+    const societyRows = await Society.findAll({ attributes: ["id", "name"] });
+    const societyMap = {};
+    for (const s of societyRows) societyMap[s.id] = s.name;
 
     // 1. Fetch ALL tenant FlatMemberships for this society
     const memberships = await FlatMembership.findAll({
@@ -468,10 +492,10 @@ exports.getTenantHistory = async (req, res) => {
         {
           model: User,
           attributes: [
-            "id", "name", "email", "phone", "approval_status", "status", "resident_type",
+            "id", "name", "email", "phone", "approval_status", "status", "resident_type", "society_id",
             "approved_by_user_id", "approved_by_name", "approved_by_role", "approved_at"
           ],
-          where: { society_id: societyId },
+          where: societyScope,
           include: [{ model: UserDocuments, required: false }],
         },
         {
@@ -535,6 +559,8 @@ exports.getTenantHistory = async (req, res) => {
         approval_status: user.approval_status,
         user_status: user.status,
         resident_type: user.resident_type || "TENANT",
+        society_id: user.society_id || null,
+        society_name: societyMap[user.society_id] || null,
         approved_by_user_id: user.approved_by_user_id,
         approved_by_name: user.approved_by_name,
         approved_by_role: user.approved_by_role,
@@ -563,7 +589,7 @@ exports.getTenantHistory = async (req, res) => {
     // 4. Also fetch pending or unassigned tenants/residents so nothing is missed
     const additionalUsers = await User.findAll({
       where: {
-        society_id: societyId,
+        ...societyScope,
         [Op.or]: [
           { approval_status: "PENDING" },
           { approval_status: "pending" },
@@ -586,7 +612,7 @@ exports.getTenantHistory = async (req, res) => {
         },
       ],
       attributes: [
-        "id", "name", "email", "phone", "approval_status", "status", "resident_type",
+        "id", "name", "email", "phone", "approval_status", "status", "resident_type", "society_id",
         "approved_by_user_id", "approved_by_name", "approved_by_role", "approved_at"
       ],
     });
@@ -613,6 +639,8 @@ exports.getTenantHistory = async (req, res) => {
         approval_status: u.approval_status || "PENDING",
         user_status: u.status,
         resident_type: u.resident_type || "TENANT",
+        society_id: u.society_id || null,
+        society_name: societyMap[u.society_id] || null,
         approved_by_user_id: u.approved_by_user_id,
         approved_by_name: u.approved_by_name,
         approved_by_role: u.approved_by_role,
