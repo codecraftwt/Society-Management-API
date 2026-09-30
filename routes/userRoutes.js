@@ -5,12 +5,15 @@ const express = require("express");
 const router = express.Router();
 const auth = require("../middlewares/authMiddleware");
 const role = require("../middlewares/roleMiddleware");
+const uploadProfilePicture = require("../middlewares/uploadProfilePicture");
+const handleProfilePictureUploadErrors = require("../middlewares/profilePictureUploadErrors");
 const {
   createSocietyAdmin, createResident, createGuard,
   getResidents, updateResident, deleteResident,
   getUnassignedResidents, getGuards, updateGuard, deleteGuard,
   getMyFlat, createAccountant, getAccountant,
   updateAccountant, getMyProfile, updateMyProfile,
+  uploadMyProfilePicture, removeMyProfilePicture,
   forgotPassword, resetPassword,updateFCMToken,promoteToCommittee, removeCommittee, addTenantByOwner,
   removeTenantByOwner, getPendingResidents, renewTenantLease, deleteAccountant
 } = require("../controllers/userControllers");
@@ -20,13 +23,27 @@ router.get("/resident/unassigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "C
 router.post("/societies/:societyId/admin", auth, role("SUPER_ADMIN"), createSocietyAdmin);
 
 // Allow Super Admin to create, view, update, and delete residents
-router.post("/resident", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), createResident);
+router.post(
+  "/resident",
+  auth,
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  uploadProfilePicture.single("photo"),
+  handleProfilePictureUploadErrors,
+  createResident
+);
 router.get("/resident", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), getResidents);
 router.put("/resident/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), updateResident);
 router.delete("/resident/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), deleteResident);
 
 // Allow Super Admin to manage guards
-router.post("/guard", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), createGuard);
+router.post(
+  "/guard",
+  auth,
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  uploadProfilePicture.single("photo"),
+  handleProfilePictureUploadErrors,
+  createGuard
+);
 router.get("/guard", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), getGuards);
 router.put("/guard/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), updateGuard);
 router.delete("/guard/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), deleteGuard);
@@ -38,6 +55,15 @@ router.get("/get-flat", auth, role("RESIDENT", "FAMILY_MEMBER"), getMyFlat);
 router.put("/fcm-token", auth, updateFCMToken);
 
 router.put("/me", auth, updateMyProfile);
+
+router.put(
+  "/me/profile-picture",
+  auth,
+  uploadProfilePicture.single("photo"),
+  handleProfilePictureUploadErrors,
+  uploadMyProfilePicture
+);
+router.delete("/me/profile-picture", auth, removeMyProfilePicture);
 
 // ✅ All authenticated roles can view their own profile and permissions
 router.get("/me", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT", "RESIDENT", "GUARD", "FAMILY_MEMBER"), getMyProfile);

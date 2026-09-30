@@ -295,6 +295,14 @@ sequelize
         await sequelize.query("ALTER TABLE users ADD COLUMN approved_at DATETIME NULL");
         console.log("[DB Migration] Added users.approved_at");
       }
+      if (!userCols.has("profile_picture")) {
+        await sequelize.query("ALTER TABLE users ADD COLUMN profile_picture VARCHAR(500) NULL");
+        console.log("[DB Migration] Added users.profile_picture");
+      }
+      if (!userCols.has("profile_picture_public_id")) {
+        await sequelize.query("ALTER TABLE users ADD COLUMN profile_picture_public_id VARCHAR(255) NULL");
+        console.log("[DB Migration] Added users.profile_picture_public_id");
+      }
     } catch (err) {
       console.log("[DB Migration] Note adding users approval columns:", err.message);
     }

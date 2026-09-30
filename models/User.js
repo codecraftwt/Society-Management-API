@@ -143,6 +143,18 @@ const User = sequelize.define(
       allowNull: true,
     },
 
+    profile_picture: {
+      type: DataTypes.STRING(500),
+      allowNull: true,
+      defaultValue: null,
+    },
+
+    profile_picture_public_id: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      defaultValue: null,
+    },
+
     // 🚗 Number of vehicles owned by the resident
     vehicle_count: {
       type: DataTypes.INTEGER,

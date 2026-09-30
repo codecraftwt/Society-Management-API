@@ -20,6 +20,12 @@ const AccountantAssignment = require("../models/AccountantAssignment");
 const transporter = require("../utils/mailer");
 const { fetchEffectivePermissions } = require("./permissionController");
 const {
+  readUploadedProfilePicture,
+  destroyProfilePicture,
+  isProfilePictureOwnedBy,
+  normaliseMultipartBody,
+} = require("../utils/profilePicture");
+const {
   sanitizeText,
   isEmpty,
   isValidEmail,
@@ -419,7 +425,7 @@ const createResident = async (req, res) => {
       emergency_contact,
       vehicles,
       parking_slots,
-    } = req.body;
+    } = normaliseMultipartBody(req.body);
 
     /* ─────────────────────────────
        Basic field validation
@@ -504,6 +510,8 @@ const createResident = async (req, res) => {
       vehicle_count:   0,
       occupant_count:  occupant_count != null ? Number(occupant_count) : 1,
       emergency_contact: emergency_contact || null,
+      profile_picture: req.file ? readUploadedProfilePicture(req.file)?.url || null : null,
+      profile_picture_public_id: req.file ? readUploadedProfilePicture(req.file)?.publicId || null : null,
     });
 
     let targetFlatId = flat_id || null;
@@ -718,10 +726,12 @@ const createGuard = async (req, res) => {
     }
 
     const hashed = await bcrypt.hash(password, 8);
-const guard = await User.create({
+    const guard = await User.create({
         name, email, password: hashed,
         role: "GUARD", roles: ["GUARD"],
         society_id: req.body.society_id || req.user.society_id,
+        profile_picture: req.file ? readUploadedProfilePicture(req.file)?.url || null : null,
+        profile_picture_public_id: req.file ? readUploadedProfilePicture(req.file)?.publicId || null : null,
       });
     res.status(200).json(guard);
   } catch (err) {
@@ -740,7 +750,7 @@ const getGuards = async (req, res) => {
     const allUsers = await User.findAll({
       where,
       include: { model: Society, attributes: ["id", "name"], required: false },
-      attributes: ["id", "name", "email", "phone", "role", "roles", "society_id"],
+      attributes: ["id", "name", "email", "phone", "role", "roles", "society_id", "profile_picture"],
     });
 
     const guards = allUsers.filter((u) => (u.roles || [u.role]).includes("GUARD"));
@@ -754,6 +764,7 @@ const getGuards = async (req, res) => {
         isActive: true,
         society_id: g.society_id,
         societyName: g.Society?.name || "NA",
+        profile_picture: g.profile_picture || null,
       }))
     );
   } catch (err) {
@@ -2034,7 +2045,7 @@ const deleteAccountant = async (req, res) => {
 const getMyProfile = async (req, res) => {
   try {
     const user = await User.findByPk(req.user.id, {
-      attributes: ["id", "name", "email", "role", "roles", "phone", "resident_type", "society_id"],
+      attributes: ["id", "name", "email", "role", "roles", "phone", "resident_type", "society_id", "profile_picture"],
       include: { model: Society, attributes: ["id", "name"] },
     });
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -2075,11 +2086,79 @@ const updateMyProfile = async (req, res) => {
       user: {
         id: user.id, name: user.name, email: user.email,
         role: user.role, roles: user.roles || [user.role], phone: user.phone,
+        profile_picture: user.profile_picture || null,
       },
     });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Failed to update profile" });
+  }
+};
+
+/* =====
+   PROFILE PICTURE
+   ===== */
+const uploadMyProfilePicture = async (req, res) => {
+  let uploaded = null;
+  try {
+    const user = await User.findByPk(req.user.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const incoming = readUploadedProfilePicture(req.file);
+    if (!incoming) {
+      return res.status(400).json({ message: "No image file was uploaded. Send one file in the 'photo' field." });
+    }
+
+    if (!isProfilePictureOwnedBy(incoming.publicId, user.id)) {
+      await destroyProfilePicture(incoming.publicId);
+      return res.status(400).json({ message: "Invalid image reference." });
+    }
+
+    uploaded = incoming;
+    const previousPublicId = user.profile_picture_public_id;
+
+    user.profile_picture = incoming.url;
+    user.profile_picture_public_id = incoming.publicId;
+    await user.save();
+
+    if (previousPublicId && previousPublicId !== incoming.publicId) {
+      if (isProfilePictureOwnedBy(previousPublicId, user.id)) {
+        await destroyProfilePicture(previousPublicId);
+      } else {
+        console.error(`[ProfilePicture] Skipped delete of ${previousPublicId}: not owned by user ${user.id}`);
+      }
+    }
+
+    res.json({
+      message: "Profile picture updated",
+      profile_picture: user.profile_picture,
+    });
+  } catch (err) {
+    if (uploaded) await destroyProfilePicture(uploaded.publicId);
+    console.error(err);
+    res.status(500).json({ message: "Failed to update profile picture" });
+  }
+};
+
+const removeMyProfilePicture = async (req, res) => {
+  try {
+    const user = await User.findByPk(req.user.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const previousPublicId = user.profile_picture_public_id;
+
+    user.profile_picture = null;
+    user.profile_picture_public_id = null;
+    await user.save();
+
+    if (previousPublicId && isProfilePictureOwnedBy(previousPublicId, user.id)) {
+      await destroyProfilePicture(previousPublicId);
+    }
+
+    res.json({ message: "Profile picture removed", profile_picture: null });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to remove profile picture" });
   }
 };
 
@@ -2497,6 +2576,8 @@ module.exports = {
   getAccountant,
   getMyProfile,
   updateMyProfile,
+  uploadMyProfilePicture,
+  removeMyProfilePicture,
   forgotPassword,
   resetPassword,
   updateFCMToken,

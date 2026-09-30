@@ -9,6 +9,8 @@ const {
   updateGuard,
   deleteGuard,
 } = require("../controllers/userControllers");
+const uploadProfilePicture = require("../middlewares/uploadProfilePicture");
+const handleProfilePictureUploadErrors = require("../middlewares/profilePictureUploadErrors");
 const {
   upsertShift,
   updateShift,
@@ -16,7 +18,15 @@ const {
   getGuardShiftByGuard,
 } = require("../controllers/guardShiftControllers");
 
-router.post("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), checkPermission("guard", "create"), createGuard);
+router.post(
+  "/",
+  auth,
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  checkPermission("guard", "create"),
+  uploadProfilePicture.single("photo"),
+  handleProfilePictureUploadErrors,
+  createGuard
+);
 router.get("/all", auth, role("SUPER_ADMIN"), getGuards);
 router.get("/society/:societyId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), checkPermission("guard", "view"), getGuards);
 router.get("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), checkPermission("guard", "view"), getGuards);

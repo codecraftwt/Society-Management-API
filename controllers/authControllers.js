@@ -340,6 +340,7 @@ exports.login = async (req, res) => {
         availablePanels,
         society_id: user.society_id,
         society_name: user.Society?.name || null,
+        profile_picture: user.profile_picture || null,
       },
     });
   } catch (err) {
@@ -444,6 +445,7 @@ exports.verifyOtp = async (req, res) => {
         resident_type: user.resident_type || null,
         society_id: user.society_id,
         society_name: user.Society?.name || null,
+        profile_picture: user.profile_picture || null,
       },
     });
   } catch (err) {
@@ -657,6 +659,7 @@ exports.switchRole = async (req, res) => {
         resident_type: user.resident_type || null,
         society_id: user.society_id,
         society_name: user.Society?.name || null,
+        profile_picture: user.profile_picture || null,
       },
     });
   } catch (err) {
