@@ -41,6 +41,30 @@ function resolveUserRoles(user) {
   return roles;
 }
 
+/* Roles that only a genuine member of the society holds. resolveUserRoles
+   adds RESIDENT for every accountant, so when deciding whether to honour that
+   we must first confirm the user is not an accountant and nothing else. */
+const SOCIETY_MEMBER_ROLES = [
+  "RESIDENT",
+  "SOCIETY_ADMIN",
+  "FAMILY_MEMBER",
+  "COMMITTEE_MEMBER",
+  "COMMITTEE",
+  "GUARD",
+  "SUPER_ADMIN",
+];
+
+function isOutsiderAccountant(user) {
+  const declared = [
+    ...(Array.isArray(user.roles) && user.roles.length ? user.roles : []),
+    user.role,
+  ].filter(Boolean);
+
+  const hasAccountant = declared.some((r) => r === "ACCOUNTANT");
+  const hasSocietyRole = declared.some((r) => SOCIETY_MEMBER_ROLES.includes(r));
+  return hasAccountant && !hasSocietyRole;
+}
+
 async function getAvailablePanels(user) {
   const roles = resolveUserRoles(user);
   const panels = [];
@@ -58,10 +82,35 @@ async function getAvailablePanels(user) {
     });
     if (assignment || user.role === "ACCOUNTANT") {
       panels.push("ACCOUNTANT");
+
+      // resolveUserRoles grants RESIDENT to every accountant. For an outsider
+      // accountant that is wrong, so drop it unless the assignment record says
+      // they live in the society.
+      if (isOutsiderAccountant(user)) {
+        const isResident = assignment ? Boolean(assignment.is_society_resident) : false;
+        if (!isResident) {
+          const idx = panels.indexOf("RESIDENT");
+          if (idx !== -1) panels.splice(idx, 1);
+        }
+      }
     }
   }
 
   return panels.length > 0 ? panels : [user.role];
+}
+
+/* Exposed to the clients so they never have to infer residency from the roles
+   array (which always contains RESIDENT for an accountant). */
+async function getResidencyFlags(user, availablePanels) {
+  if (!isOutsiderAccountant(user)) return {};
+  const assignment = await AccountantAssignment.findOne({
+    where: { user_id: user.id, status: "ACTIVE" },
+  });
+  return {
+    is_accountant_outsider: true,
+    is_society_resident: assignment ? Boolean(assignment.is_society_resident) : false,
+    can_switch_to_resident: availablePanels.includes("RESIDENT"),
+  };
 }
 function generateOtp() {
   // Real random 6-digit OTP for all environments.
@@ -325,11 +374,13 @@ exports.login = async (req, res) => {
     );
 
     const availablePanels = await getAvailablePanels(user);
+    const residencyFlags = await getResidencyFlags(user, availablePanels);
 
     return res.status(200).json({
       message: "OTP sent to your registered email address",
       tempToken,
       availablePanels,
+      ...residencyFlags,
       user: {
         id: user.id,
         name: user.name,
@@ -338,6 +389,7 @@ exports.login = async (req, res) => {
         roles,
         activeRole: user.role,
         availablePanels,
+        ...residencyFlags,
         society_id: user.society_id,
         society_name: user.Society?.name || null,
         profile_picture: user.profile_picture || null,
@@ -426,12 +478,14 @@ exports.verifyOtp = async (req, res) => {
     const { token } = issueAccessToken(user, user.role);
     const roles = resolveUserRoles(user);
     const availablePanels = await getAvailablePanels(user);
+    const residencyFlags = await getResidencyFlags(user, availablePanels);
     const dynamicPermissions = await fetchEffectivePermissions(user.society_id, user.role);
 
     return res.status(200).json({
       message: "Login successful",
       token,
       availablePanels,
+      ...residencyFlags,
       user: {
         id: user.id,
         name: user.name,
@@ -440,6 +494,7 @@ exports.verifyOtp = async (req, res) => {
         roles,
         activeRole: user.role,
         availablePanels,
+        ...residencyFlags,
         dynamic_permissions: dynamicPermissions,
         permissions: dynamicPermissions,
         resident_type: user.resident_type || null,
@@ -638,14 +693,27 @@ exports.switchRole = async (req, res) => {
       });
     }
 
-    const { token } = issueAccessToken(user, role);
     const availablePanels = await getAvailablePanels(user);
+
+    // An outsider accountant holds ACCOUNTANT only, so RESIDENT must not be
+    // requestable even though resolveUserRoles lists it. Reject on the panel
+    // list - this is the check that actually stops the switch, since
+    // roles.includes(role) alone would allow it.
+    if (!availablePanels.includes(role)) {
+      return res.status(403).json({
+        message: `Role "${role}" is not assigned to your account. Available: ${availablePanels.join(", ")}`,
+      });
+    }
+
+    const { token } = issueAccessToken(user, role);
+    const residencyFlags = await getResidencyFlags(user, availablePanels);
     const dynamicPermissions = await fetchEffectivePermissions(user.society_id, role);
 
     return res.status(200).json({
       message: `Switched to ${role}`,
       token,
       availablePanels,
+      ...residencyFlags,
       user: {
         id: user.id,
         name: user.name,
@@ -654,6 +722,7 @@ exports.switchRole = async (req, res) => {
         roles,
         activeRole: role,
         availablePanels,
+        ...residencyFlags,
         dynamic_permissions: dynamicPermissions,
         permissions: dynamicPermissions,
         resident_type: user.resident_type || null,
