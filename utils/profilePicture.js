@@ -41,18 +41,52 @@ const isProfilePictureOwnedBy = (publicId, userId) => {
 const isAcceptedProfilePictureMime = (mimetype) => PROFILE_PICTURE_MIMES.has(mimetype);
 
 const destroyProfilePicture = async (publicId) => {
-  if (!publicId) return false;
-  try {
-    const result = await cloudinary.uploader.destroy(publicId, { resource_type: "image" });
-    if (result && result.result === "ok") return true;
-    console.error(`[ProfilePicture] Cloudinary destroy returned "${result && result.result}" for ${publicId}`);
-    return false;
-  } catch (err) {
-    console.error(`[ProfilePicture] Failed to destroy ${publicId}:`, err.message);
-    return false;
-  }
-};
+     if (!publicId) return false;
+     try {
+       const result = await cloudinary.uploader.destroy(publicId, { resource_type: "image" });
+       if (result && result.result === "ok") return true;
+       console.error(`[ProfilePicture] Cloudinary destroy returned "${result && result.result}" for ${publicId}`);
+       return false;
+     } catch (err) {
+       console.error(`[ProfilePicture] Failed to destroy ${publicId}:`, err.message);
+       return false;
+     }
+   };
 
+   /**
+    * Re-file an already-uploaded asset under its real owner's public_id.
+    *
+    * Needed because the multer storage engine has to name the asset *before*
+    * the controller runs, and on create there is no user id yet - it falls back
+    * to req.user.id, i.e. the admin doing the creating. That leaves the new
+    * resident owning an asset named "user-<adminId>-...", which
+    * isProfilePictureOwnedBy then rejects, so the delete/replace paths skip the
+    * Cloudinary cleanup and leak the file forever. Renaming once the row exists
+    * makes the stored public_id agree with reality.
+    *
+    * @returns {Promise<{publicId: string, url: string}|null>} new reference, or null on failure
+    */
+   const reassignProfilePicture = async (publicId, userId) => {
+     if (!publicId || !userId) return null;
+     try {
+       const nextPublicId = buildProfilePicturePublicId(userId);
+       const result = await cloudinary.uploader.rename(
+         publicId,
+         nextPublicId,
+         { resource_type: "image", overwrite: false, invalidate: true }
+       );
+       if (!result || result.result === "not found") {
+         console.error(`[ProfilePicture] rename returned "${result && result.result}" for ${publicId}`);
+         return null;
+       }
+       // Cloudinary echoes back the full path including folder.
+       return { publicId: result.public_id || nextPublicId, url: buildProfilePictureUrl(result.public_id || nextPublicId) };
+     } catch (err) {
+       console.error(`[ProfilePicture] Failed to reassign ${publicId} -> user-${userId}:`, err.message);
+       return null;
+     }
+   };
+   
 const readUploadedProfilePicture = (file) => {
   if (!file) return null;
   const publicId = file.filename;
@@ -97,6 +131,7 @@ module.exports = {
   isProfilePictureOwnedBy,
   isAcceptedProfilePictureMime,
   destroyProfilePicture,
+  reassignProfilePicture,
   readUploadedProfilePicture,
   parseMultipartJsonField,
   normaliseMultipartBody,

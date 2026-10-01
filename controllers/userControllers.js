@@ -1161,6 +1161,11 @@ const getResidents = async (req, res) => {
         name:              user.name,
         email:             user.email,
         phone:             user.phone || null,
+        // The list UI renders an avatar beside the name (UserAvatar), which
+        // falls back to initials whenever this is missing. The findAll above
+        // selects every column, so the value is on the model - it just has to
+        // be forwarded here.
+        profile_picture:   user.profile_picture || null,
         status:            user.status,
         approval_status:   user.approval_status,
         roles:             user.roles || [user.role],
