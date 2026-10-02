@@ -170,6 +170,17 @@ sequelize
       console.log("[DB Migration] Note syncing role_permissions:", err.message);
     }
 
+    // Ensure cleaning_staff and parcel tables are synced
+    try {
+      if (db.CleaningStaff) await db.CleaningStaff.sync({ alter: true });
+      if (db.CleaningStaffPass) await db.CleaningStaffPass.sync({ alter: true });
+      if (db.CleaningStaffAttendance) await db.CleaningStaffAttendance.sync({ alter: true });
+      if (db.Parcel) await db.Parcel.sync({ alter: true });
+      console.log("[DB Migration] cleaning_staff & parcel tables synced successfully");
+    } catch (err) {
+      console.log("[DB Migration] Note syncing tables:", err.message);
+    }
+
     // --- B) MaintenanceRates table: add new columns + backfill ---
     const rateCols = await sequelize
       .query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'MaintenanceRates'")
@@ -321,6 +332,30 @@ sequelize
       }
     } catch (err) {
       console.log("[DB Migration] Note adding accountant_assignments columns:", err.message);
+    }
+
+    try {
+      const socCols = await sequelize
+        .query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'societies'")
+        .then(([rows]) => new Set(rows.map((r) => r.COLUMN_NAME)));
+      if (!socCols.has("primary_color")) {
+        await sequelize.query("ALTER TABLE societies ADD COLUMN primary_color VARCHAR(20) NULL DEFAULT NULL");
+        console.log("[DB Migration] Added societies.primary_color");
+      }
+      if (!socCols.has("accent_color")) {
+        await sequelize.query("ALTER TABLE societies ADD COLUMN accent_color VARCHAR(20) NULL DEFAULT NULL");
+        console.log("[DB Migration] Added societies.accent_color");
+      }
+      if (!socCols.has("theme_updated_by")) {
+        await sequelize.query("ALTER TABLE societies ADD COLUMN theme_updated_by INT NULL DEFAULT NULL");
+        console.log("[DB Migration] Added societies.theme_updated_by");
+      }
+      if (!socCols.has("theme_updated_at")) {
+        await sequelize.query("ALTER TABLE societies ADD COLUMN theme_updated_at DATETIME NULL DEFAULT NULL");
+        console.log("[DB Migration] Added societies.theme_updated_at");
+      }
+    } catch (err) {
+      console.log("[DB Migration] Note adding societies theme columns:", err.message);
     }
 
     try {
@@ -560,6 +595,66 @@ sequelize
       }
     } catch (err) {
       console.log("[DB Migration] Note on visitorlogs columns:", err.message);
+    }
+
+    // ── Notice audience targeting columns ─────────────────────────────────
+    try {
+      const noticeCols = await sequelize
+        .query(
+          "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notices'"
+        )
+        .then(([rows]) => new Set(rows.map((r) => r.COLUMN_NAME)));
+
+      const noticeMigrations = [
+        ["target_type", "ALTER TABLE notices ADD COLUMN target_type ENUM('SOCIETY', 'FLAT') NOT NULL DEFAULT 'SOCIETY' AFTER acknowledgement_required"],
+        ["target_flat_id", "ALTER TABLE notices ADD COLUMN target_flat_id INT NULL DEFAULT NULL AFTER target_type"],
+      ];
+
+      for (const [col, sql] of noticeMigrations) {
+        if (!noticeCols.has(col)) {
+          try {
+            await sequelize.query(sql);
+            console.log(`[DB Migration] Added notices.${col}`);
+          } catch (err) {
+            console.log(`[DB Migration] Note adding notices.${col}:`, err.message);
+          }
+        }
+      }
+    } catch (err) {
+      console.log("[DB Migration] Note on notices columns:", err.message);
+    }
+
+    /* ###################################################################
+       PARCEL ACCOUNTABILITY MIGRATIONS
+       Four nullable columns that separate the two real gate events
+       (arrival / handover) and record who raised the request, while
+       guard_id keeps its legacy meaning untouched.
+       Purely additive: no back-fill, no rewrite of historical rows.
+       Guarded so they are safe to re-run on every boot.
+    ################################################################### */
+    try {
+      const parcelCols = await sequelize
+        .query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'parcels'")
+        .then(([rows]) => new Set(rows.map((r) => r.COLUMN_NAME)));
+
+      const parcelColMigrations = [
+        ["requested_by",     "ALTER TABLE parcels ADD COLUMN requested_by INT NULL AFTER guard_id"],
+        ["arrival_guard_id", "ALTER TABLE parcels ADD COLUMN arrival_guard_id INT NULL AFTER requested_by"],
+        ["delivery_guard_id","ALTER TABLE parcels ADD COLUMN delivery_guard_id INT NULL AFTER arrival_guard_id"],
+        ["pickup_time",      "ALTER TABLE parcels ADD COLUMN pickup_time DATETIME NULL AFTER entry_time"],
+      ];
+      for (const [col, sql] of parcelColMigrations) {
+        if (!parcelCols.has(col)) {
+          try {
+            await sequelize.query(sql);
+            console.log(`[DB Migration] Added parcels.${col}`);
+          } catch (err) {
+            console.log(`[DB Migration] Note adding parcels.${col}:`, err.message);
+          }
+        }
+      }
+    } catch (err) {
+      console.log("[DB Migration] Note on parcels columns:", err.message);
     }
 
     return sequelize.sync();

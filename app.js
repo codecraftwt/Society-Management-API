@@ -43,6 +43,7 @@ const downloadRoute        = require("./routes/downloadRoute");
 const permissionRoutes      = require("./routes/permissionRoutes");
 const accountingRoutes      = require("./routes/accountingRoutes");
 const expenseRoutes         = require("./routes/expenseRoutes");
+const cleaningStaffRoutes   = require("./routes/cleaningStaffRoutes");
 const app = express();
 
 app.use(cors());
@@ -91,6 +92,7 @@ app.use("/api/maintenance",   maintenanceRoutes);
 app.use("/api/permissions",   permissionRoutes);
 app.use("/api/account",       accountingRoutes);
 app.use("/api/expenses",      expenseRoutes);
+app.use("/api/cleaning-staff", cleaningStaffRoutes);
 app.use("/uploads",            express.static("uploads"));
 
 app.get("/", (req, res) => {

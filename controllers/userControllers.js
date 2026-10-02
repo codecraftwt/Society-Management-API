@@ -802,12 +802,19 @@ const updateGuard = async (req, res) => {
       return res.status(403).json({ message: "Access denied" });
     }
 
-    const updateData = { name, email };
+    const updateData = {};
+    if (name !== undefined) updateData.name = name;
+    if (email !== undefined) updateData.email = email;
     if (password) {
       updateData.password = await bcrypt.hash(password, 8);
     }
     if (req.user.role === "SUPER_ADMIN" && req.body.society_id) {
       updateData.society_id = req.body.society_id;
+    }
+    if (req.file) {
+      const photoData = readUploadedProfilePicture(req.file);
+      if (photoData?.url) updateData.profile_picture = photoData.url;
+      if (photoData?.publicId) updateData.profile_picture_public_id = photoData.publicId;
     }
 
     await guard.update(updateData);

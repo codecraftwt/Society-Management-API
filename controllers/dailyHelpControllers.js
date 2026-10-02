@@ -1,4 +1,4 @@
-const { HouseHoldMember, Flat, Block, VisitorLog, User, Notification, UserSetting, VisitorPreApproval } = require("../models");
+const { HouseHoldMember, Flat, Block, VisitorLog, User, Notification, UserSetting, VisitorPreApproval, Society, CleaningStaff, CleaningStaffAttendance } = require("../models");
 const { Op } = require("sequelize");
 const { sendPushNotification } = require("../utils/pushNotification");
 const { getCurrentISTDate } = require("../utils/istTime");
@@ -155,15 +155,10 @@ exports.getSocietyDailyHelps = async (req, res) => {
 
     const flatIds = flats.map(f => f.id);
 
-    if (flatIds.length === 0) {
-      console.log(`[DB] No flats in scope for user ${req.user.id}.`);
-      return res.json({ success: true, data: [] });
-    }
-
     console.log(`[DB] Found ${flats.length} flats in scope. Flat IDs:`, flatIds);
 
     // 2. Find all Household members in these flats who are Helpers
-    const helpers = await HouseHoldMember.findAll({
+    const helpers = flatIds.length > 0 ? await HouseHoldMember.findAll({
       where: {
         flat_id: { [Op.in]: flatIds },
         [Op.or]: [
@@ -171,7 +166,7 @@ exports.getSocietyDailyHelps = async (req, res) => {
           { work: { [Op.in]: DAILY_HELP_ROLES } }
         ]
       }
-    });
+    }) : [];
     console.log(`[DB] Found ${helpers.length} valid helpers in HouseHoldMember table.`);
 
     // 3. Group by Phone Number
@@ -193,7 +188,7 @@ exports.getSocietyDailyHelps = async (req, res) => {
       
       // Match flat ID back to get Block Name & Flat Number
       const flatData = flats.find(f => f.id === h.flat_id);
-      if (flatData) {
+      if (flatData && flatData.Block) {
         groupedHelpers[phone].flatDetails.push(`${flatData.Block.name}-${flatData.flat_number}`);
         groupedHelpers[phone].flatIds.push(h.flat_id);
       }
@@ -216,6 +211,8 @@ exports.getSocietyDailyHelps = async (req, res) => {
       }
 
       result.push({
+        id: `HH_${helper.phone || helper.name}`,
+        type: "HOUSEHOLD_MEMBER",
         name: helper.name,
         phone: helper.phone,
         roles: Array.from(helper.roles).join(', '),
@@ -223,6 +220,49 @@ exports.getSocietyDailyHelps = async (req, res) => {
         flatIds: helper.flatIds, 
         status: status
       });
+    }
+
+    // 5. For Guard & Community Roles: Also include Society Cleaning Staff
+    if (isCommunityRole && req.user.society_id) {
+      const society = await Society.findByPk(req.user.society_id, { attributes: ["id", "name"] });
+      const societyName = society?.name || "Society Common Area";
+
+      const cleaningStaffList = await CleaningStaff.findAll({
+        where: {
+          society_id: req.user.society_id,
+          status: "ACTIVE",
+        },
+        order: [["name", "ASC"]],
+      });
+
+      const today = getCurrentISTDate();
+
+      for (const cs of cleaningStaffList) {
+        const attendance = await CleaningStaffAttendance.findOne({
+          where: {
+            cleaning_staff_id: cs.id,
+            attendance_date: today,
+          },
+        });
+
+        let csStatus = "OUTSIDE";
+        if (attendance && attendance.check_in && !attendance.check_out) {
+          csStatus = "INSIDE";
+        }
+
+        result.push({
+          id: `CS_${cs.id}`,
+          cleaningStaffId: cs.id,
+          type: "CLEANING_STAFF",
+          name: cs.name,
+          phone: cs.phone,
+          roles: cs.designation || "Cleaning Staff",
+          flats: societyName,
+          flatIds: [],
+          status: csStatus,
+          avatar: cs.profile_picture || null,
+        });
+      }
     }
 
     console.log(`[SUCCESS] Sending Payload:`, JSON.stringify(result, null, 2));

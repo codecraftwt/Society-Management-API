@@ -32,6 +32,9 @@ const UserDocuments = require("../models/UserDocuments");
 const ResidentHistory = require("../models/ResidentHistory");
 const MaintenanceRate = require("../models/MaintenanceRate");
 const UserSetting = require("../models/UserSetting");
+const { assertSeedAllowed } = require("./seedGuard");
+
+assertSeedAllowed("demoData.js", { requireDatabaseConfirmation: true });
 
 const daysFromNow = (n) => {
   const d = new Date();
@@ -43,6 +46,12 @@ const addHours = (n) => {
   const d = new Date();
   d.setHours(d.getHours() + n);
   return d;
+};
+
+/* Normalise "HH:mm" to the "HH:mm:ss" form the `slots` array expects. */
+const toTime = (t) => {
+  if (!t) return null;
+  return /^\d{2}:\d{2}$/.test(t) ? `${t}:00` : t;
 };
 
 /* Wipe any previously-seeded demo society (and only its rows) so the script
@@ -116,8 +125,20 @@ const seed = async () => {
         console.log("OTP is sent to the registered email on login");
         process.exit(0);
       }
-      await cleanupSociety(existing.id);
-    }
+  if (!process.env.ALLOW_DESTRUCTIVE_SEED) {
+    throw new Error(
+      "Refusing to re-seed: 'Green Meadows Society' exists but has no users, so this run would " +
+      "DELETE that society's rows via cleanupSociety().\n" +
+      "Set ALLOW_DESTRUCTIVE_SEED=true to accept that, or restore the data."
+    );
+  }
+
+  console.warn(
+    `⚠️  DESTRUCTIVE RE-SEED: deleting all existing rows for society id ${societyId} ` +
+    `in "${process.env.DB_NAME}" before re-seeding.`
+  );
+  await cleanupSociety(existing.id);
+}
 
     const PASSWORD = await bcrypt.hash("Admin@123", 10);
     const RESIDENTS = [];
@@ -564,10 +585,38 @@ const seed = async () => {
     const pool = await Amenity.create({ society_id: society.id, name: "Swimming Pool", icon: "pool", type: "PAID", booking_type: "SLOT", rate_per_hour: 200, opening_time: "07:00", closing_time: "20:00", slot_duration: 60, capacity: 20, is_active: true, requires_approval: false });
     const hall = await Amenity.create({ society_id: society.id, name: "Party Hall", icon: "celebration", type: "PAID", booking_type: "FULL_DAY", rate_per_hour: 800, opening_time: "08:00", closing_time: "23:00", slot_duration: 120, capacity: 100, is_active: true, requires_approval: true });
 
-    await AmenityBooking.create({ society_id: society.id, amenity_id: clubhouse.id, user_id: RESIDENTS[0].id, flat_id: flatA1.id, date: daysFromNow(3), start_time: "10:00", end_time: "14:00", status: "APPROVED", payment_status: "PAID" });
-    await AmenityBooking.create({ society_id: society.id, amenity_id: gym.id, user_id: RESIDENTS[3].id, flat_id: flatB1.id, date: daysFromNow(1), start_time: "06:00", end_time: "07:00", status: "APPROVED", payment_status: "NA" });
-    await AmenityBooking.create({ society_id: society.id, amenity_id: pool.id, user_id: RESIDENTS[4].id, flat_id: flatB2.id, date: daysFromNow(2), start_time: "08:00", end_time: "09:00", status: "PENDING", payment_status: "PAID" });
-    await AmenityBooking.create({ society_id: society.id, amenity_id: hall.id, user_id: RESIDENTS[6].id, flat_id: flatC1.id, date: daysFromNow(5), start_time: "18:00", end_time: "22:00", status: "PAYMENT_PENDING", payment_status: "PENDING" });
+    /* AmenityBooking requires the inclusive range (from_date/to_date) and a
+       `slots` array. Earlier revisions of this seed omitted them, so seeding a
+       fresh database failed with "from_date cannot be null". */
+    const seedBooking = (amenity, userId, flatId, date, startTime, endTime, status, paymentStatus) =>
+      AmenityBooking.create({
+        society_id: society.id,
+        amenity_id: amenity.id,
+        user_id: userId,
+        flat_id: flatId,
+        date,
+        from_date: date,
+        to_date: date,
+        slots: [
+          {
+            date,
+            start_time: amenity.booking_type === "FULL_DAY" ? "00:00:00" : toTime(startTime),
+            end_time: amenity.booking_type === "FULL_DAY" ? "23:59:59" : toTime(endTime),
+          },
+        ],
+        start_time: startTime,
+        end_time: endTime,
+        status,
+        payment_status: paymentStatus,
+        razorpay_order_id: null,
+        razorpay_payment_id: null,
+        payment_expires_at: null,
+      });
+
+    await seedBooking(clubhouse, RESIDENTS[0].id, flatA1.id, daysFromNow(3), "10:00", "14:00", "APPROVED", "PAID");
+    await seedBooking(gym, RESIDENTS[3].id, flatB1.id, daysFromNow(1), "06:00", "07:00", "APPROVED", "NA");
+    await seedBooking(pool, RESIDENTS[4].id, flatB2.id, daysFromNow(2), "08:00", "09:00", "PENDING", "PAID");
+    await seedBooking(hall, RESIDENTS[6].id, flatC1.id, daysFromNow(5), "18:00", "22:00", "PAYMENT_PENDING", "PENDING");
 
     /* ════════════════════════════════════════════════
        14. DOCUMENTS

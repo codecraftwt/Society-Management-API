@@ -4,17 +4,31 @@ const Notification = require("../models/Notification");
 const User = require("../models/User");
 const UserSetting = require("../models/UserSetting");
 const Flat = require("../models/Flat");
+const Block = require("../models/Block");
+const Floor = require("../models/Floor");
 const FlatMembership = require("../models/FlatMembership");
 const AccountantAssignment = require("../models/AccountantAssignment");
 const { sendPushNotification } = require("../utils/pushNotification");
 const { Op } = require("sequelize");
+const {
+  getUserAuthorizedFlatIds,
+  getFlatAuthorizedUserIds,
+  isUserAuthorizedForFlat,
+} = require("../utils/accessHelpers");
 
 /* ════════════════════════════════════════
    CREATE NOTICE
 ════════════════════════════════════════ */
 const createNotice = async (req, res) => {
   try {
-    const { title, description, acknowledgement_required, society_id } = req.body;
+    const {
+      title,
+      description,
+      acknowledgement_required,
+      society_id,
+      target_type,
+      target_flat_id,
+    } = req.body;
 
     let fileUrl = null;
     if (req.file) {
@@ -22,7 +36,8 @@ const createNotice = async (req, res) => {
       fileUrl = `${req.file.path}?filename=${originalName}`;
     }
 
-    const isAckRequired = acknowledgement_required === true || acknowledgement_required === "true";
+    const isAckRequired =
+      acknowledgement_required === true || acknowledgement_required === "true";
 
     const targetSocietyId = society_id
       ? parseInt(society_id, 10)
@@ -31,7 +46,42 @@ const createNotice = async (req, res) => {
       : req.user.society_id;
 
     if (!targetSocietyId || isNaN(targetSocietyId)) {
-      return res.status(400).json({ message: "Please select a valid society to publish this notice." });
+      return res
+        .status(400)
+        .json({ message: "Please select a valid society to publish this notice." });
+    }
+
+    // Audience targeting validation
+    let finalTargetType = "SOCIETY";
+    let finalTargetFlatId = null;
+
+    if (target_type === "FLAT") {
+      if (!target_flat_id) {
+        return res
+          .status(400)
+          .json({ message: "A specific flat must be selected for flat-targeted notices." });
+      }
+
+      const flatIdNum = parseInt(target_flat_id, 10);
+      const verifiedFlat = await Flat.findOne({
+        where: { id: flatIdNum },
+        include: [
+          {
+            model: Block,
+            where: { society_id: targetSocietyId },
+            required: true,
+          },
+        ],
+      });
+
+      if (!verifiedFlat) {
+        return res.status(400).json({
+          message: "The selected flat does not belong to the chosen society.",
+        });
+      }
+
+      finalTargetType = "FLAT";
+      finalTargetFlatId = flatIdNum;
     }
 
     const callerRole = req.user.activeRole || req.user.role;
@@ -41,77 +91,185 @@ const createNotice = async (req, res) => {
       society_id: targetSocietyId,
       file_url: fileUrl,
       acknowledgement_required: isAckRequired,
+      target_type: finalTargetType,
+      target_flat_id: finalTargetFlatId,
       created_by_user_id: req.user.id,
-      created_by_name: req.user.name || (callerRole === "COMMITTEE_MEMBER" ? "Committee Member" : "Society Admin"),
+      created_by_name:
+        req.user.name ||
+        (callerRole === "COMMITTEE_MEMBER" ? "Committee Member" : "Society Admin"),
       created_by_role: callerRole,
     });
 
-    // Emit to society room for real-time notice board update
-    if (global.io) {
-      global.io
-        .to(`society_${targetSocietyId}`)
-        .emit("notice_created", notice);
-    }
-
-    // Fetch residents to notify
-    const residents = await User.findAll({
-      where: {
-        society_id: targetSocietyId,
-        role: { [Op.in]: ["RESIDENT", "FAMILY_MEMBER", "COMMITTEE_MEMBER", "SOCIETY_ADMIN"] },
-        status: "ACTIVE",
-        id: { [Op.ne]: req.user.id }, // never notify the sender
-      },
-      attributes: ["id", "fcm_token"],
+    const fullNotice = await Notice.findByPk(notice.id, {
+      include: [
+        {
+          model: Flat,
+          as: "targetFlat",
+          attributes: ["id", "flat_number"],
+          include: [
+            {
+              model: Floor,
+              attributes: ["id", "floor_number"],
+              include: [{ model: Block, attributes: ["id", "name"] }],
+            },
+          ],
+        },
+      ],
     });
 
-    const residentIds = residents.map((r) => r.id);
-    const allSettings = await UserSetting.findAll({
-      where: { user_id: residentIds },
-      attributes: ["user_id", "notice_updates"],
-    });
-    const settingsMap = Object.fromEntries(
-      allSettings.map((s) => [s.user_id, s])
-    );
+    // ── Targeted Notifications & Socket.IO ──
+    if (finalTargetType === "FLAT") {
+      // 1. Resolve authorized users of this specific flat
+      const targetUserIds = await getFlatAuthorizedUserIds(
+        finalTargetFlatId,
+        targetSocietyId
+      );
+      const recipientUserIds = targetUserIds.filter((id) => id !== req.user.id);
 
-    for (const resident of residents) {
-      const settings = settingsMap[resident.id];
+      // Emit to targeted user rooms only
+      if (global.io) {
+        for (const uid of targetUserIds) {
+          global.io.to(`user_${uid}`).emit("notice_created", fullNotice || notice);
+        }
+        // Also emit to society admin room so admins see it on their panel
+        global.io
+          .to(`society_${targetSocietyId}_admins`)
+          .emit("notice_created", fullNotice || notice);
+      }
 
-      if (!settings || settings.notice_updates === true) {
-        const notification = await Notification.create({
-          title: "Society Notice",
-          message: `📢 New notice posted: "${title}"`,
-          type: "NOTICE",
-          action_type: "VIEW_NOTICE",
-          action_route: "/resident/notices",
-          society_id: targetSocietyId,
-          user_id: req.user.id,
-          receiver_role: "RESIDENT",
-          receiver_user_id: resident.id,
+      if (recipientUserIds.length > 0) {
+        const recipients = await User.findAll({
+          where: {
+            id: { [Op.in]: recipientUserIds },
+            status: "ACTIVE",
+          },
+          attributes: ["id", "fcm_token"],
         });
 
-        if (global.io) {
-          global.io
-            .to(`user_${resident.id}`)
-            .emit("new_notification", notification);
-        }
+        const allSettings = await UserSetting.findAll({
+          where: { user_id: recipientUserIds },
+          attributes: ["user_id", "notice_updates"],
+        });
+        const settingsMap = Object.fromEntries(
+          allSettings.map((s) => [s.user_id, s])
+        );
 
-        if (resident.fcm_token) {
-          sendPushNotification(
-            resident.fcm_token,
-            "New Society Notice",
-            `📢 "${title}" has been posted.`,
-            { route: "/resident/notices", type: "NOTICE", noticeId: notice.id.toString() }
-          ).catch((err) => console.error("Push Error:", err));
+        for (const recipient of recipients) {
+          const settings = settingsMap[recipient.id];
+          if (!settings || settings.notice_updates === true) {
+            const notification = await Notification.create({
+              title: "Flat Notice",
+              message: `📢 Notice for your flat: "${title}"`,
+              type: "NOTICE",
+              action_type: "VIEW_NOTICE",
+              action_route: "/resident/notices",
+              society_id: targetSocietyId,
+              user_id: req.user.id,
+              receiver_role: "RESIDENT",
+              receiver_user_id: recipient.id,
+            });
+
+            if (global.io) {
+              global.io
+                .to(`user_${recipient.id}`)
+                .emit("new_notification", notification);
+            }
+
+            if (recipient.fcm_token) {
+              sendPushNotification(
+                recipient.fcm_token,
+                "Flat Notice",
+                `📢 Notice for your flat: "${title}"`,
+                {
+                  route: "/resident/notices",
+                  type: "NOTICE",
+                  noticeId: notice.id.toString(),
+                }
+              ).catch((err) => console.error("Push Error:", err));
+            }
+          }
+        }
+      }
+    } else {
+      // Society-wide notice: broadcast to society room
+      if (global.io) {
+        global.io
+          .to(`society_${targetSocietyId}`)
+          .emit("notice_created", fullNotice || notice);
+      }
+
+      // Fetch all eligible society residents
+      const residents = await User.findAll({
+        where: {
+          society_id: targetSocietyId,
+          role: {
+            [Op.in]: [
+              "RESIDENT",
+              "FAMILY_MEMBER",
+              "COMMITTEE_MEMBER",
+              "SOCIETY_ADMIN",
+            ],
+          },
+          status: "ACTIVE",
+          id: { [Op.ne]: req.user.id }, // never notify the sender
+        },
+        attributes: ["id", "fcm_token"],
+      });
+
+      const residentIds = residents.map((r) => r.id);
+      const allSettings = await UserSetting.findAll({
+        where: { user_id: residentIds },
+        attributes: ["user_id", "notice_updates"],
+      });
+      const settingsMap = Object.fromEntries(
+        allSettings.map((s) => [s.user_id, s])
+      );
+
+      for (const resident of residents) {
+        const settings = settingsMap[resident.id];
+
+        if (!settings || settings.notice_updates === true) {
+          const notification = await Notification.create({
+            title: "Society Notice",
+            message: `📢 New notice posted: "${title}"`,
+            type: "NOTICE",
+            action_type: "VIEW_NOTICE",
+            action_route: "/resident/notices",
+            society_id: targetSocietyId,
+            user_id: req.user.id,
+            receiver_role: "RESIDENT",
+            receiver_user_id: resident.id,
+          });
+
+          if (global.io) {
+            global.io
+              .to(`user_${resident.id}`)
+              .emit("new_notification", notification);
+          }
+
+          if (resident.fcm_token) {
+            sendPushNotification(
+              resident.fcm_token,
+              "New Society Notice",
+              `📢 "${title}" has been posted.`,
+              {
+                route: "/resident/notices",
+                type: "NOTICE",
+                noticeId: notice.id.toString(),
+              }
+            ).catch((err) => console.error("Push Error:", err));
+          }
         }
       }
     }
 
-    res.status(200).json(notice);
+    res.status(200).json(fullNotice || notice);
   } catch (err) {
     console.error("Create Notice Error:", err);
     res.status(500).json({ message: err.message });
   }
 };
+
 
 /* ════════════════════════════════════════
    UPDATE NOTICE
@@ -119,21 +277,37 @@ const createNotice = async (req, res) => {
 const updateNotice = async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, description, acknowledgement_required } = req.body;
+    const {
+      title,
+      description,
+      acknowledgement_required,
+      target_type,
+      target_flat_id,
+    } = req.body;
 
     const notice = await Notice.findByPk(id);
     if (!notice) return res.status(404).json({ message: "Notice not found" });
 
-    if (req.user.role !== "SUPER_ADMIN" && String(notice.society_id) !== String(req.user.society_id)) {
+    if (
+      req.user.role !== "SUPER_ADMIN" &&
+      String(notice.society_id) !== String(req.user.society_id)
+    ) {
       return res.status(403).json({ message: "Access denied" });
     }
 
     const callerRole = req.user.activeRole || req.user.role;
     if (callerRole === "COMMITTEE_MEMBER") {
-      const isCreatedByAdmin = notice.created_by_role === "SOCIETY_ADMIN" || notice.created_by_role === "SUPER_ADMIN" || !notice.created_by_role;
-      const isDifferentUser = notice.created_by_user_id && Number(notice.created_by_user_id) !== Number(req.user.id);
+      const isCreatedByAdmin =
+        notice.created_by_role === "SOCIETY_ADMIN" ||
+        notice.created_by_role === "SUPER_ADMIN" ||
+        !notice.created_by_role;
+      const isDifferentUser =
+        notice.created_by_user_id &&
+        Number(notice.created_by_user_id) !== Number(req.user.id);
       if (isCreatedByAdmin || isDifferentUser) {
-        return res.status(403).json({ message: "Committee members cannot modify Admin-created notices" });
+        return res.status(403).json({
+          message: "Committee members cannot modify Admin-created notices",
+        });
       }
     }
 
@@ -145,7 +319,45 @@ const updateNotice = async (req, res) => {
 
     let isAckRequired = notice.acknowledgement_required;
     if (acknowledgement_required !== undefined) {
-      isAckRequired = acknowledgement_required === true || acknowledgement_required === "true";
+      isAckRequired =
+        acknowledgement_required === true || acknowledgement_required === "true";
+    }
+
+    let finalTargetType = notice.target_type || "SOCIETY";
+    let finalTargetFlatId = notice.target_flat_id || null;
+
+    if (target_type !== undefined) {
+      if (target_type === "FLAT") {
+        const flatIdNum = parseInt(target_flat_id || notice.target_flat_id, 10);
+        if (!flatIdNum) {
+          return res.status(400).json({
+            message: "A specific flat must be selected for flat-targeted notices.",
+          });
+        }
+
+        const verifiedFlat = await Flat.findOne({
+          where: { id: flatIdNum },
+          include: [
+            {
+              model: Block,
+              where: { society_id: notice.society_id },
+              required: true,
+            },
+          ],
+        });
+
+        if (!verifiedFlat) {
+          return res.status(400).json({
+            message: "The selected flat does not belong to the notice's society.",
+          });
+        }
+
+        finalTargetType = "FLAT";
+        finalTargetFlatId = flatIdNum;
+      } else {
+        finalTargetType = "SOCIETY";
+        finalTargetFlatId = null;
+      }
     }
 
     await notice.update({
@@ -153,9 +365,28 @@ const updateNotice = async (req, res) => {
       description: description || notice.description,
       file_url: fileUrl,
       acknowledgement_required: isAckRequired,
+      target_type: finalTargetType,
+      target_flat_id: finalTargetFlatId,
     });
 
-    res.status(200).json(notice);
+    const updatedNotice = await Notice.findByPk(notice.id, {
+      include: [
+        {
+          model: Flat,
+          as: "targetFlat",
+          attributes: ["id", "flat_number"],
+          include: [
+            {
+              model: Floor,
+              attributes: ["id", "floor_number"],
+              include: [{ model: Block, attributes: ["id", "name"] }],
+            },
+          ],
+        },
+      ],
+    });
+
+    res.status(200).json(updatedNotice || notice);
   } catch (err) {
     console.error("Update Notice Error:", err);
     res.status(500).json({ message: err.message });
@@ -171,16 +402,26 @@ const deleteNotice = async (req, res) => {
     const notice = await Notice.findByPk(id);
     if (!notice) return res.status(404).json({ message: "Notice not found" });
 
-    if (req.user.role !== "SUPER_ADMIN" && String(notice.society_id) !== String(req.user.society_id)) {
+    if (
+      req.user.role !== "SUPER_ADMIN" &&
+      String(notice.society_id) !== String(req.user.society_id)
+    ) {
       return res.status(403).json({ message: "Access denied" });
     }
 
     const callerRole = req.user.activeRole || req.user.role;
     if (callerRole === "COMMITTEE_MEMBER") {
-      const isCreatedByAdmin = notice.created_by_role === "SOCIETY_ADMIN" || notice.created_by_role === "SUPER_ADMIN" || !notice.created_by_role;
-      const isDifferentUser = notice.created_by_user_id && Number(notice.created_by_user_id) !== Number(req.user.id);
+      const isCreatedByAdmin =
+        notice.created_by_role === "SOCIETY_ADMIN" ||
+        notice.created_by_role === "SUPER_ADMIN" ||
+        !notice.created_by_role;
+      const isDifferentUser =
+        notice.created_by_user_id &&
+        Number(notice.created_by_user_id) !== Number(req.user.id);
       if (isCreatedByAdmin || isDifferentUser) {
-        return res.status(403).json({ message: "Committee members cannot delete Admin-created notices" });
+        return res.status(403).json({
+          message: "Committee members cannot delete Admin-created notices",
+        });
       }
     }
 
@@ -194,7 +435,7 @@ const deleteNotice = async (req, res) => {
 };
 
 /* ════════════════════════════════════════
-   GET NOTICES  (paginated + search + ack state)
+   GET NOTICES  (paginated + search + ack state + audience filter)
 ════════════════════════════════════════ */
 const getNotices = async (req, res) => {
   try {
@@ -203,32 +444,99 @@ const getNotices = async (req, res) => {
     const offset = (page - 1) * limit;
 
     const search = (req.query.search || req.query.q || "").trim();
-    const targetSocId = req.headers["x-society-id"] || req.query.society_id || req.user.society_id;
-    const where = targetSocId ? { society_id: targetSocId } : {};
+    const targetSocId =
+      req.headers["x-society-id"] ||
+      req.query.society_id ||
+      req.user.society_id;
+
+    const callerRole = req.user.activeRole || req.user.role;
+    const isAdminOrStaff = [
+      "SUPER_ADMIN",
+      "SOCIETY_ADMIN",
+      "COMMITTEE_MEMBER",
+      "ACCOUNTANT",
+    ].includes(callerRole);
+
+    const andConditions = [];
+    if (targetSocId) {
+      andConditions.push({ society_id: targetSocId });
+    }
+
+    // ── Audience Scoping for Residents / Family Members ──
+    if (!isAdminOrStaff) {
+      const authorizedFlatIds = await getUserAuthorizedFlatIds(
+        req.user.id,
+        targetSocId
+      );
+
+      const audienceOr = [
+        { target_type: "SOCIETY" },
+        { target_type: null },
+      ];
+
+      if (authorizedFlatIds.length > 0) {
+        audienceOr.push({
+          target_type: "FLAT",
+          target_flat_id: { [Op.in]: authorizedFlatIds },
+        });
+      }
+
+      andConditions.push({ [Op.or]: audienceOr });
+    }
 
     if (search) {
-      where[Op.or] = [
-        { title: { [Op.like]: `%${search}%` } },
-        { description: { [Op.like]: `%${search}%` } },
-      ];
+      andConditions.push({
+        [Op.or]: [
+          { title: { [Op.like]: `%${search}%` } },
+          { description: { [Op.like]: `%${search}%` } },
+        ],
+      });
     }
+
+    const where = andConditions.length > 0 ? { [Op.and]: andConditions } : {};
 
     const { count, rows: notices } = await Notice.findAndCountAll({
       where,
+      include: [
+        {
+          model: Flat,
+          as: "targetFlat",
+          attributes: ["id", "flat_number"],
+          include: [
+            {
+              model: Floor,
+              attributes: ["id", "floor_number"],
+              include: [{ model: Block, attributes: ["id", "name"] }],
+            },
+          ],
+        },
+      ],
       order: [["created_at", "DESC"]],
       limit,
       offset,
     });
 
     const totalAll = search
-      ? await Notice.count({ where: targetSocId ? { society_id: targetSocId } : {} })
+      ? await Notice.count({
+          where:
+            andConditions.filter((c) => !c[Op.or] || c[Op.or][0]?.title === undefined).length > 0
+              ? {
+                  [Op.and]: andConditions.filter(
+                    (c) => !c[Op.or] || c[Op.or][0]?.title === undefined
+                  ),
+                }
+              : {},
+        })
       : count;
 
     // Attach acknowledgement status for logged-in user
     const noticeIds = notices.map((n) => n.id);
-    const acks = await NoticeAcknowledgement.findAll({
-      where: { notice_id: noticeIds, user_id: req.user.id },
-    });
+    const acks =
+      noticeIds.length > 0
+        ? await NoticeAcknowledgement.findAll({
+            where: { notice_id: noticeIds, user_id: req.user.id },
+          })
+        : [];
     const ackMap = Object.fromEntries(acks.map((a) => [a.notice_id, a]));
 
     const decoratedNotices = notices.map((n) => {
@@ -263,6 +571,7 @@ const getNotices = async (req, res) => {
       totalAll,
     });
   } catch (err) {
+    console.error("Get Notices Error:", err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -276,8 +585,30 @@ const viewNotice = async (req, res) => {
     const notice = await Notice.findByPk(id);
     if (!notice) return res.status(404).json({ message: "Notice not found" });
 
-    if (req.user.role !== "SUPER_ADMIN" && String(notice.society_id) !== String(req.user.society_id)) {
+    if (
+      req.user.role !== "SUPER_ADMIN" &&
+      String(notice.society_id) !== String(req.user.society_id)
+    ) {
       return res.status(403).json({ message: "Access denied" });
+    }
+
+    const callerRole = req.user.activeRole || req.user.role;
+    const isAdminOrStaff = [
+      "SUPER_ADMIN",
+      "SOCIETY_ADMIN",
+      "COMMITTEE_MEMBER",
+      "ACCOUNTANT",
+    ].includes(callerRole);
+
+    if (!isAdminOrStaff && notice.target_type === "FLAT") {
+      const isAuthorized = await isUserAuthorizedForFlat(
+        req.user.id,
+        notice.target_flat_id,
+        notice.society_id
+      );
+      if (!isAuthorized) {
+        return res.status(403).json({ message: "Access denied" });
+      }
     }
 
     let ack = await NoticeAcknowledgement.findOne({
@@ -324,12 +655,36 @@ const acknowledgeNotice = async (req, res) => {
     const notice = await Notice.findByPk(id);
     if (!notice) return res.status(404).json({ message: "Notice not found" });
 
-    if (req.user.role !== "SUPER_ADMIN" && String(notice.society_id) !== String(req.user.society_id)) {
+    if (
+      req.user.role !== "SUPER_ADMIN" &&
+      String(notice.society_id) !== String(req.user.society_id)
+    ) {
       return res.status(403).json({ message: "Access denied" });
     }
 
+    const callerRole = req.user.activeRole || req.user.role;
+    const isAdminOrStaff = [
+      "SUPER_ADMIN",
+      "SOCIETY_ADMIN",
+      "COMMITTEE_MEMBER",
+      "ACCOUNTANT",
+    ].includes(callerRole);
+
+    if (!isAdminOrStaff && notice.target_type === "FLAT") {
+      const isAuthorized = await isUserAuthorizedForFlat(
+        req.user.id,
+        notice.target_flat_id,
+        notice.society_id
+      );
+      if (!isAuthorized) {
+        return res.status(403).json({ message: "Access denied" });
+      }
+    }
+
     if (!notice.acknowledgement_required) {
-      return res.status(400).json({ message: "Acknowledgement is not required for this notice" });
+      return res
+        .status(400)
+        .json({ message: "Acknowledgement is not required for this notice" });
     }
 
     let ack = await NoticeAcknowledgement.findOne({
@@ -365,7 +720,7 @@ const acknowledgeNotice = async (req, res) => {
 
 /* ════════════════════════════════════════
    GET NOTICE ACKNOWLEDGEMENTS HISTORY
-   Authorized for SUPER_ADMIN, SOCIETY_ADMIN, COMMITTEE_MEMBER only.
+   Authorized for SUPER_ADMIN, SOCIETY_ADMIN, COMMITTEE_MEMBER, ACCOUNTANT.
    Rejects residents with 403 Forbidden.
 ════════════════════════════════════════ */
 const getNoticeAcknowledgements = async (req, res) => {
@@ -389,7 +744,7 @@ const getNoticeAcknowledgements = async (req, res) => {
     let hasAccountantAccess = userRoles.has("ACCOUNTANT");
     if (!hasAccountantAccess && req.user.id) {
       const assignment = await AccountantAssignment.findOne({
-        where: { user_id: req.user.id, status: "ACTIVE" }
+        where: { user_id: req.user.id, status: "ACTIVE" },
       });
       if (assignment) hasAccountantAccess = true;
     }
@@ -402,19 +757,42 @@ const getNoticeAcknowledgements = async (req, res) => {
       hasAccountantAccess;
 
     if (!isAllowed) {
-      return res.status(403).json({ message: "Access denied: Resident cannot view acknowledgement history" });
+      return res.status(403).json({
+        message: "Access denied: Resident cannot view acknowledgement history",
+      });
     }
 
-    if (!userRoles.has("SUPER_ADMIN") && String(notice.society_id) !== String(req.user.society_id)) {
-      return res.status(403).json({ message: "Access denied: Notice belongs to another society" });
+    if (
+      !userRoles.has("SUPER_ADMIN") &&
+      String(notice.society_id) !== String(req.user.society_id)
+    ) {
+      return res.status(403).json({
+        message: "Access denied: Notice belongs to another society",
+      });
     }
 
-    // Find intended recipients (active users in society)
+    // Find intended recipients
     const recipientsWhere = {
       society_id: notice.society_id,
       status: "ACTIVE",
-      role: { [Op.in]: ["RESIDENT", "FAMILY_MEMBER", "COMMITTEE_MEMBER", "SOCIETY_ADMIN"] },
     };
+
+    if (notice.target_type === "FLAT" && notice.target_flat_id) {
+      const flatAuthorizedUserIds = await getFlatAuthorizedUserIds(
+        notice.target_flat_id,
+        notice.society_id
+      );
+      recipientsWhere.id = { [Op.in]: flatAuthorizedUserIds.length ? flatAuthorizedUserIds : [-1] };
+    } else {
+      recipientsWhere.role = {
+        [Op.in]: [
+          "RESIDENT",
+          "FAMILY_MEMBER",
+          "COMMITTEE_MEMBER",
+          "SOCIETY_ADMIN",
+        ],
+      };
+    }
 
     if (search && search.trim()) {
       recipientsWhere[Op.or] = [
@@ -432,12 +810,13 @@ const getNoticeAcknowledgements = async (req, res) => {
     const recipientIds = recipients.map((r) => r.id);
 
     // Fetch FlatMemberships for flat numbers
-    const memberships = recipientIds.length > 0
-      ? await FlatMembership.findAll({
-          where: { user_id: { [Op.in]: recipientIds }, is_current: true },
-          include: [{ model: Flat, attributes: ["flat_number"] }],
-        })
-      : [];
+    const memberships =
+      recipientIds.length > 0
+        ? await FlatMembership.findAll({
+            where: { user_id: { [Op.in]: recipientIds }, is_current: true },
+            include: [{ model: Flat, attributes: ["flat_number"] }],
+          })
+        : [];
 
     const flatMap = {};
     memberships.forEach((m) => {
@@ -445,11 +824,12 @@ const getNoticeAcknowledgements = async (req, res) => {
     });
 
     // Fetch acknowledgements
-    const acks = recipientIds.length > 0
-      ? await NoticeAcknowledgement.findAll({
-          where: { notice_id: id, user_id: { [Op.in]: recipientIds } },
-        })
-      : [];
+    const acks =
+      recipientIds.length > 0
+        ? await NoticeAcknowledgement.findAll({
+            where: { notice_id: id, user_id: { [Op.in]: recipientIds } },
+          })
+        : [];
     const ackMap = Object.fromEntries(acks.map((a) => [a.user_id, a]));
 
     let total = recipients.length;
@@ -486,7 +866,9 @@ const getNoticeAcknowledgements = async (req, res) => {
       if (status === "ACKNOWLEDGED") {
         userList = userList.filter((u) => u.status === "ACKNOWLEDGED");
       } else if (status === "VIEWED" || status === "VIEWED_NOT_ACKNOWLEDGED") {
-        userList = userList.filter((u) => u.status === "VIEWED_NOT_ACKNOWLEDGED");
+        userList = userList.filter(
+          (u) => u.status === "VIEWED_NOT_ACKNOWLEDGED"
+        );
       } else if (status === "NOT_VIEWED") {
         userList = userList.filter((u) => u.status === "NOT_VIEWED");
       }
@@ -498,6 +880,8 @@ const getNoticeAcknowledgements = async (req, res) => {
         title: notice.title,
         description: notice.description,
         acknowledgement_required: Boolean(notice.acknowledgement_required),
+        target_type: notice.target_type,
+        target_flat_id: notice.target_flat_id,
         created_at: notice.created_at,
       },
       summary: {

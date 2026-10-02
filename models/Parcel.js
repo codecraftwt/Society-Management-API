@@ -19,9 +19,21 @@ const Parcel = sequelize.define("Parcel", {
     type: DataTypes.INTEGER,
     allowNull: false,
   },
+  requested_by: {
+    type: DataTypes.INTEGER,
+    allowNull: true, // Account that raised/created the parcel entry
+  },
   guard_id: {
     type: DataTypes.INTEGER,
-    allowNull: true, // Guard who accepted/logged it
+    allowNull: true, // Guard who accepted/logged it (legacy - preserved for compatibility)
+  },
+  arrival_guard_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true, // Guard who actually received the parcel at the gate
+  },
+  delivery_guard_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true, // Guard who actually handed the parcel over
   },
   courier_name: {
     type: DataTypes.STRING,
@@ -34,6 +46,10 @@ const Parcel = sequelize.define("Parcel", {
   entry_time: {
     type: DataTypes.DATE,
     allowNull: true,
+  },
+  pickup_time: {
+    type: DataTypes.DATE,
+    allowNull: true, // When the parcel was actually collected
   },
   pickup_code: {
     type: DataTypes.STRING, // Optional: 4-digit code for security

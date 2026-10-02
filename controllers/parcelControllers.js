@@ -9,6 +9,8 @@ const {
   HouseHoldMember,
   GuardShift,
   Floor,
+  Society,
+  sequelize,
 } = require("../models");
 
 const { Op } = require("sequelize");
@@ -93,28 +95,40 @@ const getActiveShiftGuard = async (society_id) => {
   return active ? active.guard_id : null;
 };
 
+/* helper — every association a parcel needs to be rendered with.
+   Shared by the single-row fetch and the list query so the admin, guard and
+   resident payloads stay identical. */
+const PARCEL_INCLUDE = () => [
+  {
+    model: Flat,
+    attributes: ["id", "flat_number", "resident_id"],
+    include: [
+      {
+        model: Floor,
+        attributes: ["floor_number"],
+        include: [{ model: Block, attributes: ["name"] }],
+      },
+      {
+        model: User,
+        attributes: ["id", "name", "phone", "email"],
+      },
+    ],
+  },
+  { model: User, as: "resident", attributes: ["id", "name", "phone", "email"] },
+  { model: User, as: "requester", attributes: ["id", "name", "phone", "email"] },
+  { model: User, as: "arrivalGuard", attributes: ["id", "name", "phone", "email"] },
+  { model: User, as: "deliveryGuard", attributes: ["id", "name", "phone", "email"] },
+  // Legacy guard_id, kept for older rows that predate arrival_guard_id.
+  { model: User, as: "legacyGuard", attributes: ["id", "name", "phone", "email"] },
+  { model: Society, attributes: ["id", "name"] },
+];
+
 /* helper — fetch full parcel row with associations for socket payloads */
 const getFullParcel = (id) =>
   Parcel.findByPk(id, {
-    include: [
-      {
-        model: Flat,
-        attributes: ["id", "flat_number", "resident_id"],
-        include: [
-          {
-            model: Floor,
-            attributes: ["floor_number"],
-            include: [{ model: Block, attributes: ["name"] }],
-          },
-          {
-            model: User,
-            attributes: ["id", "name", "phone", "email"],
-          },
-        ],
-      },
-      { model: User, as: "resident", attributes: ["id", "name", "phone", "email"] },
-    ],
+    include: PARCEL_INCLUDE(),
   });
+
 
 /* ═══════════════════════════════════════
    CREATE PARCEL
@@ -131,6 +145,10 @@ const createParcel = async (req, res) => {
     let status = "AT_GATE";
     let guard_id = null;
     let pickup_code = null;
+    /* Additive: the account that raised this entry, and — for a guard logging a
+       walk-in delivery — that same guard as the real arrival handler. */
+    const requested_by = req.user.id;
+    let arrival_guard_id = null;
 
     /* ── RESIDENT / FAMILY_MEMBER creates expected parcel ── */
     if (activeRole === "RESIDENT" || activeRole === "FAMILY_MEMBER") {
@@ -220,6 +238,7 @@ const createParcel = async (req, res) => {
       }
 
       guard_id = req.user.id;
+      arrival_guard_id = req.user.id;
       pickup_code = generatePickupCode();
 
       const flat = await Flat.findByPk(finalFlatId);
@@ -250,6 +269,8 @@ const createParcel = async (req, res) => {
       resident_id: finalResidentId,
       courier_name,
       guard_id,
+      requested_by,
+      arrival_guard_id,
       status,
       pickup_code,
       entry_time: new Date(),
@@ -295,78 +316,93 @@ const getParcels = async (req, res) => {
     const activeRole = req.user.activeRole ?? req.user.role;
 
     const page = Math.max(parseInt(req.query.page) || 1, 1);
-    const limit = Math.max(parseInt(req.query.limit) || 5, 1);
+    const limit = Math.max(parseInt(req.query.limit) || 10, 1);
     const offset = (page - 1) * limit;
     const status = String(req.query.status || "ALL").toUpperCase();
     const search = String(req.query.search || "").trim();
+    const targetSocietyId = req.query.society_id;
+    const startDate = req.query.startDate || req.query.fromDate;
+    const endDate = req.query.endDate || req.query.toDate;
+    const flatId = req.query.flat_id;
 
-    const whereClause = { society_id };
+    let whereClause = {};
+    if (activeRole === 'SUPER_ADMIN') {
+      if (targetSocietyId && String(targetSocietyId).toUpperCase() !== 'ALL') {
+        whereClause.society_id = targetSocietyId;
+      }
+    } else {
+      whereClause.society_id = society_id;
+    }
 
-    if (activeRole === "RESIDENT" || activeRole === "FAMILY_MEMBER") {
-      /*
-       * For multi-flat owners we want ALL their parcels across every flat,
-       * not just the one tied to resident_id.  Gather every flat_id the
-       * user owns/belongs to and filter on flat_id instead.
-       */
+    if (activeRole === 'RESIDENT' || activeRole === 'FAMILY_MEMBER') {
       const userFlatIds = await getAllFlatIdsForUser(id);
-
       if (!userFlatIds.length) {
         return res.json({
           data: [],
           pagination: { page, limit, totalItems: 0, totalPages: 0 },
+          counts: { ALL: 0, EXPECTED: 0, AT_GATE: 0, COLLECTED: 0, CANCELLED: 0 },
         });
       }
-
-      // Use flat_id IN (...) so multi-flat owners see all their parcels
       whereClause.flat_id = { [Op.in]: userFlatIds };
     }
 
+    if (flatId) {
+      whereClause.flat_id = flatId;
+    }
+
+    if (startDate && endDate) {
+      const s = new Date(startDate);
+      s.setHours(0, 0, 0, 0);
+      const e = new Date(endDate);
+      e.setHours(23, 59, 59, 999);
+      whereClause.createdAt = { [Op.between]: [s, e] };
+    } else if (startDate) {
+      const s = new Date(startDate);
+      s.setHours(0, 0, 0, 0);
+      whereClause.createdAt = { [Op.gte]: s };
+    } else if (endDate) {
+      const e = new Date(endDate);
+      e.setHours(23, 59, 59, 999);
+      whereClause.createdAt = { [Op.lte]: e };
+    }
+
     const listWhere = { ...whereClause };
-    if (["EXPECTED", "AT_GATE", "COLLECTED", "CANCELLED"].includes(status)) {
+    if (['EXPECTED', 'AT_GATE', 'COLLECTED', 'CANCELLED'].includes(status)) {
       listWhere.status = status;
     }
     if (search) {
-      listWhere.courier_name = { [Op.like]: `%${search}%` };
+      listWhere[Op.or] = [
+        { courier_name: { [Op.like]: `%${search}%` } },
+        { pickup_code: { [Op.like]: `%${search}%` } },
+      ];
     }
 
     const { count, rows } = await Parcel.findAndCountAll({
       where: listWhere,
-      include: [
-        {
-          model: Flat,
-          attributes: ["id", "flat_number", "resident_id"],
-          include: [
-            {
-              model: Floor,
-              attributes: ["floor_number"],
-              include: [{ model: Block, attributes: ["name"] }],
-            },
-            {
-              model: User,
-              attributes: ["id", "name", "phone", "email"],
-            },
-          ],
-        },
-        { model: User, as: "resident", attributes: ["id", "name", "phone", "email"] },
-      ],
-      order: [["createdAt", "DESC"]],
+      include: PARCEL_INCLUDE(),
+      order: [['createdAt', 'DESC']],
       limit,
       offset,
       distinct: true,
     });
 
-    const statusRows = await Parcel.findAll({
-      where: whereClause,
-      attributes: ["status", [Parcel.sequelize.fn("COUNT", Parcel.sequelize.col("status")), "cnt"]],
-      group: ["status"],
-      raw: true,
-    });
-
-    const counts = { EXPECTED: 0, AT_GATE: 0, COLLECTED: 0, CANCELLED: 0, ALL: 0 };
-    statusRows.forEach((r) => {
-      if (Object.prototype.hasOwnProperty.call(counts, r.status)) counts[r.status] = Number(r.cnt) || 0;
-    });
-    counts.ALL = counts.EXPECTED + counts.AT_GATE + counts.COLLECTED + counts.CANCELLED;
+    const counts = { ALL: 0, EXPECTED: 0, AT_GATE: 0, COLLECTED: 0, CANCELLED: 0 };
+    try {
+      const statusCounts = await Parcel.findAll({
+        where: whereClause,
+        attributes: ['status', [sequelize.fn('COUNT', sequelize.col('id')), 'cnt']],
+        group: ['status'],
+        raw: true,
+      });
+      statusCounts.forEach((r) => {
+        if (Object.prototype.hasOwnProperty.call(counts, r.status)) {
+          counts[r.status] = Number(r.cnt) || 0;
+        }
+      });
+      counts.ALL = counts.EXPECTED + counts.AT_GATE + counts.COLLECTED + counts.CANCELLED;
+    } catch (cntErr) {
+      console.error('Count error:', cntErr);
+    }
 
     res.json({
       data: rows,
@@ -396,6 +432,10 @@ const updateParcelStatus = async (req, res) => {
 
     const parcel = await Parcel.findByPk(id);
     if (!parcel) return res.status(404).json({ message: "Parcel not found" });
+
+    if (activeRole !== "SUPER_ADMIN" && parcel.society_id !== req.user.society_id) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
 
     const isManager =
       activeRole === "SOCIETY_ADMIN" ||
@@ -467,6 +507,13 @@ const updateParcelStatus = async (req, res) => {
       parcel.entry_time = new Date();
       parcel.status = "AT_GATE";
       parcel.guard_id = activeRole === "GUARD" ? req.user.id : parcel.guard_id || req.user.id;
+      /* Only a guard physically at the gate can be recorded as the arrival
+         handler. Managers marking a parcel arrived leave it null rather than
+         borrowing whoever happens to be on shift, and an existing value is
+         never overwritten. */
+      if (activeRole === "GUARD" && !parcel.arrival_guard_id) {
+        parcel.arrival_guard_id = req.user.id;
+      }
       await parcel.save();
 
       const full = await getFullParcel(parcel.id);
@@ -506,7 +553,14 @@ const updateParcelStatus = async (req, res) => {
       }
 
       parcel.status = "COLLECTED";
-      parcel.pickup_time = new Date();
+      /* First successful handover wins — later re-saves must not move the
+         recorded pickup moment. */
+      if (!parcel.pickup_time) {
+        parcel.pickup_time = new Date();
+      }
+      if (activeRole === "GUARD" && !parcel.delivery_guard_id) {
+        parcel.delivery_guard_id = req.user.id;
+      }
       await parcel.save();
 
       const full = await getFullParcel(parcel.id);
@@ -542,10 +596,23 @@ const updateParcelStatus = async (req, res) => {
 const getParcelById = async (req, res) => {
   try {
     const { id } = req.params;
+    const activeRole = req.user.activeRole ?? req.user.role;
     const parcel = await getFullParcel(id);
     if (!parcel) {
       return res.status(404).json({ success: false, message: "Parcel not found" });
     }
+
+    if (activeRole !== 'SUPER_ADMIN' && parcel.society_id !== req.user.society_id) {
+      return res.status(403).json({ success: false, message: "Forbidden" });
+    }
+
+    if (activeRole === 'RESIDENT' || activeRole === 'FAMILY_MEMBER') {
+      const userFlatIds = await getAllFlatIdsForUser(req.user.id);
+      if (!userFlatIds.includes(parcel.flat_id)) {
+        return res.status(403).json({ success: false, message: "Forbidden" });
+      }
+    }
+
     return res.json({ success: true, data: parcel });
   } catch (err) {
     console.error(err);
@@ -554,3 +621,4 @@ const getParcelById = async (req, res) => {
 };
 
 module.exports = { createParcel, getParcels, updateParcelStatus, getParcelById };
+

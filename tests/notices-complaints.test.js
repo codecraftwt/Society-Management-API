@@ -59,6 +59,40 @@ describe("Notices API", () => {
     const res = await request(app).delete("/api/notices/99999999").set(headers);
     expect(res.status).toBeLessThan(500);
   });
+
+  it("handles flat-targeted notices (target_type: FLAT)", async () => {
+    const { headers: adminHeaders } = await login("admin");
+    const { headers: residentHeaders } = await login("resident");
+
+    // Fetch flats to get a valid flat ID
+    const flatsRes = await request(app).get("/api/flats").set(adminHeaders);
+    if (flatsRes.status === 200 && Array.isArray(flatsRes.body) && flatsRes.body.length > 0) {
+      const targetFlat = flatsRes.body[0];
+      const title = unique("Flat Notice");
+
+      // Admin creates flat-targeted notice
+      const created = await request(app)
+        .post("/api/notices")
+        .set(adminHeaders)
+        .send({
+          title,
+          description: "Targeted notice for a specific flat",
+          target_type: "FLAT",
+          target_flat_id: targetFlat.id,
+        });
+      expect([200, 201]).toContain(created.status);
+
+      const id = created.body?.id || created.body?.notice?.id;
+      if (id) {
+        // Resident retrieves notices
+        const listRes = await request(app).get("/api/notices").set(residentHeaders);
+        expectOk(listRes);
+
+        // Clean up
+        await request(app).delete(`/api/notices/${id}`).set(adminHeaders);
+      }
+    }
+  });
 });
 
 describe("Complaints API", () => {

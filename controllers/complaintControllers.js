@@ -11,6 +11,8 @@ const Floor = require("../models/Floor");
 const { sendPushNotification } = require("../utils/pushNotification");
 const { Op } = require("sequelize");
 const FlatMembership = require("../models/FlatMembership");
+const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
+
 
 
 /* =====
@@ -395,6 +397,18 @@ const updateStatus = async (req, res) => {
       return res.status(400).json({ message: "Complaint title is required." });
     }
 
+    /* Resident-only creation.
+       roleMiddleware.js implicitly adds "RESIDENT" to every SOCIETY_ADMIN (and
+       COMMITTEE_MEMBER), so the route-level role("RESIDENT") gate alone lets an
+       admin through. Check the caller's actual primary/active role instead —
+       never the expanded roles array — and reject before any write. */
+    const primaryRole = user.activeRole || user.role;
+    if (primaryRole !== "RESIDENT") {
+      return res.status(403).json({
+        message: "Only residents can raise complaints.",
+      });
+    }
+
     let targetFlatId = flat_id;
 
     // If the user is a TENANT, auto-fetch their assigned flat
@@ -478,8 +492,10 @@ const updateStatus = async (req, res) => {
 ===== */
 const getMyComplaints = async (req, res) => {
   try {
-    const primaryId = await getPrimaryResidentId(req.user.id);
     const userId = req.user.id;
+    const primaryId = await getPrimaryResidentId(userId);
+    const userSocietyId = req.user.society_id;
+    const authorizedFlatIds = await getUserAuthorizedFlatIds(userId, userSocietyId);
 
     const page   = Math.max(1, parseInt(req.query.page)  || 1);
     const limit  = Math.min(100, parseInt(req.query.limit) || 10);
@@ -490,8 +506,23 @@ const getMyComplaints = async (req, res) => {
     const dateFrom = req.query.dateFrom || "";
     const dateTo   = req.query.dateTo   || "";
 
-    // ── Build WHERE ──
-    const where = { resident_id: primaryId };
+    // ── Build Base Visibility WHERE (Creator OR Authorized Flat Member) ──
+    const creatorConditions = [{ resident_id: userId }];
+    if (primaryId && primaryId !== userId) {
+      creatorConditions.push({ resident_id: primaryId });
+    }
+
+    const visibilityOr = [...creatorConditions];
+    if (authorizedFlatIds.length > 0) {
+      visibilityOr.push({ flat_id: { [Op.in]: authorizedFlatIds } });
+    }
+
+    const baseWhere = {
+      society_id: userSocietyId,
+      [Op.or]: visibilityOr,
+    };
+
+    const where = { ...baseWhere };
 
     if (filter === "PENDING") {
       where.status = { [Op.in]: ["OPEN", "PENDING"] };
@@ -502,28 +533,50 @@ const getMyComplaints = async (req, res) => {
     }
 
     if (search) {
-      where[Op.or] = [
-        { title:       { [Op.like]: `%${search}%` } },
-        { description: { [Op.like]: `%${search}%` } },
+      where[Op.and] = [
+        {
+          [Op.or]: [
+            { title:       { [Op.like]: `%${search}%` } },
+            { description: { [Op.like]: `%${search}%` } },
+          ],
+        },
       ];
     }
 
     if (dateFrom || dateTo) {
-      where.created_at = {};
+      const createdAtFilter = {};
       if (dateFrom) {
         const from = new Date(dateFrom);
         from.setHours(0, 0, 0, 0);
-        where.created_at[Op.gte] = from;
+        createdAtFilter[Op.gte] = from;
       }
       if (dateTo) {
         const to = new Date(dateTo);
         to.setHours(23, 59, 59, 999);
-        where.created_at[Op.lte] = to;
+        createdAtFilter[Op.lte] = to;
       }
+      where.created_at = createdAtFilter;
     }
 
     const { count, rows } = await Complaint.findAndCountAll({
       where,
+      include: [
+        {
+          model: User,
+          attributes: ["id", "name", "role", "resident_type"],
+        },
+        {
+          model: Flat,
+          attributes: ["id", "flat_number"],
+          include: [
+            {
+              model: Floor,
+              attributes: ["id", "floor_number"],
+              include: [{ model: Block, attributes: ["id", "name"] }],
+            },
+          ],
+        },
+      ],
       order: [["created_at", "DESC"]],
       limit,
       offset,
@@ -531,12 +584,12 @@ const getMyComplaints = async (req, res) => {
 
     const complaintIds = rows.map(c => c.id);
 
-    // ── Tab counts (always resident-scoped, ignoring search/date) ──
+    // ── Tab counts (always resident/flat-scoped, ignoring search/date) ──
     const [totalAll, totalPending, totalInProgress, totalResolved] = await Promise.all([
-      Complaint.count({ where: { resident_id: primaryId } }),
-      Complaint.count({ where: { resident_id: primaryId, status: { [Op.in]: ["OPEN", "PENDING"] } } }),
-      Complaint.count({ where: { resident_id: primaryId, status: "IN_PROGRESS" } }),
-      Complaint.count({ where: { resident_id: primaryId, status: "RESOLVED" } }),
+      Complaint.count({ where: baseWhere }),
+      Complaint.count({ where: { ...baseWhere, status: { [Op.in]: ["OPEN", "PENDING"] } } }),
+      Complaint.count({ where: { ...baseWhere, status: "IN_PROGRESS" } }),
+      Complaint.count({ where: { ...baseWhere, status: "RESOLVED" } }),
     ]);
 
     if (complaintIds.length === 0) {
@@ -620,9 +673,16 @@ const deleteComplaint = async (req, res) => {
     const complaint = await Complaint.findByPk(req.params.id);
     if (!complaint) return res.status(404).json({ message: "Not found" });
 
+    const primaryId = await getPrimaryResidentId(req.user.id);
+    const authorizedFlatIds = await getUserAuthorizedFlatIds(req.user.id, req.user.society_id);
+    const isCreator = complaint.resident_id === req.user.id || complaint.resident_id === primaryId;
+    const isFlatAuthorized = complaint.flat_id && authorizedFlatIds.includes(Number(complaint.flat_id));
+
+    if (!isCreator && !isFlatAuthorized) {
+      return res.status(403).json({ message: "Unauthorized to delete this complaint." });
+    }
+
     // ✅ Delete dependent rows before deleting the complaint itself.
-    //    Without this, FK constraints on ComplaintComment.complaint_id
-    //    and ComplaintReadStatus.complaint_id will throw a DB error.
     await ComplaintComment.destroy({ where: { complaint_id: complaint.id } });
     await ComplaintReadStatus.destroy({ where: { complaint_id: complaint.id } });
 

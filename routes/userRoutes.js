@@ -45,7 +45,14 @@ router.post(
   createGuard
 );
 router.get("/guard", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), getGuards);
-router.put("/guard/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), updateGuard);
+router.put(
+  "/guard/:id",
+  auth,
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  uploadProfilePicture.single("photo"),
+  handleProfilePictureUploadErrors,
+  updateGuard
+);
 router.delete("/guard/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), deleteGuard);
 
 router.post("/resident/renew-tenant", auth, role("RESIDENT"), renewTenantLease);

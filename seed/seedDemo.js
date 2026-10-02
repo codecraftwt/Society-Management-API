@@ -35,6 +35,9 @@ const ResidentHistory = require("../models/ResidentHistory");
 const MaintenanceRate = require("../models/MaintenanceRate");
 const UserSetting = require("../models/UserSetting");
 const OtpVerification = require("../models/OtpVerification");
+const { assertSeedAllowed } = require("./seedGuard");
+
+assertSeedAllowed("seedDemo.js", { requireDatabaseConfirmation: true });
 
 const daysFromNow = (n) => {
   const d = new Date();

@@ -6,6 +6,7 @@ const cloudinary       = require("../config/cloudinary");
 const { Readable }     = require("stream");
 const ComplaintReadStatus = require("../models/ComplaintReadStatus");
 const { Op } = require("sequelize");
+const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
 const IMAGE_MIME = /^image\//;
 
 /* Upload buffer to Cloudinary as a PUBLICLY accessible raw file */
@@ -52,6 +53,16 @@ const getComments = async (req, res) => {
     const complaint = await Complaint.findOne({ where });
     if (!complaint) return res.status(404).json({ message: "Complaint not found" });
 
+    // Enforce authorization for residents/family members
+    if (!isSuperAdmin && (req.user.role === "RESIDENT" || req.user.role === "FAMILY_MEMBER")) {
+      const authorizedFlatIds = await getUserAuthorizedFlatIds(req.user.id, req.user.society_id);
+      const isCreator = complaint.resident_id === req.user.id;
+      const isFlatAuthorized = complaint.flat_id && authorizedFlatIds.includes(Number(complaint.flat_id));
+      if (!isCreator && !isFlatAuthorized) {
+        return res.status(403).json({ message: "Access denied" });
+      }
+    }
+
     const comments = await ComplaintComment.findAll({
       where:   { complaint_id: id },
       include: [{ model: User, attributes: ["id", "name", "role", "roles"] }],
@@ -89,10 +100,14 @@ const postComment = async (req, res) => {
     if (!complaint) return res.status(404).json({ message: "Complaint not found" });
 
     if (!isSuperAdmin && (req.user.role === "RESIDENT" || req.user.role === "FAMILY_MEMBER")) {
-      if (complaint.resident_id !== req.user.id) {
-        return res.status(403).json({ message: "Not your complaint" });
+      const authorizedFlatIds = await getUserAuthorizedFlatIds(req.user.id, req.user.society_id);
+      const isCreator = complaint.resident_id === req.user.id;
+      const isFlatAuthorized = complaint.flat_id && authorizedFlatIds.includes(Number(complaint.flat_id));
+      if (!isCreator && !isFlatAuthorized) {
+        return res.status(403).json({ message: "Access denied" });
       }
     }
+
 
     let attachment_url  = null;
     let attachment_type = null;
@@ -225,6 +240,25 @@ const clearComments = async (req, res) => {
 const markComplaintRead = async (req, res) => {
   try {
     const { id } = req.params;
+    const activeRole = req.user.activeRole || req.user.role;
+    const isSuperAdmin = activeRole === "SUPER_ADMIN";
+
+    const where = { id };
+    if (!isSuperAdmin) {
+      where.society_id = req.user.society_id;
+    }
+
+    const complaint = await Complaint.findOne({ where });
+    if (!complaint) return res.status(404).json({ message: "Complaint not found" });
+
+    if (!isSuperAdmin && (req.user.role === "RESIDENT" || req.user.role === "FAMILY_MEMBER")) {
+      const authorizedFlatIds = await getUserAuthorizedFlatIds(req.user.id, req.user.society_id);
+      const isCreator = complaint.resident_id === req.user.id;
+      const isFlatAuthorized = complaint.flat_id && authorizedFlatIds.includes(Number(complaint.flat_id));
+      if (!isCreator && !isFlatAuthorized) {
+        return res.status(403).json({ message: "Access denied" });
+      }
+    }
 
     await ComplaintReadStatus.upsert({
       complaint_id: id,
@@ -239,4 +273,4 @@ const markComplaintRead = async (req, res) => {
   }
 };
 
-module.exports = { getComments, postComment, deleteComment, clearComments, markComplaintRead };
+module.exports = { getComments, postComment, deleteComment, clearComments, markComplaintRead };

@@ -13,7 +13,8 @@ process.env.NODE_ENV = "test";
 global.io = { to: () => ({ emit: () => {} }), emit: () => {}, on: () => {} };
 require("dotenv/config");
 const request = require("supertest");
-const app = require("./app");
+const app = require("../app");
+
 
 const ROUTES = [];
 function walk(stack, base) {

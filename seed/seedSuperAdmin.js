@@ -2,6 +2,9 @@ require("dotenv").config();
 const bcrypt = require("bcryptjs");
 const sequelize = require("../config/db");
 const User = require("../models/User");
+const { assertSeedAllowed } = require("./seedGuard");
+
+assertSeedAllowed("seedSuperAdmin.js", { requireDatabaseConfirmation: true });
 
 const seedSuperAdmin = async () => {
   try {

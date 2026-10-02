@@ -37,6 +37,9 @@ const EmergencyAcknowledgement = require("./EmergencyAcknowledgement");
 const Expense = require("./Expense");
 const LedgerEntry = require("./LedgerEntry");
 const FinancialAuditLog = require("./FinancialAuditLog");
+const CleaningStaff = require("./CleaningStaff");
+const CleaningStaffPass = require("./CleaningStaffPass");
+const CleaningStaffAttendance = require("./CleaningStaffAttendance");
 
 
 
@@ -80,17 +83,22 @@ Bill.belongsTo(Flat, { foreignKey: "flat_id" });
 Bill.hasMany(Payment, { foreignKey: "bill_id" });
 Payment.belongsTo(Bill, { foreignKey: "bill_id" });
 
-// 7. Complaint → User
+// 7. Complaint → User & Flat
 User.hasMany(Complaint, { foreignKey: "resident_id" });
 Complaint.belongsTo(User, { foreignKey: "resident_id" });
+Flat.hasMany(Complaint, { foreignKey: "flat_id" });
+Complaint.belongsTo(Flat, { foreignKey: "flat_id" });
 
 // 8. Complaint → Society
 Society.hasMany(Complaint, { foreignKey: "society_id" });
 Complaint.belongsTo(Society, { foreignKey: "society_id" });
 
-// 9. Notices → Society
+// 9. Notices → Society & Flat
 Society.hasMany(Notice, { foreignKey: "society_id" });
 Notice.belongsTo(Society, { foreignKey: "society_id" });
+Notice.belongsTo(Flat, { foreignKey: "target_flat_id", as: "targetFlat" });
+Flat.hasMany(Notice, { foreignKey: "target_flat_id", as: "targetNotices" });
+
 
 /* ====
    VISITOR ASSOCIATIONS
@@ -268,6 +276,25 @@ Parcel.belongsTo(Flat, {
   foreignKey: "flat_id"
 });
 
+Society.hasMany(Parcel, { foreignKey: "society_id" });
+Parcel.belongsTo(Society, { foreignKey: "society_id" });
+
+/* ── Parcel accountability associations (additive) ──
+   guard_id stays exactly as it was (legacy single-guard column). The new
+   columns keep the two real gate events apart: who received the parcel and
+   who handed it over. Nothing here back-fills existing rows. */
+Parcel.belongsTo(User, { foreignKey: "requested_by",    as: "requester" });
+Parcel.belongsTo(User, { foreignKey: "arrival_guard_id", as: "arrivalGuard" });
+Parcel.belongsTo(User, { foreignKey: "delivery_guard_id", as: "deliveryGuard" });
+
+User.hasMany(Parcel, { foreignKey: "requested_by",     as: "requestedParcels" });
+User.hasMany(Parcel, { foreignKey: "arrival_guard_id", as: "arrivalParcels" });
+User.hasMany(Parcel, { foreignKey: "delivery_guard_id", as: "deliveryParcels" });
+
+// Legacy single-guard reference, exposed read-only for the admin views.
+Parcel.belongsTo(User, { foreignKey: "guard_id", as: "legacyGuard" });
+User.hasMany(Parcel, { foreignKey: "guard_id", as: "legacyParcels" });
+
 User.hasMany(GuardShift, { foreignKey: "guard_id" });
 GuardShift.belongsTo(User, { foreignKey: "guard_id" });
 Society.hasMany(GuardShift, { foreignKey: "society_id" });
@@ -313,6 +340,48 @@ User.hasMany(GuardLog, { foreignKey: "guard_id" });
 GuardLog.belongsTo(Society, { foreignKey: "society_id" });
 Society.hasMany(GuardLog, { foreignKey: "society_id" });
 
+
+/* ====
+   CLEANING STAFF ASSOCIATIONS
+   Cleaning staff are society-owned operational records, not app users, so they
+   live in their own tables and never join the User associations above. Every
+   child row also carries society_id so a read can be scoped without a join.
+==== */
+
+// Society → CleaningStaff
+Society.hasMany(CleaningStaff, { foreignKey: "society_id", as: "cleaningStaff" });
+CleaningStaff.belongsTo(Society, { foreignKey: "society_id" });
+
+// CleaningStaff → passes / attendance
+CleaningStaff.hasMany(CleaningStaffPass, {
+  foreignKey: "cleaning_staff_id",
+  as: "passes",
+  onDelete: "CASCADE",
+});
+CleaningStaffPass.belongsTo(CleaningStaff, {
+  foreignKey: "cleaning_staff_id",
+  as: "cleaningStaff",
+});
+
+CleaningStaff.hasMany(CleaningStaffAttendance, {
+  foreignKey: "cleaning_staff_id",
+  as: "attendance",
+  onDelete: "CASCADE",
+});
+CleaningStaffAttendance.belongsTo(CleaningStaff, {
+  foreignKey: "cleaning_staff_id",
+  as: "cleaningStaff",
+});
+
+// Attendance → the pass that opened it, for audit
+CleaningStaffPass.hasMany(CleaningStaffAttendance, {
+  foreignKey: "pass_id",
+  as: "attendance",
+});
+CleaningStaffAttendance.belongsTo(CleaningStaffPass, {
+  foreignKey: "pass_id",
+  as: "pass",
+});
 
 /* ====
    EXPORTS
@@ -476,4 +545,7 @@ module.exports = {
   Expense,
   LedgerEntry,
   FinancialAuditLog,
+  CleaningStaff,
+  CleaningStaffPass,
+  CleaningStaffAttendance,
 };

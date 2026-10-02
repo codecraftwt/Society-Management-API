@@ -8,6 +8,16 @@ const Notice = sequelize.define("Notice", {
   description: { type: DataTypes.TEXT },
   file_url: { type: DataTypes.STRING, allowNull: true },
   acknowledgement_required: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  target_type: {
+    type: DataTypes.ENUM("SOCIETY", "FLAT"),
+    allowNull: false,
+    defaultValue: "SOCIETY"
+  },
+  target_flat_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: null
+  },
   created_by_user_id: { type: DataTypes.INTEGER, allowNull: true },
   created_by_name: { type: DataTypes.STRING, allowNull: true },
   created_by_role: { type: DataTypes.STRING, allowNull: true },
@@ -19,3 +29,4 @@ const Notice = sequelize.define("Notice", {
 });
 
 module.exports = Notice;
+

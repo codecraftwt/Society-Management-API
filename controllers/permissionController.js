@@ -12,6 +12,9 @@ const ALL_MODULE_ACTIONS = {
   tenant_management: ["view", "approve", "reject"],
   guard: ["view", "create", "edit", "delete", "edit_shift"],
   visitor_logs: ["view", "create", "checkin", "checkout"],
+  // Read-only oversight for the management panels. Gate operations themselves
+  // (arrival / handover) stay with the guard module, never with this one.
+  parcel: ["view"],
   notice: ["view", "create", "edit", "delete"],
   complaints: ["view", "create", "discuss", "update_status"],
   accountant: ["view", "create", "edit", "toggle_status", "appoint"],
@@ -27,6 +30,12 @@ const ALL_MODULE_ACTIONS = {
   expenses: ["view", "create", "edit", "delete"],
   general_ledger: ["view", "export"],
   financial_audit_log: ["view"],
+  // Cleaning staff records, gate passes and attendance.
+  // `scan` is granted to guards (they run the gate device); the rest is
+  // admin-only. Pass create/revoke and attendance correction are split out
+  // from generic edit so a society can delegate scheduling without handing
+  // over the ability to rewrite payroll or attendance history.
+  cleaning_staff: ["view", "create", "edit", "status", "create_passes", "edit_passes", "edit_attendance", "scan"],
 };
 
 // Default baseline section enablement per role
@@ -40,6 +49,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     tenant_management: true,
     guard: true,
     visitor_logs: true,
+    parcel: false,
     notice: true,
     complaints: true,
     accountant: true,
@@ -55,6 +65,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     expenses: true,
     general_ledger: true,
     financial_audit_log: true,
+    cleaning_staff: true,
   },
   ACCOUNTANT: {
     dashboard: true,
@@ -65,6 +76,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     tenant_management: false,
     guard: false,
     visitor_logs: false,
+    parcel: false,
     notice: true,
     complaints: false,
     accountant: false,
@@ -80,6 +92,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     expenses: true,
     general_ledger: true,
     financial_audit_log: true,
+    cleaning_staff: false,
   },
   GUARD: {
     dashboard: true,
@@ -90,6 +103,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     tenant_management: false,
     guard: true,
     visitor_logs: true,
+    parcel: false,
     notice: true,
     complaints: true,
     accountant: false,
@@ -105,6 +119,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     expenses: false,
     general_ledger: false,
     financial_audit_log: false,
+    cleaning_staff: false,
   },
   RESIDENT: {
     dashboard: true,
@@ -115,6 +130,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     tenant_management: true,
     guard: true,
     visitor_logs: true,
+    parcel: false,
     notice: true,
     complaints: true,
     accountant: true,
@@ -130,6 +146,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     expenses: false,
     general_ledger: false,
     financial_audit_log: false,
+    cleaning_staff: false,
   },
   TENANT: {
     dashboard: true,
@@ -140,6 +157,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     tenant_management: true,
     guard: false,
     visitor_logs: true,
+    parcel: false,
     notice: true,
     complaints: true,
     accountant: false,
@@ -154,6 +172,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     expenses: false,
     general_ledger: false,
     financial_audit_log: false,
+    cleaning_staff: false,
   },
 };
 

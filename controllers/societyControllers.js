@@ -247,4 +247,211 @@ const deleteSociety = async (req, res) => {
     }
 };
 
-module.exports = { createSociety, getAllSociety, getSocietyDetail, deleteSociety };
+// ─── SOCIETY THEME CUSTOMIZATION ─────────────────────────────────────────────
+
+const HEX_COLOR_REGEX = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+
+/**
+ * GET /api/societies/:id/theme
+ * Fetches the active custom theme branding for a society or default fallback.
+ */
+const getSocietyTheme = async (req, res) => {
+  const targetId = parseInt(req.params.id, 10);
+  if (isNaN(targetId)) {
+    return res.status(400).json({ success: false, message: "Invalid society ID." });
+  }
+
+  const isSuperAdmin = req.user?.activeRole === "SUPER_ADMIN" || req.user?.role === "SUPER_ADMIN";
+  const isOwnSociety = req.user?.society_id === targetId;
+
+  // Cross-society access guard: only Super Admin or authenticated members of the target society can read its theme
+  if (!isSuperAdmin && !isOwnSociety) {
+    return res.status(403).json({
+      success: false,
+      message: "You are not authorized to access theme settings for this society.",
+    });
+  }
+
+  try {
+    const society = await Society.findByPk(targetId, {
+      attributes: ["id", "name", "primary_color", "accent_color", "theme_updated_by", "theme_updated_at"],
+    });
+
+    if (!society) {
+      return res.status(404).json({ success: false, message: "Society not found." });
+    }
+
+    const configured = Boolean(society.primary_color || society.accent_color);
+
+    return res.status(200).json({
+      success: true,
+      society_id: society.id,
+      society_name: society.name,
+      configured,
+      theme: {
+        primary: society.primary_color || null,
+        accent: society.accent_color || null,
+      },
+      theme_updated_by: society.theme_updated_by,
+      theme_updated_at: society.theme_updated_at,
+    });
+  } catch (err) {
+    console.error("getSocietyTheme error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * PUT /api/societies/:id/theme
+ * Updates the custom primary and accent theme colors for a society.
+ */
+const updateSocietyTheme = async (req, res) => {
+  const targetId = parseInt(req.params.id, 10);
+  if (isNaN(targetId)) {
+    return res.status(400).json({ success: false, message: "Invalid society ID." });
+  }
+
+  const isSuperAdmin = req.user?.activeRole === "SUPER_ADMIN" || req.user?.role === "SUPER_ADMIN";
+  const isSocietyAdmin = req.user?.activeRole === "SOCIETY_ADMIN" || req.user?.role === "SOCIETY_ADMIN";
+  const isOwnSociety = req.user?.society_id === targetId;
+
+  // Authorization check: Super Admin or own Society Admin only
+  if (!isSuperAdmin && (!isSocietyAdmin || !isOwnSociety)) {
+    return res.status(403).json({
+      success: false,
+      message: "You are not authorized to modify theme settings for this society.",
+    });
+  }
+
+  const primary = req.body.primary_color || req.body.primary;
+  const accent = req.body.accent_color || req.body.accent;
+
+  if (!primary && !accent) {
+    return res.status(400).json({
+      success: false,
+      message: "At least one valid HEX color (primary or accent) is required.",
+    });
+  }
+
+  if (primary && !HEX_COLOR_REGEX.test(String(primary).trim())) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid primary color format. Expected a valid HEX code (e.g. #7c3aed).",
+    });
+  }
+
+  if (accent && !HEX_COLOR_REGEX.test(String(accent).trim())) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid accent color format. Expected a valid HEX code (e.g. #8b5cf6).",
+    });
+  }
+
+  try {
+    const society = await Society.findByPk(targetId);
+    if (!society) {
+      return res.status(404).json({ success: false, message: "Society not found." });
+    }
+
+    society.primary_color = primary ? String(primary).trim() : society.primary_color;
+    society.accent_color = accent ? String(accent).trim() : society.accent_color;
+    society.theme_updated_by = req.user.id;
+    society.theme_updated_at = new Date();
+    await society.save();
+
+    // Broadcast real-time theme change to all connected clients in the society room
+    if (global.io) {
+      global.io.to(`society_${society.id}`).emit("society_theme_updated", {
+        society_id: society.id,
+        theme: {
+          primary: society.primary_color,
+          accent: society.accent_color,
+        },
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Society theme updated successfully.",
+      society_id: society.id,
+      configured: true,
+      theme: {
+        primary: society.primary_color,
+        accent: society.accent_color,
+      },
+      theme_updated_at: society.theme_updated_at,
+    });
+  } catch (err) {
+    console.error("updateSocietyTheme error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * POST /api/societies/:id/theme/reset
+ * Reverts the society theme configuration to default.
+ */
+const resetSocietyTheme = async (req, res) => {
+  const targetId = parseInt(req.params.id, 10);
+  if (isNaN(targetId)) {
+    return res.status(400).json({ success: false, message: "Invalid society ID." });
+  }
+
+  const isSuperAdmin = req.user?.activeRole === "SUPER_ADMIN" || req.user?.role === "SUPER_ADMIN";
+  const isSocietyAdmin = req.user?.activeRole === "SOCIETY_ADMIN" || req.user?.role === "SOCIETY_ADMIN";
+  const isOwnSociety = req.user?.society_id === targetId;
+
+  if (!isSuperAdmin && (!isSocietyAdmin || !isOwnSociety)) {
+    return res.status(403).json({
+      success: false,
+      message: "You are not authorized to reset theme settings for this society.",
+    });
+  }
+
+  try {
+    const society = await Society.findByPk(targetId);
+    if (!society) {
+      return res.status(404).json({ success: false, message: "Society not found." });
+    }
+
+    society.primary_color = null;
+    society.accent_color = null;
+    society.theme_updated_by = req.user.id;
+    society.theme_updated_at = new Date();
+    await society.save();
+
+    if (global.io) {
+      global.io.to(`society_${society.id}`).emit("society_theme_updated", {
+        society_id: society.id,
+        theme: {
+          primary: null,
+          accent: null,
+        },
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Society theme reset to default successfully.",
+      society_id: society.id,
+      configured: false,
+      theme: {
+        primary: null,
+        accent: null,
+      },
+    });
+  } catch (err) {
+    console.error("resetSocietyTheme error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+module.exports = {
+  createSociety,
+  getAllSociety,
+  getSocietyDetail,
+  deleteSociety,
+  getSocietyTheme,
+  updateSocietyTheme,
+  resetSocietyTheme,
+};
