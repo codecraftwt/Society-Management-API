@@ -17,6 +17,10 @@ const Society = sequelize.define("Society", {
   accent_color: { type: DataTypes.STRING(20), allowNull: true, defaultValue: null },
   theme_updated_by: { type: DataTypes.INTEGER, allowNull: true, defaultValue: null },
   theme_updated_at: { type: DataTypes.DATE, allowNull: true, defaultValue: null },
+  // Society location/geofence configuration
+  latitude: { type: DataTypes.DECIMAL(10, 7), allowNull: true },
+  longitude: { type: DataTypes.DECIMAL(10, 7), allowNull: true },
+  location_radius: { type: DataTypes.DECIMAL(8, 2), allowNull: true, defaultValue: 50.00, validate: { min: 1, max: 200 } },
 }, {
   tableName: "societies",
   timestamps: true,

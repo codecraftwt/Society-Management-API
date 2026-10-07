@@ -40,6 +40,7 @@ const FinancialAuditLog = require("./FinancialAuditLog");
 const CleaningStaff = require("./CleaningStaff");
 const CleaningStaffPass = require("./CleaningStaffPass");
 const CleaningStaffAttendance = require("./CleaningStaffAttendance");
+const GuardAttendance = require("./GuardAttendance");
 
 
 
@@ -384,6 +385,25 @@ CleaningStaffAttendance.belongsTo(CleaningStaffPass, {
 });
 
 /* ====
+   GUARD ATTENDANCE ASSOCIATIONS
+==== */
+
+// GuardAttendance → Guard (User)
+GuardAttendance.belongsTo(User, { foreignKey: "guard_id", as: "guard" });
+User.hasMany(GuardAttendance, { foreignKey: "guard_id", as: "guardAttendances" });
+
+// GuardAttendance → GuardShift
+GuardAttendance.belongsTo(GuardShift, { foreignKey: "shift_id", as: "shift" });
+GuardShift.hasMany(GuardAttendance, { foreignKey: "shift_id", as: "attendances" });
+
+// GuardAttendance → Society
+GuardAttendance.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+Society.hasMany(GuardAttendance, { foreignKey: "society_id", as: "guardAttendances" });
+
+// GuardAttendance → Admin who manually edited
+GuardAttendance.belongsTo(User, { foreignKey: "manually_edited_by", as: "manualEditor" });
+
+/* ====
    EXPORTS
 ==== */
 
@@ -506,6 +526,7 @@ LedgerEntry.belongsTo(Society, { foreignKey: "society_id", as: "society" });
 Society.hasMany(FinancialAuditLog, { foreignKey: "society_id", as: "auditLogs" });
 FinancialAuditLog.belongsTo(Society, { foreignKey: "society_id", as: "society" });
 
+
 module.exports = {
   sequelize,
   User,
@@ -548,4 +569,5 @@ module.exports = {
   CleaningStaff,
   CleaningStaffPass,
   CleaningStaffAttendance,
+  GuardAttendance,
 };

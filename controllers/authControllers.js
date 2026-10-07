@@ -1,6 +1,7 @@
 const User = require("../models/User");
 const Society = require("../models/Society");
 const Flat = require("../models/Flat");
+const FlatMembership = require("../models/FlatMembership");
 const Notification = require("../models/Notification");
 const HouseHoldMember = require("../models/HouseHoldMember");
 const OtpVerification = require("../models/OtpVerification");
@@ -24,26 +25,35 @@ const {
 /* =====
     HELPERS
     ===== */
-/* Resolve a user's effective role list. Committee members and accountants who
-   live in the society are also treated as residents (mirrors roleMiddleware). */
+async function isUserResidentOfSociety(user) {
+  if (!user) return false;
+  if (user.resident_type && ["OWNER", "TENANT"].includes(String(user.resident_type).toUpperCase())) {
+    return true;
+  }
+  try {
+    const membership = await FlatMembership.findOne({
+      where: { user_id: user.id, is_current: true },
+    });
+    return Boolean(membership);
+  } catch (err) {
+    return false;
+  }
+}
+
+/* Resolve a user's effective role list. */
 function resolveUserRoles(user) {
   const roles = Array.isArray(user.roles) && user.roles.length > 0 ? [...user.roles] : [];
   const add = (r) => { if (r && !roles.includes(r)) roles.push(r); };
 
   add(user.role);
-  if (roles.includes("SOCIETY_ADMIN")) add("RESIDENT");
   if (roles.includes("COMMITTEE_MEMBER") || roles.includes("COMMITTEE")) {
     add("COMMITTEE_MEMBER");
-    add("RESIDENT");
   }
-  if (roles.includes("ACCOUNTANT")) add("RESIDENT");
 
   return roles;
 }
 
-/* Roles that only a genuine member of the society holds. resolveUserRoles
-   adds RESIDENT for every accountant, so when deciding whether to honour that
-   we must first confirm the user is not an accountant and nothing else. */
+/* Roles that only a genuine member of the society holds. */
 const SOCIETY_MEMBER_ROLES = [
   "RESIDENT",
   "SOCIETY_ADMIN",
@@ -76,16 +86,23 @@ async function getAvailablePanels(user) {
   if (roles.includes("FAMILY_MEMBER")) panels.push("FAMILY_MEMBER");
   if (roles.includes("GUARD")) panels.push("GUARD");
 
+  // If user has SOCIETY_ADMIN or COMMITTEE_MEMBER, check if they are genuinely a resident of the society.
+  // If not, do NOT give them the RESIDENT panel!
+  if ((panels.includes("SOCIETY_ADMIN") || panels.includes("COMMITTEE_MEMBER")) && panels.includes("RESIDENT")) {
+    const isResident = await isUserResidentOfSociety(user);
+    if (!isResident) {
+      const idx = panels.indexOf("RESIDENT");
+      if (idx !== -1) panels.splice(idx, 1);
+    }
+  }
+
   if (roles.includes("ACCOUNTANT")) {
     const assignment = await AccountantAssignment.findOne({
       where: { user_id: user.id, status: "ACTIVE" }
     });
     if (assignment || user.role === "ACCOUNTANT") {
-      panels.push("ACCOUNTANT");
+      if (!panels.includes("ACCOUNTANT")) panels.push("ACCOUNTANT");
 
-      // resolveUserRoles grants RESIDENT to every accountant. For an outsider
-      // accountant that is wrong, so drop it unless the assignment record says
-      // they live in the society.
       if (isOutsiderAccountant(user)) {
         const isResident = assignment ? Boolean(assignment.is_society_resident) : false;
         if (!isResident) {
@@ -100,16 +117,14 @@ async function getAvailablePanels(user) {
 }
 
 /* Exposed to the clients so they never have to infer residency from the roles
-   array (which always contains RESIDENT for an accountant). */
+   array (which may contain legacy RESIDENT for admins or accountants). */
 async function getResidencyFlags(user, availablePanels) {
-  if (!isOutsiderAccountant(user)) return {};
-  const assignment = await AccountantAssignment.findOne({
-    where: { user_id: user.id, status: "ACTIVE" },
-  });
+  const isResident = await isUserResidentOfSociety(user);
+  const isOutsider = isOutsiderAccountant(user);
   return {
-    is_accountant_outsider: true,
-    is_society_resident: assignment ? Boolean(assignment.is_society_resident) : false,
-    can_switch_to_resident: availablePanels.includes("RESIDENT"),
+    is_society_resident: isResident,
+    can_switch_to_resident: availablePanels.includes("RESIDENT") && isResident,
+    ...(isOutsider ? { is_accountant_outsider: true } : {}),
   };
 }
 function generateOtp() {

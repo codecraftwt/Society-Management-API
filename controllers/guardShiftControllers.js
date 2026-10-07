@@ -131,16 +131,27 @@ const updateShift = async (req, res) => {
 const getMyShift = async (req, res) => {
   try {
     const today = getCurrentISTDate();
+    const guardId = req.user.id;
+    let societyId = req.user.society_id;
+
+    if (!societyId) {
+      const guard = await User.findByPk(guardId, { attributes: ["society_id"] });
+      societyId = guard?.society_id ?? null;
+    }
 
     /* Find ANY shift covering today — duty is decided by the configured
        window for that shift's type, not by matching a hardcoded window. */
+    const where = {
+      guard_id: guardId,
+      start_date: { [Op.lte]: today },
+      end_date: { [Op.gte]: today },
+    };
+    if (societyId) {
+      where.society_id = societyId;
+    }
+
     const shifts = await GuardShift.findAll({
-      where: {
-        guard_id:   req.user.id,
-        society_id: req.user.society_id,
-        start_date: { [Op.lte]: today },
-        end_date:   { [Op.gte]: today },
-      },
+      where,
       order: [["updatedAt", "DESC"]],
     });
 
@@ -148,7 +159,7 @@ const getMyShift = async (req, res) => {
       return res.json(null);
     }
 
-    const timings = await getShiftTimings(req.user.society_id);
+    const timings = societyId ? await getShiftTimings(societyId) : {};
     const minutes = getCurrentISTMinutes();
 
     let shift = shifts[0];
@@ -163,16 +174,31 @@ const getMyShift = async (req, res) => {
     const startTime = t.start || "00:00";
     const endTime = t.end || "00:00";
 
+    const { GuardAttendance } = require("../models");
+    const attendanceWhere = {
+      guard_id: guardId,
+      attendance_date: today,
+    };
+    if (societyId) {
+      attendanceWhere.society_id = societyId;
+    }
+
+    const attendance = await GuardAttendance.findOne({
+      where: attendanceWhere,
+    });
+
     return res.json({
       ...shift.toJSON(),
       isOnDuty: isTimeInShift(timings, shift.shift_type, minutes),
       start_time: startTime,
       end_time: endTime,
       window: `${startTime} - ${endTime}`,
+      attendance: attendance ? attendance.toJSON() : null,
       server_now: getCurrentISTDateTime(),
       timezone: "Asia/Kolkata",
     });
   } catch (err) {
+    console.error("[getMyShift] error:", err);
     res.status(500).json({ message: err.message });
   }
 };

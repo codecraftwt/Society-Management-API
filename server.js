@@ -176,7 +176,8 @@ sequelize
       if (db.CleaningStaffPass) await db.CleaningStaffPass.sync({ alter: true });
       if (db.CleaningStaffAttendance) await db.CleaningStaffAttendance.sync({ alter: true });
       if (db.Parcel) await db.Parcel.sync({ alter: true });
-      console.log("[DB Migration] cleaning_staff & parcel tables synced successfully");
+      if (db.GuardAttendance) await db.GuardAttendance.sync({ alter: true });
+      console.log("[DB Migration] cleaning_staff, parcel & guard_attendance tables synced successfully");
     } catch (err) {
       console.log("[DB Migration] Note syncing tables:", err.message);
     }
@@ -353,6 +354,20 @@ sequelize
       if (!socCols.has("theme_updated_at")) {
         await sequelize.query("ALTER TABLE societies ADD COLUMN theme_updated_at DATETIME NULL DEFAULT NULL");
         console.log("[DB Migration] Added societies.theme_updated_at");
+      }
+      // Geofence columns: declared on the Society model, so a missing column here
+      // makes every Society query fail with "Unknown column 'Society.latitude'".
+      if (!socCols.has("latitude")) {
+        await sequelize.query("ALTER TABLE societies ADD COLUMN latitude DECIMAL(10,7) NULL DEFAULT NULL");
+        console.log("[DB Migration] Added societies.latitude");
+      }
+      if (!socCols.has("longitude")) {
+        await sequelize.query("ALTER TABLE societies ADD COLUMN longitude DECIMAL(10,7) NULL DEFAULT NULL");
+        console.log("[DB Migration] Added societies.longitude");
+      }
+      if (!socCols.has("location_radius")) {
+        await sequelize.query("ALTER TABLE societies ADD COLUMN location_radius DECIMAL(8,2) NULL DEFAULT 50.00");
+        console.log("[DB Migration] Added societies.location_radius");
       }
     } catch (err) {
       console.log("[DB Migration] Note adding societies theme columns:", err.message);

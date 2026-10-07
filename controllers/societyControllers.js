@@ -19,34 +19,62 @@ const createSociety = async (req, res) => {
 // GET ALL SOCIETIES WITH ADMINS
 const getAllSociety = async (req, res) => {
   try {
-    const societies = await Society.findAll({
-      include: [
-        {
-          model: User,
-          where: { role: "SOCIETY_ADMIN" },
-          required: false,
-          attributes: ["id", "name", "email"],
-        },
-      ],
-    });
+    // Attributes are pinned to columns that have existed since the feature shipped.
+    // If the model ever gains a column the table does not have (schema drift), the
+    // unpinned `SELECT *` would blow up with "Unknown column" and take this endpoint
+    // down — so the list is built from an explicit, stable column set instead.
+    const SOCIETY_LIST_ATTRS = [
+      "id",
+      "name",
+      "address",
+      "latitude",
+      "longitude",
+      "location_radius",
+      "primary_color",
+      "accent_color",
+    ];
 
-    const formatted = societies.map(s => ({
-      id: s.id,
-      name: s.name,
-      address: s.address,
-      societyAdmins:
-        s.Users.length > 0
-          ? {
-              id: s.Users[0].id,
-              name: s.Users[0].name,
-              email: s.Users[0].email,
-            }
-          : null,
-    }));
+    let societies;
+    try {
+      societies = await Society.findAll({
+        attributes: SOCIETY_LIST_ATTRS,
+        include: [
+          {
+            model: User,
+            where: { role: "SOCIETY_ADMIN" },
+            required: false,
+            attributes: ["id", "name", "email"],
+          },
+        ],
+      });
+    } catch (queryErr) {
+      // Last-resort fallback: the dropdown only needs id/name/address, so serve it
+      // without the association rather than returning a 500.
+      console.error("getAllSociety: society query failed, falling back to minimal columns:", queryErr.message);
+      societies = await Society.findAll({ attributes: ["id", "name", "address"] });
+    }
+
+    const formatted = (Array.isArray(societies) ? societies : []).map((s) => {
+      const admins = Array.isArray(s.Users) ? s.Users : [];
+      return {
+        id: s.id,
+        name: s.name,
+        address: s.address,
+        societyAdmins:
+          admins.length > 0
+            ? {
+                id: admins[0].id,
+                name: admins[0].name,
+                email: admins[0].email,
+              }
+            : null,
+      };
+    });
 
     res.json(formatted);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error("getAllSociety error:", err.message);
+    res.status(500).json({ message: "Unable to load societies right now." });
   }
 };
 
@@ -446,6 +474,139 @@ const resetSocietyTheme = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/societies/geofence
+ * Returns the current society's geofence configuration.
+ * Accessible by Society Admin and committee members.
+ */
+const getSocietyGeofence = async (req, res) => {
+  const societyId = req.user?.society_id;
+  if (!societyId) {
+    return res.status(403).json({ success: false, message: "You are not assigned to any society." });
+  }
+  try {
+    const society = await Society.findByPk(societyId, {
+      attributes: ["id", "name", "address", "latitude", "longitude", "location_radius"],
+    });
+    if (!society) {
+      return res.status(404).json({ success: false, message: "Society not found." });
+    }
+    const configured = society.latitude != null && society.longitude != null;
+    return res.status(200).json({
+      success: true,
+      society_id: society.id,
+      society_name: society.name,
+      address: society.address,
+      configured,
+      geofence: {
+        latitude: society.latitude != null ? parseFloat(society.latitude) : null,
+        longitude: society.longitude != null ? parseFloat(society.longitude) : null,
+        radius_meters: society.location_radius != null ? parseFloat(society.location_radius) : 50,
+        address: society.address,
+      },
+    });
+  } catch (err) {
+    console.error("getSocietyGeofence error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * PUT /api/societies/geofence
+ * Updates the geofence for the caller's society.
+ * Only Society Admin (or Super Admin) can update.
+ */
+const updateSocietyGeofence = async (req, res) => {
+  const isSuperAdmin = req.user?.activeRole === "SUPER_ADMIN" || req.user?.role === "SUPER_ADMIN";
+  const isSocietyAdmin = req.user?.activeRole === "SOCIETY_ADMIN" || req.user?.role === "SOCIETY_ADMIN";
+
+  if (!isSuperAdmin && !isSocietyAdmin) {
+    return res.status(403).json({ success: false, message: "Only Society Admins can update geofence settings." });
+  }
+
+  // For super admin, allow society_id in body; otherwise use own society
+  const targetSocietyId = isSuperAdmin
+    ? (req.body.society_id || req.user?.society_id)
+    : req.user?.society_id;
+
+  if (!targetSocietyId) {
+    return res.status(400).json({ success: false, message: "society_id is required." });
+  }
+
+  const { latitude, longitude, radius_meters, address } = req.body;
+
+  if (latitude == null || longitude == null) {
+    return res.status(400).json({ success: false, message: "latitude and longitude are required." });
+  }
+
+  const lat = parseFloat(latitude);
+  const lng = parseFloat(longitude);
+  const radius = radius_meters != null ? parseFloat(radius_meters) : 50;
+
+  if (isNaN(lat) || lat < -90 || lat > 90) {
+    return res.status(400).json({ success: false, message: "latitude must be a number between -90 and 90." });
+  }
+  if (isNaN(lng) || lng < -180 || lng > 180) {
+    return res.status(400).json({ success: false, message: "longitude must be a number between -180 and 180." });
+  }
+  if (isNaN(radius) || radius < 1 || radius > 200) {
+    return res.status(400).json({ success: false, message: "radius_meters must be between 1 and 200 meters." });
+  }
+
+  try {
+    const society = await Society.findByPk(targetSocietyId);
+    if (!society) {
+      return res.status(404).json({ success: false, message: "Society not found." });
+    }
+
+    const socName = (society.name || "").trim();
+    let finalAddress = society.address;
+
+    if (address && typeof address === "string" && address.trim()) {
+      let rawAddr = address.trim();
+      // Remove any duplicate occurrences of society name at the start of rawAddr
+      if (socName) {
+        const escapedName = socName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const socRegex = new RegExp(`^${escapedName}[,\\s-]*`, "i");
+        if (socRegex.test(rawAddr)) {
+          rawAddr = rawAddr.replace(socRegex, "").trim();
+        }
+        rawAddr = rawAddr.replace(/^[,\s-]+|[,\s-]+$/g, "").trim();
+        finalAddress = rawAddr ? `${socName}, ${rawAddr}` : socName;
+      } else {
+        finalAddress = rawAddr;
+      }
+    }
+
+    const updateFields = {
+      latitude: lat,
+      longitude: lng,
+      location_radius: radius,
+    };
+    if (finalAddress !== undefined && finalAddress !== null) {
+      updateFields.address = finalAddress;
+    }
+
+    await society.update(updateFields);
+
+    return res.status(200).json({
+      success: true,
+      message: "Geofence updated successfully.",
+      society_name: society.name,
+      address: finalAddress,
+      geofence: {
+        latitude: lat,
+        longitude: lng,
+        radius_meters: radius,
+        address: finalAddress,
+      },
+    });
+  } catch (err) {
+    console.error("updateSocietyGeofence error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 module.exports = {
   createSociety,
   getAllSociety,
@@ -454,4 +615,6 @@ module.exports = {
   getSocietyTheme,
   updateSocietyTheme,
   resetSocietyTheme,
+  getSocietyGeofence,
+  updateSocietyGeofence,
 };

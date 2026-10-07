@@ -1,0 +1,23 @@
+{
+  "Andheri West, Mumbai": {
+    "place_id": 248418649,
+    "licence": "Data © OpenStreetMap contributors, ODbL 1.0. http://osm.org/copyright",
+    "osm_type": "node",
+    "osm_id": 884364390,
+    "lat": "19.1172495",
+    "lon": "72.8339680",
+    "category": "place",
+    "type": "suburb",
+    "place_rank": 19,
+    "importance": 0.14674266193636984,
+    "addresstype": "suburb",
+    "name": "Andheri West",
+    "display_name": "Andheri West, K/W Ward, Mumbai Zone 3, Mumbai, Mumbai Suburban District, Maharashtra, 400058, India",
+    "boundingbox": [
+      "19.0972495",
+      "19.1372495",
+      "72.8139680",
+      "72.8539680"
+    ]
+  }
+}

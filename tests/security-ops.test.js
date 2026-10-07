@@ -8,6 +8,11 @@ const {
   expectOk,
   expectClientError,
 } = require("./helpers/api");
+const { GuardAttendance } = require("../models");
+
+beforeAll(async () => {
+  await GuardAttendance.sync({ alter: true });
+});
 
 describe("Guard shifts API", () => {
   it("requires authentication", async () => {
@@ -178,6 +183,38 @@ describe("Admin API", () => {
   it("PUT /api/admin/reject-resident/:userId handles a missing user", async () => {
     const { headers } = await login("admin");
     const res = await request(app).put("/api/admin/reject-resident/99999999").set(headers);
+    expectClientError(res);
+  });
+});
+
+describe("Guard attendance API", () => {
+  it("requires authentication", async () => {
+    const res = await request(app).get("/api/guard-attendance/today");
+    expectUnauthorized(res);
+  });
+
+  it("GET /api/guard-attendance/today succeeds for a guard", async () => {
+    const { headers } = await login("guard");
+    const res = await request(app).get("/api/guard-attendance/today").set(headers);
+    expectOk(res);
+  });
+
+  it("POST /api/guard-attendance/punch-in requires selfie and GPS", async () => {
+    const { headers } = await login("guard");
+    const res = await request(app)
+      .post("/api/guard-attendance/punch-in")
+      .set(headers)
+      .send({});
+    expectClientError(res);
+  });
+
+  it("POST /api/guard-attendance/punch-out requires active punch-in or valid GPS", async () => {
+    const { headers } = await login("guard");
+    const res = await request(app)
+      .post("/api/guard-attendance/punch-out")
+      .set(headers)
+      .send({ lat: 16.7028, lng: 74.2517 });
+    // Either not punched in yet (404/403) or outside geofence (403/400)
     expectClientError(res);
   });
 });

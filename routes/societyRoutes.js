@@ -10,6 +10,8 @@ const {
   getSocietyTheme,
   updateSocietyTheme,
   resetSocietyTheme,
+  getSocietyGeofence,
+  updateSocietyGeofence,
 } = require("../controllers/societyControllers");
 
 router.post("/", auth, role("SUPER_ADMIN"), createSociety);
@@ -22,4 +24,8 @@ router.get("/:id/theme", auth, getSocietyTheme);
 router.put("/:id/theme", auth, updateSocietyTheme);
 router.post("/:id/theme/reset", auth, resetSocietyTheme);
 
-module.exports = router;
+// Geofence configuration routes (scoped to caller's society)
+router.get("/geofence", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getSocietyGeofence);
+router.put("/geofence", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), updateSocietyGeofence);
+
+module.exports = router;

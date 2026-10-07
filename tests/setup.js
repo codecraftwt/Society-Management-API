@@ -76,6 +76,37 @@ beforeAll(async () => {
         if (!socCols.has("theme_updated_at")) {
             await sequelize.query("ALTER TABLE societies ADD COLUMN theme_updated_at DATETIME NULL DEFAULT NULL");
         }
+        // Geofence columns are declared on the Society model; without them every
+        // unpinned Society query throws "Unknown column 'latitude' in 'field list'".
+        if (!socCols.has("latitude")) {
+            await sequelize.query("ALTER TABLE societies ADD COLUMN latitude DECIMAL(10,7) NULL DEFAULT NULL");
+        }
+        if (!socCols.has("longitude")) {
+            await sequelize.query("ALTER TABLE societies ADD COLUMN longitude DECIMAL(10,7) NULL DEFAULT NULL");
+        }
+        if (!socCols.has("location_radius")) {
+            await sequelize.query("ALTER TABLE societies ADD COLUMN location_radius DECIMAL(8,2) NULL DEFAULT 50.00");
+        }
+
+        const [gaRows] = await sequelize.query(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'guard_attendance'"
+        );
+        const gaCols = new Set(gaRows.map((r) => r.COLUMN_NAME));
+        if (!gaCols.has("punch_in_accuracy")) {
+            await sequelize.query("ALTER TABLE guard_attendance ADD COLUMN punch_in_accuracy DECIMAL(10,2) NULL DEFAULT NULL");
+        }
+        if (!gaCols.has("punch_in_distance")) {
+            await sequelize.query("ALTER TABLE guard_attendance ADD COLUMN punch_in_distance DECIMAL(10,2) NULL DEFAULT NULL");
+        }
+        if (!gaCols.has("punch_in_radius")) {
+            await sequelize.query("ALTER TABLE guard_attendance ADD COLUMN punch_in_radius DECIMAL(8,2) NULL DEFAULT NULL");
+        }
+        if (!gaCols.has("punch_out_accuracy")) {
+            await sequelize.query("ALTER TABLE guard_attendance ADD COLUMN punch_out_accuracy DECIMAL(10,2) NULL DEFAULT NULL");
+        }
+        if (!gaCols.has("punch_out_distance")) {
+            await sequelize.query("ALTER TABLE guard_attendance ADD COLUMN punch_out_distance DECIMAL(10,2) NULL DEFAULT NULL");
+        }
     } catch (err) {
         // Table might not exist yet or query failed
     }
