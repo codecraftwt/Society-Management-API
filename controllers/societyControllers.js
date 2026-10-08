@@ -302,14 +302,14 @@ const getSocietyTheme = async (req, res) => {
 
   try {
     const society = await Society.findByPk(targetId, {
-      attributes: ["id", "name", "primary_color", "accent_color", "theme_updated_by", "theme_updated_at"],
+      attributes: ["id", "name", "primary_color", "accent_color", "card_style", "quick_link_style", "theme_updated_by", "theme_updated_at"],
     });
 
     if (!society) {
       return res.status(404).json({ success: false, message: "Society not found." });
     }
 
-    const configured = Boolean(society.primary_color || society.accent_color);
+    const configured = Boolean(society.primary_color || society.accent_color || (society.card_style && society.card_style !== "default") || (society.quick_link_style && society.quick_link_style !== "default"));
 
     return res.status(200).json({
       success: true,
@@ -319,6 +319,10 @@ const getSocietyTheme = async (req, res) => {
       theme: {
         primary: society.primary_color || null,
         accent: society.accent_color || null,
+        cardStyle: society.card_style || "default",
+        card_style: society.card_style || "default",
+        quickLinkStyle: society.quick_link_style || "default",
+        quick_link_style: society.quick_link_style || "default",
       },
       theme_updated_by: society.theme_updated_by,
       theme_updated_at: society.theme_updated_at,
@@ -353,11 +357,13 @@ const updateSocietyTheme = async (req, res) => {
 
   const primary = req.body.primary_color || req.body.primary;
   const accent = req.body.accent_color || req.body.accent;
+  const cardStyle = req.body.card_style || req.body.cardStyle;
+  const quickLinkStyle = req.body.quick_link_style || req.body.quickLinkStyle;
 
-  if (!primary && !accent) {
+  if (!primary && !accent && !cardStyle && !quickLinkStyle) {
     return res.status(400).json({
       success: false,
-      message: "At least one valid HEX color (primary or accent) is required.",
+      message: "At least one theme property (primary color, accent color, or card style) is required.",
     });
   }
 
@@ -383,6 +389,12 @@ const updateSocietyTheme = async (req, res) => {
 
     society.primary_color = primary ? String(primary).trim() : society.primary_color;
     society.accent_color = accent ? String(accent).trim() : society.accent_color;
+    if (cardStyle) {
+      society.card_style = String(cardStyle).trim();
+    }
+    if (quickLinkStyle) {
+      society.quick_link_style = String(quickLinkStyle).trim();
+    }
     society.theme_updated_by = req.user.id;
     society.theme_updated_at = new Date();
     await society.save();
@@ -394,6 +406,10 @@ const updateSocietyTheme = async (req, res) => {
         theme: {
           primary: society.primary_color,
           accent: society.accent_color,
+          cardStyle: society.card_style || "default",
+          card_style: society.card_style || "default",
+          quickLinkStyle: society.quick_link_style || "default",
+          quick_link_style: society.quick_link_style || "default",
         },
       });
     }
@@ -406,6 +422,10 @@ const updateSocietyTheme = async (req, res) => {
       theme: {
         primary: society.primary_color,
         accent: society.accent_color,
+        cardStyle: society.card_style || "default",
+        card_style: society.card_style || "default",
+        quickLinkStyle: society.quick_link_style || "default",
+        quick_link_style: society.quick_link_style || "default",
       },
       theme_updated_at: society.theme_updated_at,
     });
@@ -444,6 +464,8 @@ const resetSocietyTheme = async (req, res) => {
 
     society.primary_color = null;
     society.accent_color = null;
+    society.card_style = "default";
+    society.quick_link_style = "default";
     society.theme_updated_by = req.user.id;
     society.theme_updated_at = new Date();
     await society.save();
@@ -454,6 +476,10 @@ const resetSocietyTheme = async (req, res) => {
         theme: {
           primary: null,
           accent: null,
+          cardStyle: "default",
+          card_style: "default",
+          quickLinkStyle: "default",
+          quick_link_style: "default",
         },
       });
     }
@@ -466,6 +492,10 @@ const resetSocietyTheme = async (req, res) => {
       theme: {
         primary: null,
         accent: null,
+        cardStyle: "default",
+        card_style: "default",
+        quickLinkStyle: "default",
+        quick_link_style: "default",
       },
     });
   } catch (err) {

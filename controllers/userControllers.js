@@ -1112,6 +1112,29 @@ const getResidents = async (req, res) => {
     const count     = uniqueResidents.length;
     const paginated = uniqueResidents.slice(offset, offset + limit);
 
+    /* Role breakdown for the /admin/resident KPI cards. Computed from the
+       fully filtered (but NOT yet paginated) list so the four values always
+       agree with the rows the table is able to show, and so they follow the
+       active society / search / block / floor / unit filters. Committee and
+       accountant are mutually exclusive by business rule, so the three buckets
+       always sum back to `total`. */
+    const rolesOf = (u) => {
+      let rList = [];
+      if (Array.isArray(u.roles) && u.roles.length > 0) rList = [...u.roles];
+      else if (typeof u.roles === "string") {
+        try { rList = JSON.parse(u.roles) || []; } catch (e) { rList = []; }
+      }
+      if (u.role && !rList.includes(u.role)) rList.push(u.role);
+      return rList;
+    };
+    const roleCounts = { total: count, resident: 0, committee: 0, accountant: 0 };
+    uniqueResidents.forEach((u) => {
+      const rList = rolesOf(u);
+      if (rList.includes("COMMITTEE_MEMBER")) roleCounts.committee += 1;
+      else if (rList.includes("ACCOUNTANT")) roleCounts.accountant += 1;
+      else roleCounts.resident += 1;
+    });
+
     const data = paginated.map(user => {
       const userMemberships = allMemberships.filter(m => m.user_id === user.id && m.Flat);
       const userFlats = userMemberships.map(m => {
@@ -1199,6 +1222,7 @@ const getResidents = async (req, res) => {
         limit,
       },
       totalAll: count,
+      roleCounts,
     });
 
   } catch (err) {
@@ -1578,6 +1602,7 @@ const createAccountant = async (req, res) => {
     }
 
     const hashed = await bcrypt.hash(safePassword, 8);
+    const uploadedPhoto = req.file ? readUploadedProfilePicture(req.file) : null;
     const accountant = await User.create({
       name,
       email,
@@ -1588,6 +1613,8 @@ const createAccountant = async (req, res) => {
       society_id: targetSocietyId,
       status: "ACTIVE",
       approval_status: "APPROVED",
+      profile_picture: uploadedPhoto ? uploadedPhoto.url : (req.body.profile_picture || null),
+      profile_picture_public_id: uploadedPhoto ? uploadedPhoto.publicId : null,
     });
 
     const assignment = await AccountantAssignment.create({
@@ -1613,6 +1640,7 @@ const createAccountant = async (req, res) => {
       roles: accountant.roles,
       society_id: targetSocietyId,
       societyName: society?.name || "NA",
+      profile_picture: accountant.profile_picture || null,
       from_society: false,
       start_date: assignment.start_date,
       inactive_date: assignment.inactive_date,
@@ -1854,7 +1882,7 @@ const getAccountant = async (req, res) => {
         {
           model: User,
           as: "user",
-          attributes: ["id", "name", "email", "phone", "role", "roles", "status"],
+          attributes: ["id", "name", "email", "phone", "role", "roles", "status", "profile_picture"],
           required: true,
         },
         {
@@ -1870,7 +1898,7 @@ const getAccountant = async (req, res) => {
     const userWhere = { ...where };
     const allUsers = await User.findAll({
       where: userWhere,
-      attributes: ["id", "name", "email", "phone", "role", "roles", "society_id", "status", "created_at"],
+      attributes: ["id", "name", "email", "phone", "role", "roles", "society_id", "status", "profile_picture", "created_at"],
       include: [{ model: Society, attributes: ["id", "name"], required: false }],
     });
 
@@ -1893,6 +1921,7 @@ const getAccountant = async (req, res) => {
         roles: a.user?.roles || [],
         society_id: a.society_id,
         societyName: a.society?.name || "NA",
+        profile_picture: a.user?.profile_picture || null,
         from_society: Boolean(a.is_society_resident),
         start_date: a.start_date,
         inactive_date: a.inactive_date,
@@ -1909,6 +1938,7 @@ const getAccountant = async (req, res) => {
         roles: u.roles || [],
         society_id: u.society_id,
         societyName: u.Society?.name || "NA",
+        profile_picture: u.profile_picture || null,
         from_society: Boolean((u.roles || []).includes("RESIDENT") || u.role === "RESIDENT"),
         start_date: u.created_at,
         inactive_date: u.status === "INACTIVE" ? u.created_at : null,
@@ -1946,7 +1976,15 @@ const updateAccountant = async (req, res) => {
     }
     if (!user) return res.status(404).json({ message: "Accountant not found" });
 
-    await user.update({ ...(name && { name }), ...(phone && { phone }) });
+    const uploadedPhoto = req.file ? readUploadedProfilePicture(req.file) : null;
+    const updatePayload = {
+      ...(name && { name }),
+      ...(phone && { phone }),
+      ...(uploadedPhoto && { profile_picture: uploadedPhoto.url, profile_picture_public_id: uploadedPhoto.publicId }),
+      ...(req.body.profile_picture && !uploadedPhoto && { profile_picture: req.body.profile_picture }),
+    };
+
+    await user.update(updatePayload);
     res.json({ message: "Accountant updated successfully", user });
   } catch (err) {
     res.status(500).json({ message: err.message });

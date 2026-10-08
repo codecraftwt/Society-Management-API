@@ -48,6 +48,19 @@ describe("Users API", () => {
     expectOk(res);
   });
 
+  it("GET /api/users/resident returns roleCounts for the KPI cards", async () => {
+    const { headers } = await login("admin");
+    const res = await request(app).get("/api/users/resident").set(headers);
+    expectOk(res);
+    const rc = res.body.roleCounts;
+    expect(rc).toBeDefined();
+    expect(rc.total).toBe(res.body.totalAll);
+    expect(rc.resident + rc.committee + rc.accountant).toBe(rc.total);
+    [rc.total, rc.resident, rc.committee, rc.accountant].forEach((n) =>
+      expect(Number.isInteger(n)).toBe(true),
+    );
+  });
+
   it("GET /api/users/resident is forbidden for a resident", async () => {
     const { headers } = await login("resident");
     const res = await request(app).get("/api/users/resident").set(headers);

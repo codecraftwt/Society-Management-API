@@ -347,6 +347,14 @@ sequelize
         await sequelize.query("ALTER TABLE societies ADD COLUMN accent_color VARCHAR(20) NULL DEFAULT NULL");
         console.log("[DB Migration] Added societies.accent_color");
       }
+      if (!socCols.has("card_style")) {
+        await sequelize.query("ALTER TABLE societies ADD COLUMN card_style VARCHAR(50) NULL DEFAULT 'default'");
+        console.log("[DB Migration] Added societies.card_style");
+      }
+      if (!socCols.has("quick_link_style")) {
+        await sequelize.query("ALTER TABLE societies ADD COLUMN quick_link_style VARCHAR(50) NULL DEFAULT 'default'");
+        console.log("[DB Migration] Added societies.quick_link_style");
+      }
       if (!socCols.has("theme_updated_by")) {
         await sequelize.query("ALTER TABLE societies ADD COLUMN theme_updated_by INT NULL DEFAULT NULL");
         console.log("[DB Migration] Added societies.theme_updated_by");

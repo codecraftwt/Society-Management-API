@@ -15,6 +15,8 @@ const Society = sequelize.define("Society", {
   // Society-specific dynamic theme branding customization
   primary_color: { type: DataTypes.STRING(20), allowNull: true, defaultValue: null },
   accent_color: { type: DataTypes.STRING(20), allowNull: true, defaultValue: null },
+  card_style: { type: DataTypes.STRING(50), allowNull: true, defaultValue: "default" },
+  quick_link_style: { type: DataTypes.STRING(50), allowNull: true, defaultValue: "default" },
   theme_updated_by: { type: DataTypes.INTEGER, allowNull: true, defaultValue: null },
   theme_updated_at: { type: DataTypes.DATE, allowNull: true, defaultValue: null },
   // Society location/geofence configuration

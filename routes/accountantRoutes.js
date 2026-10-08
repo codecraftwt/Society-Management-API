@@ -48,6 +48,9 @@ router.get("/bills", auth, role(...financeViewRoles), getSocietyBills);
 router.get("/payments", auth, role(...financeViewRoles), getPayments);
 router.get("/payments/summary", auth, role(...financeViewRoles), monthlyCollection);
 
+const uploadProfilePicture = require("../middlewares/uploadProfilePicture");
+const handleProfilePictureUploadErrors = require("../middlewares/profilePictureUploadErrors");
+
 // Appoint resident as accountant
 router.post("/appoint-resident", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), appointResidentAccountant);
 
@@ -55,7 +58,14 @@ router.post("/appoint-resident", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COM
 router.get("/eligible-residents", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getEligibleAccountantResidents);
 
 // Accountant CRUD (Super Admin list / Society Admin list / Committee Member view)
-router.post("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), createAccountant);
+router.post(
+  "/",
+  auth,
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"),
+  uploadProfilePicture.single("photo"),
+  handleProfilePictureUploadErrors,
+  createAccountant
+);
 router.get("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "RESIDENT", "COMMITTEE_MEMBER"), getAccountant);
 
 // Super Admin global list

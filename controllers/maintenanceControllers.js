@@ -898,7 +898,7 @@ const getBillDetail = async (req, res) => {
               model: FlatMembership,
               required: true,
               where: { role: "OWNER", is_current: true, is_staying: true, pays_maintenance: true },
-              include: [{ model: User, attributes: ["id", "name", "email", "mobile"], required: false }],
+              include: [{ model: User, attributes: ["id", "name", "email", "phone"], required: false }],
             },
           ],
         })

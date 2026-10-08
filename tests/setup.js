@@ -70,6 +70,12 @@ beforeAll(async () => {
         if (!socCols.has("accent_color")) {
             await sequelize.query("ALTER TABLE societies ADD COLUMN accent_color VARCHAR(20) NULL DEFAULT NULL");
         }
+        if (!socCols.has("card_style")) {
+            await sequelize.query("ALTER TABLE societies ADD COLUMN card_style VARCHAR(50) NULL DEFAULT 'default'");
+        }
+        if (!socCols.has("quick_link_style")) {
+            await sequelize.query("ALTER TABLE societies ADD COLUMN quick_link_style VARCHAR(50) NULL DEFAULT 'default'");
+        }
         if (!socCols.has("theme_updated_by")) {
             await sequelize.query("ALTER TABLE societies ADD COLUMN theme_updated_by INT NULL DEFAULT NULL");
         }
