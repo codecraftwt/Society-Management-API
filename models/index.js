@@ -14,7 +14,7 @@ const EmergencyAlert = require("./EmergencyAlert");
 const VisitorPreApproval = require("./VisitorPreApproval");
 const GuardShift = require("./GuardShift");
 const GuardShiftTiming = require("./GuardShiftTiming");
-const Notification = require("./Notification"); 
+const Notification = require("./Notification");
 const Vehicle = require("./Vehicle");
 const ParkingRequest = require("./ParkingRequest");
 const Parcel = require("./Parcel");
@@ -41,6 +41,8 @@ const CleaningStaff = require("./CleaningStaff");
 const CleaningStaffPass = require("./CleaningStaffPass");
 const CleaningStaffAttendance = require("./CleaningStaffAttendance");
 const GuardAttendance = require("./GuardAttendance");
+const Event = require("./Event");
+const EventMedia = require("./EventMedia");
 
 
 
@@ -284,11 +286,11 @@ Parcel.belongsTo(Society, { foreignKey: "society_id" });
    guard_id stays exactly as it was (legacy single-guard column). The new
    columns keep the two real gate events apart: who received the parcel and
    who handed it over. Nothing here back-fills existing rows. */
-Parcel.belongsTo(User, { foreignKey: "requested_by",    as: "requester" });
+Parcel.belongsTo(User, { foreignKey: "requested_by", as: "requester" });
 Parcel.belongsTo(User, { foreignKey: "arrival_guard_id", as: "arrivalGuard" });
 Parcel.belongsTo(User, { foreignKey: "delivery_guard_id", as: "deliveryGuard" });
 
-User.hasMany(Parcel, { foreignKey: "requested_by",     as: "requestedParcels" });
+User.hasMany(Parcel, { foreignKey: "requested_by", as: "requestedParcels" });
 User.hasMany(Parcel, { foreignKey: "arrival_guard_id", as: "arrivalParcels" });
 User.hasMany(Parcel, { foreignKey: "delivery_guard_id", as: "deliveryParcels" });
 
@@ -435,10 +437,10 @@ UserSetting.belongsTo(User, { foreignKey: "user_id" });
 
 // 2. Associations — add after your existing ones
 Document.belongsTo(User, { foreignKey: "uploaded_by", as: "uploader" });
-User.hasMany(Document,   { foreignKey: "uploaded_by", as: "uploadedDocs" });
+User.hasMany(Document, { foreignKey: "uploaded_by", as: "uploadedDocs" });
 
 Document.belongsTo(Society, { foreignKey: "society_id" });
-Society.hasMany(Document,   { foreignKey: "society_id" });
+Society.hasMany(Document, { foreignKey: "society_id" });
 
 // 3. Add Document to the exports object at the bottom
 
@@ -526,6 +528,15 @@ LedgerEntry.belongsTo(Society, { foreignKey: "society_id", as: "society" });
 Society.hasMany(FinancialAuditLog, { foreignKey: "society_id", as: "auditLogs" });
 FinancialAuditLog.belongsTo(Society, { foreignKey: "society_id", as: "society" });
 
+/* ==== EVENT MANAGEMENT ASSOCIATIONS ==== */
+Society.hasMany(Event, { foreignKey: "society_id", as: "events" });
+Event.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
+Event.hasMany(EventMedia, { foreignKey: "event_id", as: "media", onDelete: "CASCADE" });
+EventMedia.belongsTo(Event, { foreignKey: "event_id", as: "event" });
+
+Event.belongsTo(User, { foreignKey: "created_by_user_id", as: "creator" });
+User.hasMany(Event, { foreignKey: "created_by_user_id", as: "createdEvents" });
 
 module.exports = {
   sequelize,
@@ -570,4 +581,6 @@ module.exports = {
   CleaningStaffPass,
   CleaningStaffAttendance,
   GuardAttendance,
+  Event,
+  EventMedia,
 };

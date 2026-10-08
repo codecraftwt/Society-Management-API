@@ -36,6 +36,7 @@ const ALL_MODULE_ACTIONS = {
   // from generic edit so a society can delegate scheduling without handing
   // over the ability to rewrite payroll or attendance history.
   cleaning_staff: ["view", "create", "edit", "status", "create_passes", "edit_passes", "edit_attendance", "scan"],
+  events: ["view", "create", "edit", "delete"],
 };
 
 // Default baseline section enablement per role
@@ -66,6 +67,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     general_ledger: true,
     financial_audit_log: true,
     cleaning_staff: true,
+    events: true,
   },
   ACCOUNTANT: {
     dashboard: true,
@@ -93,6 +95,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     general_ledger: true,
     financial_audit_log: true,
     cleaning_staff: false,
+    events: false,
   },
   GUARD: {
     dashboard: true,
@@ -120,6 +123,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     general_ledger: false,
     financial_audit_log: false,
     cleaning_staff: false,
+    events: false,
   },
   RESIDENT: {
     dashboard: true,
@@ -147,6 +151,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     general_ledger: false,
     financial_audit_log: false,
     cleaning_staff: false,
+    events: false,
   },
   TENANT: {
     dashboard: true,
@@ -173,6 +178,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     general_ledger: false,
     financial_audit_log: false,
     cleaning_staff: false,
+    events: false,
   },
 };
 

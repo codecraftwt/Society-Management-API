@@ -402,9 +402,9 @@ const listAttendance = handle(async (req, res) => {
   const where = {};
   if (societyId) where.society_id = societyId;
 
-  if (date) where.attendance_date = date;
-  if (guard_id) where.guard_id = parseInt(guard_id, 10);
-  if (status) where.status = status;
+  if (date && date !== "ALL") where.attendance_date = date;
+  if (guard_id && guard_id !== "ALL") where.guard_id = parseInt(guard_id, 10);
+  if (status && status !== "ALL") where.status = status;
 
   const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
 

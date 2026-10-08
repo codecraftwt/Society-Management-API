@@ -164,7 +164,18 @@ const getAllFlats = async (req, res) => {
         {
           model: User,
           required: false,
-          attributes: ["id", "name", "email", "phone"],
+          attributes: ["id", "name", "email", "phone", "resident_type"],
+        },
+        {
+          model: FlatMembership,
+          required: false,
+          include: [
+            {
+              model: User,
+              required: false,
+              attributes: ["id", "name", "email", "phone", "resident_type"],
+            },
+          ],
         },
       ],
       order: [["flat_number", "ASC"]],

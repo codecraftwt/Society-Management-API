@@ -333,6 +333,7 @@ const getSocietyVisitors = async (req, res) => {
               include: [{ model: Block, required: false, attributes: ["id", "name"] }],
             },
             { model: Block, required: false, attributes: ["id", "name"] },
+            { model: User, required: false, attributes: ["id", "name", "email", "phone"] },
           ],
         },
       ],

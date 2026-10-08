@@ -23,7 +23,13 @@ const getPrimaryResidentId = async (userId) => {
 ═══════════════════════════════════════════ */
 const createParkingSlots = async (req, res) => {
   try {
-    const { prefix, start_number, count, vehicle_type, parking_floor } = req.body;
+    const { prefix, start_number, count, vehicle_type, parking_floor, wing } = req.body;
+    const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
+    const targetSocietyId = req.body.society_id || req.headers["x-society-id"] || req.query.society_id || req.user.society_id;
+
+    if (!targetSocietyId) {
+      return res.status(400).json({ message: "society_id is required" });
+    }
 
     if (!prefix || !start_number || !count || !vehicle_type) {
       return res.status(400).json({ message: "All fields are required" });
@@ -41,6 +47,7 @@ const createParkingSlots = async (req, res) => {
     }
 
     const cleanPrefix = sanitizeText(prefix);
+    const cleanWing = wing ? sanitizeText(wing) : null;
 
     const slotsToCreate = [];
 
@@ -49,17 +56,18 @@ const createParkingSlots = async (req, res) => {
 
       const existing = await ParkingSlot.findOne({
         where: {
-          society_id:  req.user.society_id,
+          society_id:  targetSocietyId,
           slot_number: slotNumber,
         },
       });
 
       if (!existing) {
         slotsToCreate.push({
-          society_id:    req.user.society_id,
+          society_id:    targetSocietyId,
           slot_number:   slotNumber,
           vehicle_type,
           parking_floor: parking_floor || null,
+          wing:          cleanWing,
           status:        "AVAILABLE",
         });
       }
@@ -93,13 +101,21 @@ const getParkingSlots = async (req, res) => {
     const vehicleType  = req.query.vehicle_type  || "ALL";
     const statusFilter = req.query.status        || "ALL";
     const parkingType  = req.query.parking_type || "ALL";
+    const wingFilter   = req.query.wing;
 
-    const baseWhere = { society_id: req.user.society_id };
+    const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
+    const rawSoc = req.headers["x-society-id"] || req.query.society_id;
+    const targetSocietyId = (rawSoc && rawSoc !== "ALL" && rawSoc !== "null" && rawSoc !== "undefined")
+      ? parseInt(rawSoc, 10)
+      : (!isSuperAdmin ? req.user.society_id : null);
+
+    const baseWhere = targetSocietyId ? { society_id: targetSocietyId } : {};
     const where     = { ...baseWhere };
 
     if (vehicleType !== "ALL") where.vehicle_type = vehicleType;
     if (statusFilter !== "ALL") where.status = statusFilter;
     if (parkingType !== "ALL") where.parking_type = parkingType;
+    if (wingFilter && wingFilter !== "ALL") where.wing = wingFilter;
 
     if (search) {
       const cleanSearch = search.replace(/[\s\-_]+/g, "");
@@ -115,7 +131,7 @@ const getParkingSlots = async (req, res) => {
 
       const matchedVehicles = await Vehicle.findAll({
         where: {
-          society_id: req.user.society_id,
+          ...(targetSocietyId ? { society_id: targetSocietyId } : {}),
           [Op.or]: vehicleConditions,
         },
         attributes: ["id", "parking_slot_id", "flat_id", "resident_id"],
@@ -128,6 +144,7 @@ const getParkingSlots = async (req, res) => {
       const orConditions = [
         { slot_number:                { [Op.like]: `%${search}%` } },
         { parking_floor:              { [Op.like]: `%${search}%` } },
+        { wing:                       { [Op.like]: `%${search}%` } },
         { "$Flat.flat_number$":       { [Op.like]: `%${search}%` } },
         { "$resident.name$":          { [Op.like]: `%${search}%` } },
         { "$Vehicle.vehicle_number$": { [Op.like]: `%${search}%` } },
@@ -155,7 +172,12 @@ const getParkingSlots = async (req, res) => {
     }
 
     const include = [
-      { model: Flat, attributes: ["id", "flat_number"], required: false },
+      {
+        model: Flat,
+        attributes: ["id", "flat_number"],
+        include: [{ model: Block, attributes: ["id", "name"], required: false }],
+        required: false,
+      },
       { model: User, as: "resident", attributes: ["id", "name", "email", "phone"], required: false },
       {
         model: Vehicle,
@@ -185,8 +207,8 @@ const getParkingSlots = async (req, res) => {
     if (missingFlatIds.length > 0) {
       const extraVehicles = await Vehicle.findAll({
         where: {
-          society_id: req.user.society_id,
-          flat_id:    { [Op.in]: missingFlatIds },
+          ...(targetSocietyId ? { society_id: targetSocietyId } : {}),
+          flat_id: { [Op.in]: missingFlatIds },
         },
         attributes: ["id", "vehicle_number", "vehicle_name", "vehicle_type", "flat_id", "resident_id"],
       });
@@ -214,6 +236,7 @@ const getParkingSlots = async (req, res) => {
         society_id:    j.society_id,
         slot_number:   j.slot_number,
         parking_floor: j.parking_floor,
+        wing:          j.wing || j.Flat?.Block?.name || null,
         vehicle_type:  j.vehicle_type,
         status:        j.status,
         parking_type:  j.parking_type,
@@ -277,10 +300,15 @@ const getParkingSlots = async (req, res) => {
 const getAvailableSlots = async (req, res) => {
   try {
     const { vehicle_type } = req.query;
+    const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
+    const rawSoc = req.headers["x-society-id"] || req.query.society_id;
+    const targetSocietyId = (rawSoc && rawSoc !== "ALL" && rawSoc !== "null" && rawSoc !== "undefined")
+      ? parseInt(rawSoc, 10)
+      : (!isSuperAdmin ? req.user.society_id : null);
 
     const where = {
-      society_id: req.user.society_id,
-      status:     "AVAILABLE",
+      ...(targetSocietyId ? { society_id: targetSocietyId } : {}),
+      status: "AVAILABLE",
     };
 
     if (vehicle_type && vehicle_type !== "ALL") {
@@ -305,9 +333,12 @@ const getAvailableSlots = async (req, res) => {
 ═══════════════════════════════════════════ */
 const deleteParkingSlot = async (req, res) => {
   try {
-    const slot = await ParkingSlot.findOne({
-      where: { id: req.params.id, society_id: req.user.society_id },
-    });
+    const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
+    const targetSocietyId = req.headers["x-society-id"] || req.query.society_id || req.user.society_id;
+    const where = { id: req.params.id };
+    if (!isSuperAdmin && targetSocietyId) where.society_id = targetSocietyId;
+
+    const slot = await ParkingSlot.findOne({ where });
     if (!slot) return res.status(404).json({ message: "Slot not found" });
 
     await slot.destroy();
@@ -322,7 +353,7 @@ const deleteParkingSlot = async (req, res) => {
 /* ═══════════════════════════════════════════
    4b️⃣  UPDATE SLOT  (ADMIN only)
    → Edits slot_number / parking_floor / vehicle_type / parking_type
-→ Route: PUT /parking-slots/:id
+   → Route: PUT /parking-slots/:id
 ═══════════════════════════════════════════ */
 const updateParkingSlot = async (req, res) => {
   try {
@@ -332,9 +363,12 @@ const updateParkingSlot = async (req, res) => {
       return res.status(400).json({ message: "Slot number and vehicle type are required" });
     }
 
-    const slot = await ParkingSlot.findOne({
-      where: { id: req.params.id, society_id: req.user.society_id },
-    });
+    const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
+    const targetSocietyId = req.headers["x-society-id"] || req.query.society_id || req.user.society_id;
+    const where = { id: req.params.id };
+    if (!isSuperAdmin && targetSocietyId) where.society_id = targetSocietyId;
+
+    const slot = await ParkingSlot.findOne({ where });
 
     if (!slot) return res.status(404).json({ message: "Slot not found" });
 
@@ -346,7 +380,7 @@ const updateParkingSlot = async (req, res) => {
     if (trimmed !== slot.slot_number) {
       const dup = await ParkingSlot.findOne({
         where: {
-          society_id: req.user.society_id,
+          society_id:  slot.society_id,
           slot_number: trimmed,
           id:          { [Op.ne]: slot.id },
         },
@@ -359,6 +393,9 @@ const updateParkingSlot = async (req, res) => {
     slot.vehicle_type  = vehicle_type;
     if (parking_type === "DEFAULT" || parking_type === "EXTRA") {
       slot.parking_type = parking_type;
+    }
+    if (req.body.wing !== undefined) {
+      slot.wing = req.body.wing ? sanitizeText(req.body.wing) : null;
     }
 
     if (req.body.flat_id !== undefined) {
@@ -395,10 +432,12 @@ const updateParkingSlot = async (req, res) => {
 const revokeSlotAssignment = async (req, res) => {
   try {
     const { slot_id } = req.body;
+    const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
+    const targetSocietyId = req.headers["x-society-id"] || req.query.society_id || req.user.society_id;
+    const where = { id: slot_id };
+    if (!isSuperAdmin && targetSocietyId) where.society_id = targetSocietyId;
 
-    const slot = await ParkingSlot.findOne({
-      where: { id: slot_id, society_id: req.user.society_id },
-    });
+    const slot = await ParkingSlot.findOne({ where });
 
     if (!slot) return res.status(404).json({ message: "Slot not found" });
 
@@ -411,7 +450,7 @@ const revokeSlotAssignment = async (req, res) => {
     // Also unlink any vehicles pointing to this slot
     await Vehicle.update(
       { parking_slot_id: null },
-      { where: { parking_slot_id: slot_id, society_id: req.user.society_id } }
+      { where: { parking_slot_id: slot_id } }
     );
 
     res.json({ message: "Slot assignment revoked", slot });

@@ -28,6 +28,10 @@ const ParkingSlot = sequelize.define(
       defaultValue: "DEFAULT",
       allowNull: false,
     },
+    wing: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
   },
   { tableName: "parking_slots", timestamps: true }
 );
