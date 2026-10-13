@@ -196,10 +196,9 @@ describe("Payments API", () => {
     expect(res.status).toBe(400);
   });
 
-  it("GET /api/payments/debug-bills returns bills", async () => {
+  it("GET /api/payments/debug-bills is no longer exposed (404)", async () => {
     const res = await request(app).get("/api/payments/debug-bills");
-    expectOk(res);
-    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.status).toBe(404);
   });
 });
 

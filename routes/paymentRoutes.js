@@ -1,5 +1,4 @@
 const express = require("express");
-const Bill = require("../models/Bill");
 const router = express.Router();
 const auth = require("../middlewares/authMiddleware");
 const role = require("../middlewares/roleMiddleware");
@@ -23,11 +22,9 @@ router.post("/demo-upi", auth, role("RESIDENT"), createDemoUpi);
 
 router.post("/demo-verify", auth, role("RESIDENT"), verifyDemoPayment);
 
-/* === DEBUG === */
-
-router.get("/debug-bills", async (req, res) => {
-  const bills = await Bill.findAll();
-  res.json(bills);
-});
+/* Note: the former unauthenticated `GET /debug-bills` endpoint was removed.
+   It returned every bill in every society with no authentication, exposing
+   cross-tenant financial data. Nothing in Web, Mobile or the API depended on
+   it (only a test asserted its existence). */
 
 module.exports = router;

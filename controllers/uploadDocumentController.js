@@ -1,8 +1,28 @@
 const UserDocuments = require("../models/UserDocuments");
+const User = require("../models/User");
 
 const uploadDocumentsController = async (req, res) => {
   try {
-    const userId = req.query.userId || req.user.id;
+    const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
+    const isSocietyAdmin = req.user.role === "SOCIETY_ADMIN" || req.user.activeRole === "SOCIETY_ADMIN";
+    let userId = req.user.id;
+
+    if (req.query.userId) {
+      if (isSuperAdmin) {
+        userId = parseInt(req.query.userId, 10) || req.user.id;
+      } else if (isSocietyAdmin) {
+        const targetUserId = parseInt(req.query.userId, 10);
+        if (targetUserId && targetUserId !== req.user.id) {
+          const targetUser = await User.findOne({ where: { id: targetUserId, society_id: req.user.society_id } });
+          if (!targetUser) {
+            return res.status(403).json({ message: "Cannot upload documents for a user outside your society" });
+          }
+          userId = targetUserId;
+        }
+      } else if (parseInt(req.query.userId, 10) !== req.user.id) {
+        return res.status(403).json({ message: "You can only upload documents for yourself" });
+      }
+    }
 
     const aadhar = req.files?.aadhar?.[0];
     const pan    = req.files?.pan?.[0];

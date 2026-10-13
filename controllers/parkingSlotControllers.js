@@ -6,6 +6,15 @@ const { sanitizeText, isPositiveNumber } = require("../utils/validation");
 
 
 /* ── helper ── */
+const resolveTargetSocietyId = (req) => {
+  const isSuperAdmin = req.user?.role === "SUPER_ADMIN" || req.user?.activeRole === "SUPER_ADMIN";
+  if (!isSuperAdmin) return req.user?.society_id || null;
+  const raw = req.body?.society_id || req.headers?.["x-society-id"] || req.query?.society_id;
+  if (!raw || raw === "ALL" || raw === "null" || raw === "undefined") return null;
+  const parsed = parseInt(raw, 10);
+  return isNaN(parsed) ? null : parsed;
+};
+
 const getPrimaryResidentId = async (userId) => {
   const flat = await Flat.findOne({ where: { resident_id: userId } });
   if (flat) return flat.resident_id;
@@ -24,8 +33,7 @@ const getPrimaryResidentId = async (userId) => {
 const createParkingSlots = async (req, res) => {
   try {
     const { prefix, start_number, count, vehicle_type, parking_floor, wing } = req.body;
-    const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
-    const targetSocietyId = req.body.society_id || req.headers["x-society-id"] || req.query.society_id || req.user.society_id;
+    const targetSocietyId = resolveTargetSocietyId(req);
 
     if (!targetSocietyId) {
       return res.status(400).json({ message: "society_id is required" });
@@ -103,11 +111,7 @@ const getParkingSlots = async (req, res) => {
     const parkingType  = req.query.parking_type || "ALL";
     const wingFilter   = req.query.wing;
 
-    const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
-    const rawSoc = req.headers["x-society-id"] || req.query.society_id;
-    const targetSocietyId = (rawSoc && rawSoc !== "ALL" && rawSoc !== "null" && rawSoc !== "undefined")
-      ? parseInt(rawSoc, 10)
-      : (!isSuperAdmin ? req.user.society_id : null);
+    const targetSocietyId = resolveTargetSocietyId(req);
 
     const baseWhere = targetSocietyId ? { society_id: targetSocietyId } : {};
     const where     = { ...baseWhere };
@@ -300,11 +304,7 @@ const getParkingSlots = async (req, res) => {
 const getAvailableSlots = async (req, res) => {
   try {
     const { vehicle_type } = req.query;
-    const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
-    const rawSoc = req.headers["x-society-id"] || req.query.society_id;
-    const targetSocietyId = (rawSoc && rawSoc !== "ALL" && rawSoc !== "null" && rawSoc !== "undefined")
-      ? parseInt(rawSoc, 10)
-      : (!isSuperAdmin ? req.user.society_id : null);
+    const targetSocietyId = resolveTargetSocietyId(req);
 
     const where = {
       ...(targetSocietyId ? { society_id: targetSocietyId } : {}),
@@ -334,7 +334,7 @@ const getAvailableSlots = async (req, res) => {
 const deleteParkingSlot = async (req, res) => {
   try {
     const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
-    const targetSocietyId = req.headers["x-society-id"] || req.query.society_id || req.user.society_id;
+    const targetSocietyId = resolveTargetSocietyId(req);
     const where = { id: req.params.id };
     if (!isSuperAdmin && targetSocietyId) where.society_id = targetSocietyId;
 
@@ -364,7 +364,7 @@ const updateParkingSlot = async (req, res) => {
     }
 
     const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
-    const targetSocietyId = req.headers["x-society-id"] || req.query.society_id || req.user.society_id;
+    const targetSocietyId = resolveTargetSocietyId(req);
     const where = { id: req.params.id };
     if (!isSuperAdmin && targetSocietyId) where.society_id = targetSocietyId;
 
@@ -433,7 +433,7 @@ const revokeSlotAssignment = async (req, res) => {
   try {
     const { slot_id } = req.body;
     const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
-    const targetSocietyId = req.headers["x-society-id"] || req.query.society_id || req.user.society_id;
+    const targetSocietyId = resolveTargetSocietyId(req);
     const where = { id: slot_id };
     if (!isSuperAdmin && targetSocietyId) where.society_id = targetSocietyId;
 

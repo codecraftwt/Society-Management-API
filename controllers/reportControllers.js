@@ -248,7 +248,13 @@ const getComplaintReport = async (req, res) => {
 
 /* ═══════════════════════════════════════
    FINANCIAL REPORT  ← PAGINATION
-═══════════════════════════════════════ */
+   Bills are society-scoped through Flat → Block.society_id (bills has no
+   society_id column). A non-Super-Admin's scope is hard-pinned to their own
+   society; a client-supplied ?society_id / x-society-id can never widen it.
+   (Previously targetSocId = header || query || user.society_id, and the
+   stat-strip query applied no society filter at all, so a society admin could
+   read another society's bills and totals.)
+   ═══════════════════════════════════════ */
 const getFinancialReport = async (req, res) => {
   try {
     const page   = Math.max(1, parseInt(req.query.page)  || 1);
@@ -256,8 +262,7 @@ const getFinancialReport = async (req, res) => {
     const offset = (page - 1) * limit;
 
     const { status, fromDate, toDate, block_id, floor_id, flat_id, society_id } = req.query;
-    const targetSocId = req.headers["x-society-id"] || society_id || req.user.society_id;
-    const isGlobalSuperAdmin = req.user.activeRole === "SUPER_ADMIN" && !targetSocId;
+    const { societyId: targetSocId } = resolveReportScope(req, society_id);
 
     const billWhere = {};
     if (status) billWhere.status = status;
@@ -270,38 +275,37 @@ const getFinancialReport = async (req, res) => {
       };
     }
 
-    // Resolve society, block, floor, flat scoping up-front to flat IDs
-    let targetFlatIds = null;
+    // Resolve the society's flats (trusted scope) first, then narrow by any
+    // block/floor/flat filter. Both are intersected so a filter can only ever
+    // tighten the authorized scope, never widen it.
+    let scopeFlatIds = null;
+    if (targetSocId !== null) {
+      const socBlockIds = (
+        await Block.findAll({ where: { society_id: targetSocId }, attributes: ["id"] })
+      ).map((b) => b.id);
+      scopeFlatIds = socBlockIds.length
+        ? (await Flat.findAll({ where: { block_id: { [Op.in]: socBlockIds } }, attributes: ["id"] })).map((f) => f.id)
+        : [];
+    }
+
+    let filterFlatIds = null;
     if (flat_id) {
-      targetFlatIds = [parseInt(flat_id)];
-    } else {
-      const blockQuery = {};
-      if (!isGlobalSuperAdmin && targetSocId && targetSocId !== "ALL") {
-        blockQuery.society_id = targetSocId;
-      }
-      if (block_id) {
-        blockQuery.id = block_id;
-      }
-
-      const hasBlockFilter = Object.keys(blockQuery).length > 0;
-      let matchedBlockIds = null;
-      if (hasBlockFilter) {
-        const blocks = await Block.findAll({ where: blockQuery, attributes: ["id"] });
-        matchedBlockIds = blocks.map((b) => b.id);
-      }
-
+      filterFlatIds = [parseInt(flat_id, 10)];
+    } else if (block_id || floor_id) {
       const flatQuery = {};
-      if (matchedBlockIds !== null) {
-        flatQuery.block_id = { [Op.in]: matchedBlockIds };
-      }
-      if (floor_id) {
-        flatQuery.floor_id = floor_id;
-      }
+      if (block_id) flatQuery.block_id = block_id;
+      if (floor_id) flatQuery.floor_id = floor_id;
+      filterFlatIds = (await Flat.findAll({ where: flatQuery, attributes: ["id"] })).map((f) => f.id);
+    }
 
-      if (Object.keys(flatQuery).length > 0) {
-        const flats = await Flat.findAll({ where: flatQuery, attributes: ["id"] });
-        targetFlatIds = flats.map((f) => f.id);
-      }
+    let targetFlatIds = null;
+    if (scopeFlatIds !== null && filterFlatIds !== null) {
+      const allowed = new Set(scopeFlatIds);
+      targetFlatIds = filterFlatIds.filter((id) => allowed.has(id));
+    } else if (scopeFlatIds !== null) {
+      targetFlatIds = scopeFlatIds;
+    } else if (filterFlatIds !== null) {
+      targetFlatIds = filterFlatIds;
     }
 
     if (targetFlatIds !== null) {
@@ -343,7 +347,10 @@ const getFinancialReport = async (req, res) => {
       col:      "id",
     });
 
-    // Unfiltered counts for stat strip
+    // Stat strip: same trusted tenant scope (targetFlatIds now carries the
+    // society restriction), intentionally ignoring status/date so the tiles
+    // describe the whole visible slice — consistent with the payment and
+    // expense reports.
     const allBills = await Bill.findAll({
       attributes: ["id", "status", "amount"],
       where: targetFlatIds !== null ? { flat_id: { [Op.in]: targetFlatIds } } : {},
@@ -356,7 +363,7 @@ const getFinancialReport = async (req, res) => {
     const totalDue       = allBills.filter(b => b.status !== "PAID").reduce((s, b) => s + Number(b.amount), 0);
 
     const ledgerWhere = {};
-    if (!isGlobalSuperAdmin && targetSocId && targetSocId !== "ALL") {
+    if (targetSocId !== null) {
       ledgerWhere.society_id = targetSocId;
     }
     if (fromDate && toDate) {

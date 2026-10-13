@@ -20,6 +20,34 @@ const addDays = (days) => {
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
+/* ═══════════════════════════════════════
+   BILL TENANT SCOPE RESOLVER (shared)
+   Bills have no society_id column, so society is derived through
+   Flat → Block.society_id. A SUPER_ADMIN may look across all societies or
+   narrow to one via x-society-id / ?society_id. EVERY other role is
+   hard-pinned to req.user.society_id — a client-supplied society_id can never
+   widen their scope (previously getSocietyBills and confirmPayment used
+   `header || query || user.society_id` for any role).
+   ═══════════════════════════════════════ */
+const resolveBillScope = (req) => {
+  if (req.user?.activeRole === "SUPER_ADMIN") {
+    const raw = req.headers["x-society-id"] ||
+      (req.query?.society_id && req.query.society_id !== "ALL" ? req.query.society_id : null);
+    const id = parseInt(raw, 10);
+    return { isSuperAdmin: true, societyId: Number.isInteger(id) && id > 0 ? id : null };
+  }
+  const own = parseInt(req.user?.society_id, 10);
+  return { isSuperAdmin: false, societyId: Number.isInteger(own) && own > 0 ? own : null };
+};
+
+/* Assert a single bill belongs to an authorized society. Returns true if the
+   caller may act on it. Global super admins are unrestricted. */
+const billInScope = (scope, bill) => {
+  if (scope.isSuperAdmin && scope.societyId === null) return true;
+  const billSociety = parseInt(bill?.Flat?.Block?.society_id, 10);
+  return scope.societyId !== null && Number.isInteger(billSociety) && billSociety === scope.societyId;
+};
+
 /* =====
    CREATE BILL
 ===== */
@@ -246,9 +274,13 @@ const getSocietyBills = async (req, res) => {
     // ── Filter: category / type ──
     const category = req.query.category || req.query.type;
 
-    // ── Society scope ──
-    const targetSocId = req.headers["x-society-id"] || req.query.society_id || req.user.society_id;
-    const isGlobalSuperAdmin = req.user.activeRole === "SUPER_ADMIN" && !targetSocId;
+    // ── Society scope (non-super-admins are hard-pinned to their own society) ──
+    const scope = resolveBillScope(req);
+    if (!scope.isSuperAdmin && scope.societyId === null) {
+      return res.status(403).json({ message: "Your account is not scoped to a society." });
+    }
+    const isGlobalSuperAdmin = scope.isSuperAdmin && scope.societyId === null;
+    const targetSocId = scope.societyId;
 
     // ── Status & Society WHERE ──
     const billWhere = {};
@@ -516,10 +548,16 @@ const deleteBill = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const bill = await Bill.findByPk(id);
+    const bill = await Bill.findByPk(id, {
+      include: [{ model: Flat, include: [{ model: Block }] }],
+    });
 
     if (!bill) {
       return res.status(404).json({ message: "Bill not found" });
+    }
+
+    if (!billInScope(resolveBillScope(req), bill)) {
+      return res.status(403).json({ message: "You are not authorized to delete this bill." });
     }
 
     // Remove only unconfirmed payment attempts. SUCCESS payments are permanent
@@ -695,7 +733,12 @@ const confirmPayment = async (req, res) => {
       });
     }
 
-    const targetSocietyId = req.headers["x-society-id"] || req.user.society_id;
+    const scope = resolveBillScope(req);
+    if (!billInScope(scope, bill)) {
+      return res.status(403).json({ success: false, message: "You are not authorized to confirm this bill." });
+    }
+
+    const targetSocietyId = scope.societyId || bill.Flat?.Block?.society_id || req.user.society_id;
     await processConfirmSingleBill(bill, req.user, targetSocietyId);
 
     return res.status(200).json({
@@ -724,15 +767,18 @@ const bulkConfirmPayment = async (req, res) => {
       return res.status(400).json({ success: false, message: "No valid bill IDs provided." });
     }
 
-    const isGlobalSuperAdmin = req.user.activeRole === "SUPER_ADMIN" && !req.headers["x-society-id"];
-    const targetSocietyId = req.headers["x-society-id"] || req.user.society_id;
+    const scope = resolveBillScope(req);
+    if (!scope.isSuperAdmin && scope.societyId === null) {
+      return res.status(403).json({ success: false, message: "Your account is not scoped to a society." });
+    }
+    const targetSocietyId = scope.societyId;
 
     const blockInclude = {
       model: Block,
       required: true,
       attributes: ["id", "name", "society_id"],
     };
-    if (!isGlobalSuperAdmin && targetSocietyId) {
+    if (targetSocietyId !== null) {
       blockInclude.where = { society_id: targetSocietyId };
     }
 
@@ -795,15 +841,18 @@ const bulkDeleteBills = async (req, res) => {
       return res.status(400).json({ success: false, message: "No valid bill IDs provided." });
     }
 
-    const isGlobalSuperAdmin = req.user.activeRole === "SUPER_ADMIN" && !req.headers["x-society-id"];
-    const targetSocietyId = req.headers["x-society-id"] || req.user.society_id;
+    const scope = resolveBillScope(req);
+    if (!scope.isSuperAdmin && scope.societyId === null) {
+      return res.status(403).json({ success: false, message: "Your account is not scoped to a society." });
+    }
+    const targetSocietyId = scope.societyId;
 
     const blockInclude = {
       model: Block,
       required: true,
       attributes: ["id", "name", "society_id"],
     };
-    if (!isGlobalSuperAdmin && targetSocietyId) {
+    if (targetSocietyId !== null) {
       blockInclude.where = { society_id: targetSocietyId };
     }
 

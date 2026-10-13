@@ -399,18 +399,25 @@ const updateSocietyTheme = async (req, res) => {
     society.theme_updated_at = new Date();
     await society.save();
 
-    // Broadcast real-time theme change to all connected clients in the society room
+    // Broadcast real-time theme change to all connected clients in the society room and globally
     if (global.io) {
+      const themePayload = {
+        primary: society.primary_color,
+        primary_color: society.primary_color,
+        accent: society.accent_color,
+        accent_color: society.accent_color,
+        cardStyle: society.card_style || "default",
+        card_style: society.card_style || "default",
+        quickLinkStyle: society.quick_link_style || "default",
+        quick_link_style: society.quick_link_style || "default",
+      };
       global.io.to(`society_${society.id}`).emit("society_theme_updated", {
         society_id: society.id,
-        theme: {
-          primary: society.primary_color,
-          accent: society.accent_color,
-          cardStyle: society.card_style || "default",
-          card_style: society.card_style || "default",
-          quickLinkStyle: society.quick_link_style || "default",
-          quick_link_style: society.quick_link_style || "default",
-        },
+        theme: themePayload,
+      });
+      global.io.emit("society_theme_updated", {
+        society_id: society.id,
+        theme: themePayload,
       });
     }
 
@@ -471,16 +478,23 @@ const resetSocietyTheme = async (req, res) => {
     await society.save();
 
     if (global.io) {
+      const resetPayload = {
+        primary: null,
+        primary_color: null,
+        accent: null,
+        accent_color: null,
+        cardStyle: "default",
+        card_style: "default",
+        quickLinkStyle: "default",
+        quick_link_style: "default",
+      };
       global.io.to(`society_${society.id}`).emit("society_theme_updated", {
         society_id: society.id,
-        theme: {
-          primary: null,
-          accent: null,
-          cardStyle: "default",
-          card_style: "default",
-          quickLinkStyle: "default",
-          quick_link_style: "default",
-        },
+        theme: resetPayload,
+      });
+      global.io.emit("society_theme_updated", {
+        society_id: society.id,
+        theme: resetPayload,
       });
     }
 

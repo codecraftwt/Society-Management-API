@@ -871,6 +871,8 @@ const getNoticeAcknowledgements = async (req, res) => {
         );
       } else if (status === "NOT_VIEWED") {
         userList = userList.filter((u) => u.status === "NOT_VIEWED");
+      } else if (status === "PENDING") {
+        userList = userList.filter((u) => u.status !== "ACKNOWLEDGED");
       }
     }
 

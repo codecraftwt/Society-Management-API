@@ -744,7 +744,10 @@ const createGuard = async (req, res) => {
    ===== */
 const getGuards = async (req, res) => {
   try {
-    const targetSocietyId = req.params.societyId || req.query.society_id || (req.user.role !== "SUPER_ADMIN" ? req.user.society_id : null);
+    const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
+    const targetSocietyId = isSuperAdmin
+      ? (req.params.societyId || req.query.society_id || null)
+      : req.user.society_id;
     const where = targetSocietyId ? { society_id: targetSocietyId } : {};
 
     const allUsers = await User.findAll({
