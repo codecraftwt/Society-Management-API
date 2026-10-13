@@ -4,6 +4,7 @@ const { Op } = require("sequelize");
 const {
   Block, Flat, VisitorLog, Payment, Complaint, Notice, Bill, Notification,
   Floor, Vehicle, ParkingSlot, Amenity, EmergencyAlert, Document, GuardShift,
+  AccountantAssignment,
 } = require("../models");
 
 // CREATE SOCIETY
@@ -290,7 +291,17 @@ const getSocietyTheme = async (req, res) => {
   }
 
   const isSuperAdmin = req.user?.activeRole === "SUPER_ADMIN" || req.user?.role === "SUPER_ADMIN";
-  const isOwnSociety = req.user?.society_id === targetId;
+  const userSocId = Number(req.user?.society_id || req.user?.society?.id);
+  let isOwnSociety = !isNaN(userSocId) && userSocId === targetId;
+
+  if (!isOwnSociety && req.user?.id) {
+    try {
+      const assignment = await AccountantAssignment.findOne({
+        where: { user_id: req.user.id, society_id: targetId },
+      });
+      if (assignment) isOwnSociety = true;
+    } catch (_) {}
+  }
 
   // Cross-society access guard: only Super Admin or authenticated members of the target society can read its theme
   if (!isSuperAdmin && !isOwnSociety) {
