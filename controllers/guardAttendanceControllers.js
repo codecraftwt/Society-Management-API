@@ -190,15 +190,25 @@ const punchIn = handle(async (req, res) => {
   );
   const radiusMetres = parseFloat(society.location_radius) || 50;
 
-  if (distanceMetres > radiusMetres) {
+  // Real-world mobile/browser GPS accuracy tolerance:
+  // Mobile GPS naturally has 15-20m drift (especially at gates, under roofs); browser/network geolocation can have 50-120m inaccuracy.
+  // We incorporate a realistic GPS tolerance buffer (capped at 100m to prevent out-of-city abuse).
+  const accuracyBuffer = Math.min(
+    Math.max(accuracy != null && !isNaN(accuracy) ? accuracy * 0.75 : 15, 15),
+    100
+  );
+  const effectiveRadius = radiusMetres + accuracyBuffer;
+
+  if (distanceMetres > effectiveRadius) {
     if (req.file?.filename) {
       cloudinary.uploader.destroy(req.file.filename, { resource_type: "image" }).catch(() => {});
     }
     return res.status(403).json({
-      message: "You are outside the society location. Please move closer to the society and try again.",
+      message: `You are outside the society location (${Math.round(distanceMetres)}m away, allowed within ${Math.round(radiusMetres)}m). Please move closer to the society gate and try again.`,
       code: "OUTSIDE_GEOFENCE",
       distance_metres: Math.round(distanceMetres),
-      allowed_radius: radiusMetres,
+      allowed_radius: Math.round(radiusMetres),
+      effective_radius: Math.round(effectiveRadius),
     });
   }
 
@@ -319,13 +329,19 @@ const punchOut = handle(async (req, res) => {
     lng
   );
   const radiusMetres = parseFloat(society.location_radius) || 50;
+  const accuracyBuffer = Math.min(
+    Math.max(accuracy != null && !isNaN(accuracy) ? accuracy * 0.75 : 15, 15),
+    100
+  );
+  const effectiveRadius = radiusMetres + accuracyBuffer;
 
-  if (distanceMetres > radiusMetres) {
+  if (distanceMetres > effectiveRadius) {
     return res.status(403).json({
-      message: "You are outside the society location. Please move closer to the society and try again.",
+      message: `You are outside the society location (${Math.round(distanceMetres)}m away, allowed within ${Math.round(radiusMetres)}m). Please move closer to the society gate and try again.`,
       code: "OUTSIDE_GEOFENCE",
       distance_metres: Math.round(distanceMetres),
-      allowed_radius: radiusMetres,
+      allowed_radius: Math.round(radiusMetres),
+      effective_radius: Math.round(effectiveRadius),
     });
   }
 
@@ -369,15 +385,27 @@ const getTodayAttendance = handle(async (req, res) => {
   const societyId = req.user.society_id;
   const today = getCurrentISTDate();
 
-  const attendance = await GuardAttendance.findOne({
-    where: { guard_id: guardId, society_id: societyId, attendance_date: today },
-    include: [{ model: GuardShift, as: "shift", attributes: ["shift_type", "start_date", "end_date"] }],
-  });
+  const [attendance, society] = await Promise.all([
+    GuardAttendance.findOne({
+      where: { guard_id: guardId, society_id: societyId, attendance_date: today },
+      include: [{ model: GuardShift, as: "shift", attributes: ["shift_type", "start_date", "end_date"] }],
+    }),
+    societyId
+      ? Society.findByPk(societyId, { attributes: ["latitude", "longitude", "location_radius"] })
+      : null,
+  ]);
 
   return res.status(200).json({
     success: true,
     today: today,
     attendance: attendance || null,
+    geofence: society
+      ? {
+          latitude: society.latitude ? parseFloat(society.latitude) : null,
+          longitude: society.longitude ? parseFloat(society.longitude) : null,
+          radius: society.location_radius ? parseFloat(society.location_radius) : 50,
+        }
+      : null,
     server_now: getCurrentISTDateTime(),
     timezone: "Asia/Kolkata",
   });
@@ -402,8 +430,14 @@ const listAttendance = handle(async (req, res) => {
   const where = {};
   if (societyId) where.society_id = societyId;
 
+  if (req.user.role === "GUARD") {
+    // Guards can only view their own attendance history
+    where.guard_id = req.user.id;
+  } else if (guard_id && guard_id !== "ALL") {
+    where.guard_id = parseInt(guard_id, 10);
+  }
+
   if (date && date !== "ALL") where.attendance_date = date;
-  if (guard_id && guard_id !== "ALL") where.guard_id = parseInt(guard_id, 10);
   if (status && status !== "ALL") where.status = status;
 
   const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);

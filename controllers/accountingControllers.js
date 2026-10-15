@@ -146,9 +146,14 @@ const getLedger = async (req, res) => {
       where.entry_date = { [Op.lte]: req.query.to };
     }
 
+    const isDesc = req.query.order?.toUpperCase() === "DESC" || req.query.sort?.toUpperCase() === "DESC";
+    const order = isDesc
+      ? [["entry_date", "DESC"], ["id", "DESC"]]
+      : [["entry_date", "ASC"], ["id", "ASC"]];
+
     const { count, rows } = await LedgerEntry.findAndCountAll({
       where,
-      order: [["entry_date", "ASC"], ["id", "ASC"]],
+      order,
       limit,
       offset,
     });
@@ -233,23 +238,43 @@ const getLedger = async (req, res) => {
     const society = await getSocietyMeta(societyId);
     const opening = Number(society?.opening_balance) || 0;
 
-    let runningBalance = opening;
-    if (offset > 0 && rows.length > 0) {
-      const boundary = { entry_date: rows[0].entry_date, id: rows[0].id };
-      const [before] = await sequelize.query(
-        `SELECT COALESCE(SUM(CASE WHEN type = 'CREDIT' THEN amount ELSE -amount END), 0) AS bal
-           FROM ledger_entries
-           WHERE society_id = ?
-             AND (entry_date < :d OR (entry_date = :d AND id < :i))`,
-        { replacements: { ...boundary, ...{ society_id: societyId } } }
-      );
-      runningBalance += Number(before[0].bal) || 0;
+    let entries = [];
+    if (isDesc) {
+      let runningBalance = opening;
+      if (rows.length > 0) {
+        const boundary = { entry_date: rows[0].entry_date, id: rows[0].id };
+        const [before] = await sequelize.query(
+          `SELECT COALESCE(SUM(CASE WHEN type = 'CREDIT' THEN amount ELSE -amount END), 0) AS bal
+             FROM ledger_entries
+             WHERE society_id = :society_id
+               AND (entry_date < :entry_date OR (entry_date = :entry_date AND id <= :id))`,
+          { replacements: { ...boundary, society_id: societyId } }
+        );
+        runningBalance += Number(before[0]?.bal) || 0;
+      }
+      entries = rows.map((r) => {
+        const current = runningBalance;
+        runningBalance -= r.type === "CREDIT" ? Number(r.amount) : -Number(r.amount);
+        return { ...r.toJSON(), running_balance: Math.round(current * 100) / 100, detail: resolveDetail(r) };
+      });
+    } else {
+      let runningBalance = opening;
+      if (offset > 0 && rows.length > 0) {
+        const boundary = { entry_date: rows[0].entry_date, id: rows[0].id };
+        const [before] = await sequelize.query(
+          `SELECT COALESCE(SUM(CASE WHEN type = 'CREDIT' THEN amount ELSE -amount END), 0) AS bal
+             FROM ledger_entries
+             WHERE society_id = :society_id
+               AND (entry_date < :entry_date OR (entry_date = :entry_date AND id < :id))`,
+          { replacements: { ...boundary, society_id: societyId } }
+        );
+        runningBalance += Number(before[0]?.bal) || 0;
+      }
+      entries = rows.map((r) => {
+        runningBalance += r.type === "CREDIT" ? Number(r.amount) : -Number(r.amount);
+        return { ...r.toJSON(), running_balance: Math.round(runningBalance * 100) / 100, detail: resolveDetail(r) };
+      });
     }
-
-    const entries = rows.map((r) => {
-      runningBalance += r.type === "CREDIT" ? Number(r.amount) : -Number(r.amount);
-      return { ...r.toJSON(), running_balance: Math.round(runningBalance * 100) / 100, detail: resolveDetail(r) };
-    });
 
     // Virtual OPENING row on the first page only when filters allow opening credit entries
     const hasTypeFilter = Boolean(req.query.type && req.query.type.trim());
@@ -266,7 +291,7 @@ const getLedger = async (req, res) => {
       (!req.query.to || (society?.opening_balance_effective_date && society.opening_balance_effective_date <= req.query.to));
 
     let dataEntries = entries;
-    const includeOpeningRow = page === 1 && allowsOpening && opening > 0;
+    const includeOpeningRow = !isDesc && page === 1 && allowsOpening && opening > 0;
     if (includeOpeningRow) {
       dataEntries = [
         {
@@ -283,6 +308,23 @@ const getLedger = async (req, res) => {
           opening: true,
         },
         ...entries,
+      ];
+    } else if (isDesc && offset + rows.length >= count && allowsOpening && opening > 0) {
+      dataEntries = [
+        ...entries,
+        {
+          id: null,
+          type: "CREDIT",
+          source: "OPENING",
+          reference_id: null,
+          amount: opening,
+          entry_date: society?.opening_balance_effective_date || null,
+          description: "Opening balance (pre-tracking funds)",
+          status: "POSTED",
+          created_at: society?.opening_balance_set_at || null,
+          running_balance: opening,
+          opening: true,
+        },
       ];
     }
 

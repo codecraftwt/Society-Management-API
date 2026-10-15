@@ -388,17 +388,17 @@ const updateRolePermissions = async (req, res) => {
 
     const updatedPermissions = await fetchEffectivePermissions(targetSocietyId, targetRole);
 
-    // Emit socket event to society room for immediate client synchronization
+    // Emit socket event to society room, role room, and globally for immediate client synchronization
     if (global.io) {
-      global.io.to(`society_${targetSocietyId}`).emit("permissions_updated", {
+      const socketPayload = {
         role: targetRole,
         society_id: targetSocietyId,
         permissions: updatedPermissions,
-      });
-      global.io.emit("role_permissions_changed", {
-        role: targetRole,
-        society_id: targetSocietyId,
-      });
+      };
+      global.io.to(`society_${targetSocietyId}`).emit("permissions_updated", socketPayload);
+      global.io.to(`role_${targetRole}`).emit("permissions_updated", socketPayload);
+      global.io.emit("permissions_updated", socketPayload);
+      global.io.emit("role_permissions_changed", socketPayload);
     }
 
     return res.status(200).json({

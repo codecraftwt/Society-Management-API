@@ -50,7 +50,7 @@ router.get(
 router.get(
   "/",
   auth,
-  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"),
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "GUARD"),
   listAttendance
 );
 
