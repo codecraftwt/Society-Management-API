@@ -859,6 +859,141 @@ const getMyAllocatedSlots = async (req, res) => {
   }
 };
 
+/* ═══════════════════════════════════════════
+   7️⃣  ALLOCATE PARKING SLOT  (ADMIN / COMMITTEE)
+   → Route: POST /parking-slots/allocate
+═══════════════════════════════════════════ */
+const allocateParkingSlot = async (req, res) => {
+  try {
+    const {
+      slot_id,
+      slot_number,
+      flat_id,
+      resident_id,
+      vehicle_id,
+      vehicle_number,
+      vehicle_type,
+      vehicle_name,
+      parking_type = "DEFAULT",
+    } = req.body;
+
+    const isSuperAdmin = req.user?.role === "SUPER_ADMIN" || req.user?.activeRole === "SUPER_ADMIN";
+    const targetSocietyId = resolveTargetSocietyId(req) || req.user?.society_id;
+
+    if (!slot_id && !slot_number) {
+      return res.status(400).json({ message: "Slot ID or slot number is required." });
+    }
+
+    const where = {};
+    if (slot_id) where.id = slot_id;
+    else where.slot_number = slot_number;
+    if (!isSuperAdmin && targetSocietyId) where.society_id = targetSocietyId;
+
+    const slot = await ParkingSlot.findOne({ where });
+    if (!slot) {
+      return res.status(404).json({ message: "Parking slot not found." });
+    }
+
+    // Resolve Flat & Resident
+    let resolvedFlatId = flat_id ? parseInt(flat_id, 10) : null;
+    let resolvedResidentId = resident_id ? parseInt(resident_id, 10) : null;
+
+    if (resolvedFlatId && !resolvedResidentId) {
+      const flatObj = await Flat.findByPk(resolvedFlatId);
+      if (flatObj?.resident_id) {
+        resolvedResidentId = flatObj.resident_id;
+      }
+    } else if (resolvedResidentId && !resolvedFlatId) {
+      const flatObj = await Flat.findOne({ where: { resident_id: resolvedResidentId } });
+      if (flatObj) {
+        resolvedFlatId = flatObj.id;
+      }
+    }
+
+    // Resolve or Link Vehicle
+    let linkedVehicle = null;
+    if (vehicle_id) {
+      linkedVehicle = await Vehicle.findByPk(vehicle_id);
+      if (linkedVehicle) {
+        await linkedVehicle.update({
+          parking_slot_id: slot.id,
+          flat_id: resolvedFlatId || linkedVehicle.flat_id,
+          resident_id: resolvedResidentId || linkedVehicle.resident_id,
+        });
+        if (!resolvedFlatId && linkedVehicle.flat_id) resolvedFlatId = linkedVehicle.flat_id;
+        if (!resolvedResidentId && linkedVehicle.resident_id) resolvedResidentId = linkedVehicle.resident_id;
+      }
+    } else if (vehicle_number && String(vehicle_number).trim()) {
+      const cleanPlate = String(vehicle_number).trim().toUpperCase();
+      linkedVehicle = await Vehicle.findOne({
+        where: {
+          society_id: slot.society_id,
+          vehicle_number: cleanPlate,
+        },
+      });
+
+      if (linkedVehicle) {
+        await linkedVehicle.update({
+          parking_slot_id: slot.id,
+          flat_id: resolvedFlatId || linkedVehicle.flat_id,
+          resident_id: resolvedResidentId || linkedVehicle.resident_id,
+        });
+        if (!resolvedFlatId && linkedVehicle.flat_id) resolvedFlatId = linkedVehicle.flat_id;
+        if (!resolvedResidentId && linkedVehicle.resident_id) resolvedResidentId = linkedVehicle.resident_id;
+      } else {
+        linkedVehicle = await Vehicle.create({
+          society_id: slot.society_id,
+          vehicle_number: cleanPlate,
+          vehicle_type: vehicle_type || slot.vehicle_type || "CAR",
+          vehicle_name: vehicle_name ? sanitizeText(vehicle_name) : null,
+          flat_id: resolvedFlatId,
+          resident_id: resolvedResidentId,
+          parking_slot_id: slot.id,
+        });
+      }
+    }
+
+    // Update slot status
+    slot.status = "ASSIGNED";
+    slot.flat_id = resolvedFlatId || null;
+    slot.resident_id = resolvedResidentId || null;
+    slot.parking_type = parking_type === "EXTRA" ? "EXTRA" : "DEFAULT";
+    await slot.save();
+
+    // Auto-approve pending ParkingRequest if one exists
+    try {
+      const { ParkingRequest } = require("../models");
+      if (ParkingRequest && (linkedVehicle || resolvedResidentId)) {
+        const reqWhere = {
+          society_id: slot.society_id,
+          status: "PENDING",
+        };
+        if (linkedVehicle?.vehicle_number) {
+          reqWhere.vehicle_number = linkedVehicle.vehicle_number;
+        } else if (resolvedResidentId) {
+          reqWhere.resident_id = resolvedResidentId;
+        }
+        await ParkingRequest.update(
+          { status: "APPROVED", assigned_spot: slot.slot_number },
+          { where: reqWhere }
+        );
+      }
+    } catch (e) {
+      console.warn("Auto-approving parking request skipped:", e.message);
+    }
+
+    return res.json({
+      success: true,
+      message: `Slot ${slot.slot_number} allocated successfully.`,
+      slot,
+      vehicle: linkedVehicle,
+    });
+  } catch (err) {
+    console.error("ALLOCATE PARKING SLOT ERROR:", err);
+    return res.status(500).json({ message: "Server Error", error: err.message });
+  }
+};
+
 module.exports = {
   createParkingSlots,
   getParkingSlots,
@@ -867,4 +1002,5 @@ module.exports = {
   deleteParkingSlot,
   revokeSlotAssignment,
   getMyAllocatedSlots,
+  allocateParkingSlot,
 };

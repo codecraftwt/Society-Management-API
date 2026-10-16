@@ -354,8 +354,19 @@ const updateSocietyTheme = async (req, res) => {
     return res.status(400).json({ success: false, message: "Invalid society ID." });
   }
 
-  const isSuperAdmin = req.user?.activeRole === "SUPER_ADMIN" || req.user?.role === "SUPER_ADMIN";
-  const isSocietyAdmin = req.user?.activeRole === "SOCIETY_ADMIN" || req.user?.role === "SOCIETY_ADMIN";
+  const userRoles = Array.isArray(req.user?.roles) ? req.user.roles : [req.user?.role].filter(Boolean);
+  const isSuperAdmin =
+    req.user?.activeRole === "SUPER_ADMIN" ||
+    req.user?.role === "SUPER_ADMIN" ||
+    userRoles.includes("SUPER_ADMIN");
+  const isSocietyAdmin =
+    req.user?.activeRole === "SOCIETY_ADMIN" ||
+    req.user?.role === "SOCIETY_ADMIN" ||
+    userRoles.includes("SOCIETY_ADMIN") ||
+    req.user?.activeRole === "COMMITTEE_MEMBER" ||
+    userRoles.includes("COMMITTEE_MEMBER") ||
+    req.user?.role === "ADMIN" ||
+    userRoles.includes("ADMIN");
   const isOwnSociety = req.user?.society_id === targetId;
 
   // Authorization check: Super Admin or own Society Admin only
@@ -463,8 +474,19 @@ const resetSocietyTheme = async (req, res) => {
     return res.status(400).json({ success: false, message: "Invalid society ID." });
   }
 
-  const isSuperAdmin = req.user?.activeRole === "SUPER_ADMIN" || req.user?.role === "SUPER_ADMIN";
-  const isSocietyAdmin = req.user?.activeRole === "SOCIETY_ADMIN" || req.user?.role === "SOCIETY_ADMIN";
+  const userRoles = Array.isArray(req.user?.roles) ? req.user.roles : [req.user?.role].filter(Boolean);
+  const isSuperAdmin =
+    req.user?.activeRole === "SUPER_ADMIN" ||
+    req.user?.role === "SUPER_ADMIN" ||
+    userRoles.includes("SUPER_ADMIN");
+  const isSocietyAdmin =
+    req.user?.activeRole === "SOCIETY_ADMIN" ||
+    req.user?.role === "SOCIETY_ADMIN" ||
+    userRoles.includes("SOCIETY_ADMIN") ||
+    req.user?.activeRole === "COMMITTEE_MEMBER" ||
+    userRoles.includes("COMMITTEE_MEMBER") ||
+    req.user?.role === "ADMIN" ||
+    userRoles.includes("ADMIN");
   const isOwnSociety = req.user?.society_id === targetId;
 
   if (!isSuperAdmin && (!isSocietyAdmin || !isOwnSociety)) {

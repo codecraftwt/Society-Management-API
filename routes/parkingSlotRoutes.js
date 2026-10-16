@@ -10,6 +10,7 @@ const {
   deleteParkingSlot,
   revokeSlotAssignment,
   getMyAllocatedSlots,
+  allocateParkingSlot,
 } = require("../controllers/parkingSlotControllers");
 
 const auth = require("../middlewares/authMiddleware");
@@ -25,6 +26,17 @@ router.get(
   auth,
   role("GUARD", "SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
   getAvailableSlots
+);
+
+/* ======
+   ALLOCATE SLOT → SOCIETY_ADMIN / SUPER_ADMIN / COMMITTEE_MEMBER / ACCOUNTANT
+====== */
+router.post(
+  "/allocate",
+  auth,
+  role("SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  checkPermission("parking_slots", "allocate"),
+  allocateParkingSlot
 );
 
 /* ======
