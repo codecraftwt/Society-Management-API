@@ -8,7 +8,7 @@ const role = require("../middlewares/roleMiddleware");
 const uploadProfilePicture = require("../middlewares/uploadProfilePicture");
 const handleProfilePictureUploadErrors = require("../middlewares/profilePictureUploadErrors");
 const {
-  createSocietyAdmin, createResident, createGuard,
+  createSocietyAdmin, createResident, checkResidentEmail, createGuard,
   getResidents, updateResident, deleteResident,
   getUnassignedResidents, getGuards, updateGuard, deleteGuard,
   getMyFlat, createAccountant, getAccountant,
@@ -20,6 +20,8 @@ const {
 
 // Allow Super Admin, Admin, Committee, Accountant to view and manage residents
 router.get("/resident/unassigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), getUnassignedResidents);
+router.get("/resident/check-email", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), checkResidentEmail);
+router.post("/resident/check-email", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), checkResidentEmail);
 router.post("/societies/:societyId/admin", auth, role("SUPER_ADMIN"), createSocietyAdmin);
 
 // Allow Super Admin to create, view, update, and delete residents
@@ -32,7 +34,14 @@ router.post(
   createResident
 );
 router.get("/resident", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), getResidents);
-router.put("/resident/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), updateResident);
+router.put(
+  "/resident/:id",
+  auth,
+  role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  uploadProfilePicture.single("photo"),
+  handleProfilePictureUploadErrors,
+  updateResident
+);
 router.delete("/resident/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), deleteResident);
 
 // Allow Super Admin to manage guards

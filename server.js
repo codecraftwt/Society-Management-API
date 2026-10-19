@@ -40,6 +40,19 @@ io.on("connection", (socket) => {
     try {
       if (!data || typeof data !== "object") return;
       const { userId, role, societyId } = data;
+
+      // Clean up previous society and role rooms to prevent cross-society leakage
+      for (const room of socket.rooms) {
+        if (room.startsWith("society_") && room !== `society_${societyId}`) {
+          socket.leave(room);
+          console.log(`Socket ${socket.id} left old society room: ${room}`);
+        }
+        if (room.startsWith("role_") && room !== `role_${role}`) {
+          socket.leave(room);
+          console.log(`Socket ${socket.id} left old role room: ${room}`);
+        }
+      }
+
       if (userId) socket.join(`user_${userId}`);
       if (role) socket.join(`role_${role}`);
       if (societyId) socket.join(`society_${societyId}`);

@@ -6,6 +6,9 @@ const Notification = require("../models/Notification");
 const HouseHoldMember = require("../models/HouseHoldMember");
 const OtpVerification = require("../models/OtpVerification");
 const AccountantAssignment = require("../models/AccountantAssignment");
+const UserSociety = require("../models/UserSociety");
+const UserSocietyRole = require("../models/UserSocietyRole");
+const UserDocuments = require("../models/UserDocuments");
 const { resolveSocietyAdminContact } = require("../utils/approvalGuard");
 
 const bcrypt = require("bcryptjs");
@@ -25,6 +28,65 @@ const {
 /* =====
     HELPERS
     ===== */
+async function fetchUserSocietiesList(userId) {
+  try {
+    const userSocieties = await UserSociety.findAll({
+      where: { user_id: userId, membership_status: "ACTIVE" },
+      include: [
+        {
+          model: Society,
+          as: "society",
+          attributes: ["id", "name", "address"],
+        },
+        {
+          model: UserSocietyRole,
+          as: "societyRoles",
+          attributes: ["role"],
+        },
+      ],
+      order: [["is_default", "DESC"], ["created_at", "ASC"]],
+    });
+
+    if (userSocieties && userSocieties.length > 0) {
+      return userSocieties.map((us) => {
+        const roles = (us.societyRoles || []).map((r) => r.role);
+        return {
+          id: us.society_id,
+          name: us.society?.name || `Society #${us.society_id}`,
+          address: us.society?.address || null,
+          roles: roles.length > 0 ? roles : (us.resident_type ? [us.resident_type] : ["RESIDENT"]),
+          resident_type: us.resident_type || null,
+          is_default: Boolean(us.is_default),
+          membership_status: us.membership_status,
+        };
+      });
+    }
+
+    // Fallback if no user_societies row yet:
+    const user = await User.findByPk(userId, {
+      include: [{ model: Society, attributes: ["id", "name", "address"] }],
+    });
+    if (user && user.society_id) {
+      const roles = resolveUserRoles(user);
+      return [
+        {
+          id: user.society_id,
+          name: user.Society?.name || "My Society",
+          address: user.Society?.address || null,
+          roles,
+          resident_type: user.resident_type || null,
+          is_default: true,
+          membership_status: "ACTIVE",
+        },
+      ];
+    }
+    return [];
+  } catch (err) {
+    console.error("fetchUserSocietiesList error:", err);
+    return [];
+  }
+}
+
 async function isUserResidentOfSociety(user) {
   if (!user) return false;
   if (user.resident_type && ["OWNER", "TENANT"].includes(String(user.resident_type).toUpperCase())) {
@@ -269,8 +331,8 @@ async function sendOtpEmail(toEmail, otp, userName) {
 /* =====
     JWT HELPER
     ===== */
-function issueAccessToken(user, activeRole) {
-  const roles = resolveUserRoles(user);
+function issueAccessToken(user, activeRole, targetSocietyId, customRoles) {
+  const roles = customRoles && customRoles.length > 0 ? customRoles : resolveUserRoles(user);
 
   const resolvedActiveRole = roles.includes(activeRole) ? activeRole : roles[0];
 
@@ -278,7 +340,7 @@ function issueAccessToken(user, activeRole) {
     id: user.id,
     roles,
     activeRole: resolvedActiveRole,
-    society_id: user.society_id,
+    society_id: targetSocietyId !== undefined && targetSocietyId !== null ? targetSocietyId : user.society_id,
   };
 
   const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "1d" });
@@ -389,12 +451,14 @@ exports.login = async (req, res) => {
     );
 
     const availablePanels = await getAvailablePanels(user);
+    const availableSocieties = await fetchUserSocietiesList(user.id);
     const residencyFlags = await getResidencyFlags(user, availablePanels);
 
     return res.status(200).json({
       message: "OTP sent to your registered email address",
       tempToken,
       availablePanels,
+      availableSocieties,
       ...residencyFlags,
       user: {
         id: user.id,
@@ -404,6 +468,7 @@ exports.login = async (req, res) => {
         roles,
         activeRole: user.role,
         availablePanels,
+        availableSocieties,
         ...residencyFlags,
         society_id: user.society_id,
         society_name: user.Society?.name || null,
@@ -490,31 +555,49 @@ exports.verifyOtp = async (req, res) => {
 
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    const { token } = issueAccessToken(user, user.role);
-    const roles = resolveUserRoles(user);
-    const availablePanels = await getAvailablePanels(user);
-    const residencyFlags = await getResidencyFlags(user, availablePanels);
-    const dynamicPermissions = await fetchEffectivePermissions(user.society_id, user.role);
+    const availableSocieties = await fetchUserSocietiesList(user.id);
+    const defaultSociety = availableSocieties.find((s) => s.is_default) || availableSocieties[0];
+    const activeSocietyId = defaultSociety ? defaultSociety.id : user.society_id;
+    const activeSocietyRoles = defaultSociety && defaultSociety.roles && defaultSociety.roles.length > 0
+      ? defaultSociety.roles
+      : resolveUserRoles(user);
+    const initialRole = activeSocietyRoles.includes(user.role) ? user.role : activeSocietyRoles[0];
+
+    const { token } = issueAccessToken(user, initialRole, activeSocietyId, activeSocietyRoles);
+    const roles = activeSocietyRoles;
+    const scopedUser = {
+      ...user.toJSON(),
+      society_id: activeSocietyId,
+      role: initialRole,
+      roles,
+      resident_type: defaultSociety?.resident_type || user.resident_type,
+    };
+    const availablePanels = await getAvailablePanels(scopedUser);
+    const residencyFlags = await getResidencyFlags(scopedUser, availablePanels);
+    const dynamicPermissions = await fetchEffectivePermissions(activeSocietyId, initialRole);
 
     return res.status(200).json({
       message: "Login successful",
       token,
       availablePanels,
+      availableSocieties,
+      activeSocietyId,
       ...residencyFlags,
       user: {
         id: user.id,
         name: user.name,
         email: user.email,
-        role: user.role,
+        role: initialRole,
         roles,
-        activeRole: user.role,
+        activeRole: initialRole,
         availablePanels,
+        availableSocieties,
         ...residencyFlags,
         dynamic_permissions: dynamicPermissions,
         permissions: dynamicPermissions,
-        resident_type: user.resident_type || null,
-        society_id: user.society_id,
-        society_name: user.Society?.name || null,
+        resident_type: scopedUser.resident_type || null,
+        society_id: activeSocietyId,
+        society_name: defaultSociety?.name || user.Society?.name || null,
         profile_picture: user.profile_picture || null,
       },
     });
@@ -595,10 +678,22 @@ exports.sendRegistrationOtp = async (req, res) => {
         .json({ message: "Please provide a valid 10-digit Indian mobile number." });
     }
 
-    // Don't leak account existence to an unauthenticated caller.
+    const { society_id } = req.body;
+    // Multi-society support: if account exists, only block if already registered in the target society
     const existing = await User.findOne({ where: { email: cleanEmail } });
     if (existing && existing.status === "ACTIVE") {
-      return res.status(400).json({ message: "User already exists" });
+      if (society_id) {
+        const isMember = await UserSociety.findOne({
+          where: {
+            user_id: existing.id,
+            society_id,
+            membership_status: { [Op.ne]: "REJECTED" },
+          },
+        });
+        if (isMember || String(existing.society_id) === String(society_id)) {
+          return res.status(400).json({ message: "You are already registered in this society." });
+        }
+      }
     }
 
     const otp = generateOtp();
@@ -700,49 +795,75 @@ exports.switchRole = async (req, res) => {
     });
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    const roles = resolveUserRoles(user);
+    const targetSocietyId = req.user.society_id ? parseInt(req.user.society_id, 10) : user.society_id;
+    const society = targetSocietyId ? await Society.findByPk(targetSocietyId) : user.Society;
 
-    if (!roles.includes(role)) {
+    const legacyRoles = Array.isArray(user.roles) && user.roles.length ? user.roles : [user.role].filter(Boolean);
+    const isSuperAdmin = legacyRoles.includes("SUPER_ADMIN") || (req.user.roles || []).includes("SUPER_ADMIN");
+
+    let societyRoles = [];
+    const membership = targetSocietyId ? await UserSociety.findOne({
+      where: { user_id: user.id, society_id: targetSocietyId, membership_status: "ACTIVE" },
+      include: [{ model: UserSocietyRole, as: "societyRoles" }],
+    }) : null;
+
+    if (membership && membership.societyRoles && membership.societyRoles.length > 0) {
+      societyRoles = membership.societyRoles.map((r) => r.role);
+    } else if (isSuperAdmin) {
+      societyRoles = ["SUPER_ADMIN"];
+    } else {
+      societyRoles = resolveUserRoles(user);
+    }
+
+    const scopedUser = {
+      ...user.toJSON(),
+      society_id: targetSocietyId,
+      role,
+      roles: societyRoles,
+      resident_type: membership?.resident_type || user.resident_type,
+    };
+
+    const availablePanels = await getAvailablePanels(scopedUser);
+
+    if (!societyRoles.includes(role) && !availablePanels.includes(role)) {
       return res.status(403).json({
-        message: `Role "${role}" is not assigned to your account. Available: ${roles.join(", ")}`,
+        message: `Role "${role}" is not assigned to your account in this society. Available: ${availablePanels.join(", ")}`,
       });
     }
 
-    const availablePanels = await getAvailablePanels(user);
-
-    // An outsider accountant holds ACCOUNTANT only, so RESIDENT must not be
-    // requestable even though resolveUserRoles lists it. Reject on the panel
-    // list - this is the check that actually stops the switch, since
-    // roles.includes(role) alone would allow it.
     if (!availablePanels.includes(role)) {
       return res.status(403).json({
         message: `Role "${role}" is not assigned to your account. Available: ${availablePanels.join(", ")}`,
       });
     }
 
-    const { token } = issueAccessToken(user, role);
-    const residencyFlags = await getResidencyFlags(user, availablePanels);
-    const dynamicPermissions = await fetchEffectivePermissions(user.society_id, role);
+    const { token } = issueAccessToken(user, role, targetSocietyId, societyRoles);
+    const residencyFlags = await getResidencyFlags(scopedUser, availablePanels);
+    const dynamicPermissions = await fetchEffectivePermissions(targetSocietyId, role);
+    const availableSocieties = await fetchUserSocietiesList(user.id);
 
     return res.status(200).json({
       message: `Switched to ${role}`,
       token,
+      activeSocietyId: targetSocietyId,
+      availableSocieties,
       availablePanels,
       ...residencyFlags,
       user: {
         id: user.id,
         name: user.name,
         email: user.email,
-        role: user.role,
-        roles,
+        role,
+        roles: societyRoles,
         activeRole: role,
         availablePanels,
+        availableSocieties,
         ...residencyFlags,
         dynamic_permissions: dynamicPermissions,
         permissions: dynamicPermissions,
-        resident_type: user.resident_type || null,
-        society_id: user.society_id,
-        society_name: user.Society?.name || null,
+        resident_type: scopedUser.resident_type || null,
+        society_id: targetSocietyId,
+        society_name: society?.name || null,
         profile_picture: user.profile_picture || null,
       },
     });
@@ -753,11 +874,152 @@ exports.switchRole = async (req, res) => {
 };
 
 /* =====
+    GET /auth/societies — Get list of user's active societies
+    ===== */
+exports.getUserSocieties = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const availableSocieties = await fetchUserSocietiesList(userId);
+    return res.status(200).json({
+      activeSocietyId: req.user.society_id,
+      societies: availableSocieties,
+    });
+  } catch (err) {
+    console.error("Get user societies error:", err);
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+/* =====
+    POST /auth/switch-society — Switch active society & get fresh JWT
+    ===== */
+exports.switchSociety = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { society_id, role: requestedRole } = req.body;
+
+    if (!society_id) {
+      return res.status(400).json({ message: "society_id is required" });
+    }
+
+    const targetSocietyId = parseInt(society_id, 10);
+    if (isNaN(targetSocietyId)) {
+      return res.status(400).json({ message: "Invalid society_id" });
+    }
+
+    const society = await Society.findByPk(targetSocietyId);
+    if (!society) {
+      return res.status(404).json({ message: "Society not found" });
+    }
+
+    const user = await User.findByPk(userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const legacyRoles = Array.isArray(user.roles) && user.roles.length ? user.roles : [user.role].filter(Boolean);
+    const isSuperAdmin = legacyRoles.includes("SUPER_ADMIN") || (req.user.roles || []).includes("SUPER_ADMIN");
+
+    let membership = await UserSociety.findOne({
+      where: { user_id: userId, society_id: targetSocietyId, membership_status: "ACTIVE" },
+      include: [{ model: UserSocietyRole, as: "societyRoles" }],
+    });
+
+    if (!membership && !isSuperAdmin) {
+      if (user.society_id === targetSocietyId) {
+        // Allow legacy user whose society_id matches
+      } else {
+        return res.status(403).json({
+          message: "You do not have active membership in this society",
+        });
+      }
+    }
+
+    let societyRoles = [];
+    if (membership && membership.societyRoles && membership.societyRoles.length > 0) {
+      societyRoles = membership.societyRoles.map((r) => r.role);
+    } else if (isSuperAdmin) {
+      societyRoles = ["SUPER_ADMIN"];
+    } else {
+      societyRoles = resolveUserRoles(user);
+    }
+
+    // When changing society, use requestedRole if valid, or default to RESIDENT so user lands on resident panel first
+    let activeRole;
+    if (requestedRole && (societyRoles.includes(requestedRole) || (requestedRole === "COMMITTEE_MEMBER" && societyRoles.includes("COMMITTEE")))) {
+      activeRole = requestedRole === "COMMITTEE" ? "COMMITTEE_MEMBER" : requestedRole;
+    } else if (societyRoles.includes("RESIDENT")) {
+      activeRole = "RESIDENT";
+    } else {
+      activeRole = societyRoles[0] || user.role;
+    }
+    const { token } = issueAccessToken(user, activeRole, targetSocietyId, societyRoles);
+
+    const availableSocieties = await fetchUserSocietiesList(user.id);
+    const dynamicPermissions = await fetchEffectivePermissions(targetSocietyId, activeRole);
+
+    const scopedUser = {
+      ...user.toJSON(),
+      society_id: targetSocietyId,
+      role: activeRole,
+      roles: societyRoles,
+      resident_type: membership?.resident_type || user.resident_type,
+    };
+    const availablePanels = await getAvailablePanels(scopedUser);
+    const residencyFlags = await getResidencyFlags(scopedUser, availablePanels);
+
+    return res.status(200).json({
+      message: "Switched society successfully",
+      token,
+      society_id: targetSocietyId,
+      activeSocietyId: targetSocietyId,
+      roles: societyRoles,
+      availableSocieties,
+      availablePanels,
+      ...residencyFlags,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: activeRole,
+        roles: societyRoles,
+        activeRole,
+        availablePanels,
+        availableSocieties,
+        ...residencyFlags,
+        dynamic_permissions: dynamicPermissions,
+        permissions: dynamicPermissions,
+        resident_type: scopedUser.resident_type || null,
+        society_id: targetSocietyId,
+        society_name: society.name,
+        profile_picture: user.profile_picture || null,
+      },
+    });
+  } catch (err) {
+    console.error("Switch society error:", err);
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+/* =====
     POST /auth/register  — Register Resident
     ===== */
 exports.registerResident = async (req, res) => {
   try {
-    const { name, email, phone, password, society_id, flat_id } = req.body;
+    const {
+      name,
+      email,
+      phone,
+      password,
+      society_id,
+      flat_id,
+      occupant_count,
+      vehicle_count,
+      emergency_contact,
+      profile_picture,
+      aadhar_card,
+      pan_card,
+    } = req.body;
 
     const cleanPassword = (password || "").trim();
 
@@ -780,6 +1042,9 @@ exports.registerResident = async (req, res) => {
       return res.status(400).json({ message: "Please provide a valid 10-digit Indian mobile number." });
     }
 
+    const UserSociety = require("../models/UserSociety");
+    const UserSocietyRole = require("../models/UserSocietyRole");
+
     const existing = await User.findOne({ where: { email } });
 
     if (existing) {
@@ -790,7 +1055,136 @@ exports.registerResident = async (req, res) => {
         await Notification.destroy({ where: { user_id: existing.id } });
         await existing.destroy();
       } else {
-        return res.status(400).json({ message: "User already exists" });
+        // Multi-society: check if already member of target society
+        const existingMembership = await UserSociety.findOne({
+          where: {
+            user_id: existing.id,
+            society_id,
+            membership_status: { [Op.ne]: "REJECTED" },
+          },
+        });
+
+        if (existingMembership || String(existing.society_id) === String(society_id)) {
+          return res.status(400).json({ message: "User already exists in this society" });
+        }
+
+        // Verify existing password or allow existing account linkage
+        const useExistingAccountFlag = req.body.use_existing_account === true || req.body.is_existing_account === true;
+        const isMatch =
+          useExistingAccountFlag ||
+          cleanPassword === "__LINKED_EXISTING_USER__" ||
+          cleanPassword === existing.password ||
+          (cleanPassword && (await bcrypt.compare(cleanPassword, existing.password)));
+
+        if (!isMatch) {
+          return res.status(400).json({
+            message: "An account with this email already exists in another society. Please enter your existing password to request access to this society.",
+          });
+        }
+
+        const cloudinary = require("../config/cloudinary");
+        if (profile_picture && profile_picture.startsWith("data:") && !existing.profile_picture) {
+          try {
+            const uploadPic = await cloudinary.uploader.upload(profile_picture, {
+              folder: "society/avatars",
+              resource_type: "image",
+            });
+            await existing.update({ profile_picture: uploadPic.secure_url });
+          } catch (e) {
+            console.warn("Existing user profile picture upload warning:", e.message);
+          }
+        }
+
+        if (aadhar_card || pan_card) {
+          let exAadhar = aadhar_card;
+          let exPan = pan_card;
+          if (aadhar_card && aadhar_card.startsWith("data:")) {
+            try {
+              const resA = await cloudinary.uploader.upload(aadhar_card, {
+                folder: `society/user_documents/${existing.id}`,
+                resource_type: "auto",
+              });
+              exAadhar = resA.secure_url;
+            } catch (e) {
+              console.warn("Existing user Aadhaar upload warning:", e.message);
+            }
+          }
+          if (pan_card && pan_card.startsWith("data:")) {
+            try {
+              const resP = await cloudinary.uploader.upload(pan_card, {
+                folder: `society/user_documents/${existing.id}`,
+                resource_type: "auto",
+              });
+              exPan = resP.secure_url;
+            } catch (e) {
+              console.warn("Existing user PAN upload warning:", e.message);
+            }
+          }
+          const [docs] = await UserDocuments.findOrCreate({
+            where: { user_id: existing.id },
+            defaults: {
+              aadhar_url: exAadhar || "PENDING",
+              aadhar_public_id: exAadhar ? `users/${existing.id}/aadhar` : "PENDING",
+              pan_url: exPan || "PENDING",
+              pan_public_id: exPan ? `users/${existing.id}/pan` : "PENDING",
+            },
+          });
+          if (exAadhar && docs.aadhar_url === "PENDING") {
+            await docs.update({ aadhar_url: exAadhar, aadhar_public_id: `users/${existing.id}/aadhar` });
+          }
+          if (exPan && docs.pan_url === "PENDING") {
+            await docs.update({ pan_url: exPan, pan_public_id: `users/${existing.id}/pan` });
+          }
+        }
+
+        const [userSoc] = await UserSociety.findOrCreate({
+          where: { user_id: existing.id, society_id },
+          defaults: {
+            membership_status: "PENDING",
+            occupant_count: occupant_count != null ? Number(occupant_count) : (existing.occupant_count != null ? Number(existing.occupant_count) : 1),
+            vehicle_count: vehicle_count != null ? Number(vehicle_count) : (existing.vehicle_count != null ? Number(existing.vehicle_count) : 0),
+            emergency_contact: emergency_contact || existing.emergency_contact || null,
+            source: "SELF_REGISTER",
+          },
+        });
+
+        await UserSocietyRole.findOrCreate({
+          where: { user_society_id: userSoc.id, role: "RESIDENT" },
+          defaults: { user_society_id: userSoc.id, role: "RESIDENT" },
+        });
+
+        if (flat_id) {
+          const flat = await Flat.findByPk(flat_id);
+          if (flat && !flat.resident_id) {
+            await flat.update({ resident_id: existing.id });
+          }
+        }
+
+        const admin = await User.findOne({
+          where: { society_id, role: "SOCIETY_ADMIN" },
+        });
+
+        if (admin?.id) {
+          const notification = await Notification.create({
+            title: "New Resident Request",
+            message: `${existing.name} requested to join society`,
+            type: "RESIDENT_REQUEST",
+            society_id,
+            user_id: existing.id,
+            receiver_role: "SOCIETY_ADMIN",
+            receiver_user_id: admin.id,
+          });
+
+          if (global.io) {
+            global.io.to(`user_${admin.id}`).emit("new_notification", notification);
+          }
+        }
+
+        return res.status(201).json({
+          message: "Registration Pending Approval",
+          userId: existing.id,
+          reused: true,
+        });
       }
     }
 
@@ -805,6 +1199,23 @@ exports.registerResident = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(cleanPassword, 10);
 
+    let finalProfilePic = profile_picture || null;
+    let finalAadhar = aadhar_card || null;
+    let finalPan = pan_card || null;
+
+    const cloudinary = require("../config/cloudinary");
+    if (profile_picture && profile_picture.startsWith("data:")) {
+      try {
+        const uploadPic = await cloudinary.uploader.upload(profile_picture, {
+          folder: "society/avatars",
+          resource_type: "image",
+        });
+        finalProfilePic = uploadPic.secure_url;
+      } catch (e) {
+        console.warn("Profile picture upload warning:", e.message);
+      }
+    }
+
     const newUser = await User.create({
       name,
       email,
@@ -815,6 +1226,60 @@ exports.registerResident = async (req, res) => {
       society_id,
       status: "INACTIVE",
       approval_status: "PENDING",
+      occupant_count: occupant_count != null ? Number(occupant_count) : 1,
+      vehicle_count: vehicle_count != null ? Number(vehicle_count) : 0,
+      emergency_contact: emergency_contact || null,
+      profile_picture: finalProfilePic,
+    });
+
+    if (aadhar_card && aadhar_card.startsWith("data:")) {
+      try {
+        const uploadAadhar = await cloudinary.uploader.upload(aadhar_card, {
+          folder: `society/user_documents/${newUser.id}`,
+          resource_type: "auto",
+        });
+        finalAadhar = uploadAadhar.secure_url;
+      } catch (e) {
+        console.warn("Aadhaar upload warning:", e.message);
+      }
+    }
+
+    if (pan_card && pan_card.startsWith("data:")) {
+      try {
+        const uploadPan = await cloudinary.uploader.upload(pan_card, {
+          folder: `society/user_documents/${newUser.id}`,
+          resource_type: "auto",
+        });
+        finalPan = uploadPan.secure_url;
+      } catch (e) {
+        console.warn("PAN upload warning:", e.message);
+      }
+    }
+
+    if (finalAadhar || finalPan) {
+      await UserDocuments.create({
+        user_id: newUser.id,
+        aadhar_url: finalAadhar || "PENDING",
+        aadhar_public_id: finalAadhar ? `users/${newUser.id}/aadhar` : "PENDING",
+        pan_url: finalPan || "PENDING",
+        pan_public_id: finalPan ? `users/${newUser.id}/pan` : "PENDING",
+      }).catch((e) => console.warn("UserDocuments create warning:", e.message));
+    }
+
+    const [userSoc] = await UserSociety.findOrCreate({
+      where: { user_id: newUser.id, society_id },
+      defaults: {
+        membership_status: "PENDING",
+        occupant_count: occupant_count != null ? Number(occupant_count) : 1,
+        vehicle_count: vehicle_count != null ? Number(vehicle_count) : 0,
+        emergency_contact: emergency_contact || null,
+        source: "SELF_REGISTER",
+      },
+    });
+
+    await UserSocietyRole.findOrCreate({
+      where: { user_society_id: userSoc.id, role: "RESIDENT" },
+      defaults: { user_society_id: userSoc.id, role: "RESIDENT" },
     });
 
     // ✅ Run flat update + household lookup in parallel
@@ -884,5 +1349,96 @@ exports.checkApprovalStatus = async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ message: error.message });
+  }
+};
+
+/* =====
+    GET or POST /auth/check-email — Public check for registration
+   ===== */
+exports.checkEmailAvailability = async (req, res) => {
+  try {
+    const email = (req.query.email || req.body.email || "").trim().toLowerCase();
+    const societyId = req.query.society_id || req.body.society_id;
+
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const existingUser = await User.findOne({
+      where: { email },
+      attributes: [
+        "id",
+        "name",
+        "email",
+        "phone",
+        "profile_picture",
+        "society_id",
+        "status",
+        "approval_status",
+        "occupant_count",
+        "vehicle_count",
+        "emergency_contact",
+      ],
+    });
+
+    if (!existingUser) {
+      return res.status(200).json({
+        exists: false,
+        message: "Email is available. New resident account can be created.",
+      });
+    }
+
+    let isMember = false;
+    if (societyId) {
+      const membership = await UserSociety.findOne({
+        where: {
+          user_id: existingUser.id,
+          society_id: societyId,
+          membership_status: { [Op.ne]: "REJECTED" },
+        },
+      });
+      if (membership || String(existingUser.society_id) === String(societyId)) {
+        isMember = true;
+      }
+    }
+
+    const docs = await UserDocuments.findOne({
+      where: { user_id: existingUser.id },
+      attributes: ["aadhar_url", "pan_url"],
+    });
+
+    const userPayload = {
+      id: existingUser.id,
+      name: existingUser.name,
+      email: existingUser.email,
+      phone: existingUser.phone,
+      profile_picture: existingUser.profile_picture,
+      occupant_count: existingUser.occupant_count != null ? Number(existingUser.occupant_count) : 1,
+      vehicle_count: existingUser.vehicle_count != null ? Number(existingUser.vehicle_count) : 0,
+      emergency_contact: existingUser.emergency_contact || null,
+      documents: docs ? {
+        aadhar_url: docs.aadhar_url,
+        pan_url: docs.pan_url,
+      } : null,
+    };
+
+    if (isMember) {
+      return res.status(200).json({
+        exists: true,
+        alreadyMember: true,
+        message: "You are already registered in this society.",
+        user: userPayload,
+      });
+    }
+
+    return res.status(200).json({
+      exists: true,
+      alreadyMember: false,
+      message: "An existing account was found. You can link this society using your existing password without re-uploading documents.",
+      user: userPayload,
+    });
+  } catch (err) {
+    console.error("[checkEmailAvailability]", err);
+    return res.status(500).json({ message: err.message });
   }
 };

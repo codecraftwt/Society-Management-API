@@ -5,18 +5,31 @@ const auth   = require("../middlewares/authMiddleware");
 const role   = require("../middlewares/roleMiddleware");
 const uploadUserDocument = require("../middlewares/uploadUserDocuments"); // ✅ NEW
 
-const { uploadDocumentsController,updateDocumentController ,deleteDocumentController} = require("../controllers/uploadDocumentController");
+const {
+  uploadDocumentsController,
+  getUserDocumentsController,
+  updateDocumentController,
+  deleteDocumentController,
+} = require("../controllers/uploadDocumentController");
 
-// POST /api/user-documents — upload Aadhar + PAN
+// POST /api/user-documents — upload Aadhar + PAN (supports ?userId= for admin)
 router.post(
   "/",
   auth,
-  role("RESIDENT", "SOCIETY_ADMIN", "SUPER_ADMIN"),
+  role("RESIDENT", "SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
   uploadUserDocument("user_documents").fields([
     { name: "aadhar", maxCount: 1 },
     { name: "pan", maxCount: 1 },
   ]),
   uploadDocumentsController
+);
+
+// GET /api/user-documents/user/:userId — admin/committee/resident fetches documents
+router.get(
+  "/user/:userId",
+  auth,
+  role("RESIDENT", "SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"),
+  getUserDocumentsController
 );
 
 

@@ -43,6 +43,9 @@ const CleaningStaffAttendance = require("./CleaningStaffAttendance");
 const GuardAttendance = require("./GuardAttendance");
 const Event = require("./Event");
 const EventMedia = require("./EventMedia");
+const UserSociety = require("./UserSociety");
+const UserSocietyRole = require("./UserSocietyRole");
+const SocietyInvite = require("./SocietyInvite");
 
 
 
@@ -56,6 +59,25 @@ VisitorPreApproval.belongsTo(User, { foreignKey: "resident_id" });
 // 1. Users → Society
 Society.hasMany(User, { foreignKey: "society_id" });
 User.belongsTo(Society, { foreignKey: "society_id" });
+
+// 1.1 Multi-Society Memberships & Roles
+User.hasMany(UserSociety, { foreignKey: "user_id", as: "memberships" });
+UserSociety.belongsTo(User, { foreignKey: "user_id", as: "user" });
+
+Society.hasMany(UserSociety, { foreignKey: "society_id", as: "memberships" });
+UserSociety.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
+UserSociety.hasMany(UserSocietyRole, { foreignKey: "user_society_id", as: "societyRoles" });
+UserSocietyRole.belongsTo(UserSociety, { foreignKey: "user_society_id", as: "userSociety" });
+
+Society.hasMany(SocietyInvite, { foreignKey: "society_id", as: "invites" });
+SocietyInvite.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
+Society.hasMany(Bill, { foreignKey: "society_id" });
+Bill.belongsTo(Society, { foreignKey: "society_id" });
+
+Society.hasMany(FlatMembership, { foreignKey: "society_id" });
+FlatMembership.belongsTo(Society, { foreignKey: "society_id" });
 
 // 2. Block → Society
 Society.hasMany(Block, { foreignKey: "society_id" });
@@ -583,4 +605,7 @@ module.exports = {
   GuardAttendance,
   Event,
   EventMedia,
+  UserSociety,
+  UserSocietyRole,
+  SocietyInvite,
 };

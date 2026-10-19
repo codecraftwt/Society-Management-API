@@ -207,8 +207,30 @@ EmergencyAcknowledgement.belongsTo(EmergencyAlert, { foreignKey: "emergency_aler
 User.hasMany(EmergencyAcknowledgement, { foreignKey: "user_id" });
 EmergencyAcknowledgement.belongsTo(User, { foreignKey: "user_id" });
 
-EmergencyAlert.belongsTo(User, { foreignKey: "resolved_by", as: "Resolver" });
+const UserSociety = require("./models/UserSociety");
+const UserSocietyRole = require("./models/UserSocietyRole");
+const SocietyInvite = require("./models/SocietyInvite");
+
+// Multi-Society Memberships & Roles
+User.hasMany(UserSociety, { foreignKey: "user_id", as: "memberships" });
+UserSociety.belongsTo(User, { foreignKey: "user_id", as: "user" });
+
+Society.hasMany(UserSociety, { foreignKey: "society_id", as: "memberships" });
+UserSociety.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
+UserSociety.hasMany(UserSocietyRole, { foreignKey: "user_society_id", as: "societyRoles" });
+UserSocietyRole.belongsTo(UserSociety, { foreignKey: "user_society_id", as: "userSociety" });
+
+Society.hasMany(SocietyInvite, { foreignKey: "society_id", as: "invites" });
+SocietyInvite.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
+Society.hasMany(Bill, { foreignKey: "society_id" });
+Bill.belongsTo(Society, { foreignKey: "society_id" });
+
+Society.hasMany(FlatMembership, { foreignKey: "society_id" });
+FlatMembership.belongsTo(Society, { foreignKey: "society_id" });
 
 module.exports = {
-  User, Society, Block, Floor, Flat, Bill, Payment, Complaint, Notice, VisitorLog, FlatMembership, NoticeAcknowledgement, EmergencyAlert, EmergencyAcknowledgement
+  User, Society, Block, Floor, Flat, Bill, Payment, Complaint, Notice, VisitorLog, FlatMembership, NoticeAcknowledgement, EmergencyAlert, EmergencyAcknowledgement,
+  UserSociety, UserSocietyRole, SocietyInvite
 };

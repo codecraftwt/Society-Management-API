@@ -1,6 +1,9 @@
 
 const { Op } = require("sequelize");
+const sequelize = require("../config/db");
 const User = require("../models/User");
+const UserSociety = require("../models/UserSociety");
+const UserSocietyRole = require("../models/UserSocietyRole");
 const bcrypt = require("bcryptjs");
 const Society = require("../models/Society");
 const Flat = require("../models/Flat");
@@ -17,6 +20,7 @@ const FlatMembership = require("../models/FlatMembership");
 const ParkingSlot = require("../models/ParkingSlot");
 const Vehicle = require("../models/Vehicle"); 
 const AccountantAssignment = require("../models/AccountantAssignment");
+const UserDocuments = require("../models/UserDocuments");
 const transporter = require("../utils/mailer");
 const { fetchEffectivePermissions } = require("./permissionController");
 const {
@@ -410,7 +414,103 @@ const createSocietyAdmin = async (req, res) => {
 // };
 
 
+/* =====
+   CHECK RESIDENT EMAIL
+   Checks if an email exists globally and if the user is already in the target society.
+   ===== */
+const checkResidentEmail = async (req, res) => {
+  try {
+    const email = sanitizeText(req.query.email || req.body.email || "");
+    const rawSocietyId = req.query.society_id || req.body.society_id || req.headers["x-society-id"];
+    const targetSocietyId = (req.user?.role === "SUPER_ADMIN" || req.user?.activeRole === "SUPER_ADMIN")
+      ? (rawSocietyId || req.user?.society_id)
+      : req.user?.society_id;
+
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ message: "Please enter a valid email address." });
+    }
+
+    const existingUser = await User.findOne({
+      where: { email },
+      attributes: [
+        "id",
+        "name",
+        "email",
+        "phone",
+        "profile_picture",
+        "society_id",
+        "status",
+        "approval_status",
+        "occupant_count",
+        "vehicle_count",
+        "emergency_contact",
+      ],
+    });
+
+    if (!existingUser) {
+      return res.status(200).json({
+        exists: false,
+        message: "Email is available. New resident account can be created.",
+      });
+    }
+
+    let isMember = false;
+    if (targetSocietyId) {
+      const membership = await UserSociety.findOne({
+        where: {
+          user_id: existingUser.id,
+          society_id: targetSocietyId,
+          membership_status: { [Op.ne]: "REJECTED" },
+        },
+      });
+      if (membership || String(existingUser.society_id) === String(targetSocietyId)) {
+        isMember = true;
+      }
+    }
+
+    const docs = await UserDocuments.findOne({
+      where: { user_id: existingUser.id },
+      attributes: ["aadhar_url", "pan_url", "aadhar_public_id", "pan_public_id"],
+    });
+
+    const userPayload = {
+      id: existingUser.id,
+      name: existingUser.name,
+      email: existingUser.email,
+      phone: existingUser.phone,
+      profile_picture: existingUser.profile_picture,
+      occupant_count: existingUser.occupant_count != null ? Number(existingUser.occupant_count) : 1,
+      vehicle_count: existingUser.vehicle_count != null ? Number(existingUser.vehicle_count) : 0,
+      emergency_contact: existingUser.emergency_contact || null,
+      documents: docs ? {
+        aadhar_url: docs.aadhar_url,
+        pan_url: docs.pan_url,
+      } : null,
+    };
+
+    if (isMember) {
+      return res.status(200).json({
+        exists: true,
+        alreadyMember: true,
+        message: "A resident with this email already belongs to the selected society.",
+        user: userPayload,
+      });
+    }
+
+    return res.status(200).json({
+      exists: true,
+      alreadyMember: false,
+      message: "An account with this email already exists in the system. You can reuse this account to add the resident to this society with their existing details and documents.",
+      user: userPayload,
+    });
+  } catch (err) {
+    console.error("[checkResidentEmail]", err);
+    return res.status(500).json({ message: err.message });
+  }
+};
+
 const createResident = async (req, res) => {
+  const transaction = await sequelize.transaction();
   try {
     let {
       name,
@@ -425,41 +525,36 @@ const createResident = async (req, res) => {
       emergency_contact,
       vehicles,
       parking_slots,
+      useExistingAccount,
+      society_id: bodySocietyId,
     } = normaliseMultipartBody(req.body);
 
-    /* ─────────────────────────────
-       Basic field validation
-    ───────────────────────────── */
     const rawName = sanitizeText(name);
     const rawEmail = sanitizeText(email);
 
-    if (!isValidPersonName(rawName)) {
-      return res.status(400).json({
-        message: "Name must be at least 2 characters and contain only letters, spaces, dots, apostrophes or hyphens.",
-      });
-    }
     if (!isValidEmail(rawEmail)) {
+      await transaction.rollback();
       return res.status(400).json({ message: "Please enter a valid email address." });
     }
-    if (isEmpty(password)) {
-      password = "Admin@123";
+
+    const rawSocietyId = req.headers["x-society-id"] || bodySocietyId;
+    const targetSocietyId = (req.user?.role === "SUPER_ADMIN" || req.user?.activeRole === "SUPER_ADMIN")
+      ? (rawSocietyId || req.user?.society_id)
+      : req.user?.society_id;
+
+    if (!targetSocietyId) {
+      await transaction.rollback();
+      return res.status(400).json({ message: "Target society is required." });
     }
-    if (typeof password === "string" && password.length < 6) {
-      return res.status(400).json({ message: "Password must be at least 6 characters." });
-    }
-    if (phone && !isValidMobile(phone)) {
-      return res.status(400).json({ message: "Please provide a valid 10-digit Indian mobile number." });
-    }
+
     if (occupant_count != null && (!Number.isInteger(Number(occupant_count)) || Number(occupant_count) < 1)) {
+      await transaction.rollback();
       return res.status(400).json({ message: "Occupant count must be a positive number." });
     }
     if (resident_type && !["OWNER", "TENANT"].includes(resident_type)) {
+      await transaction.rollback();
       return res.status(400).json({ message: "resident_type must be OWNER or TENANT." });
     }
-
-    // Copy sanitized values back onto the locals used below
-    name = rawName;
-    email = rawEmail;
 
     /* ─────────────────────────────
        Flat is COMPULSORY
@@ -469,9 +564,9 @@ const createResident = async (req, res) => {
       flat_assignments.some((a) => a.flat_id);
 
     if (!flat_id && !hasFlatAssignments) {
+      await transaction.rollback();
       return res.status(400).json({
-        message:
-          "At least one flat assignment is required to create a resident.",
+        message: "At least one flat assignment is required to create a resident.",
       });
     }
 
@@ -482,36 +577,119 @@ const createResident = async (req, res) => {
       emergency_contact &&
       (!emergency_contact.name || !emergency_contact.phone)
     ) {
+      await transaction.rollback();
       return res.status(400).json({
-        message:
-          "emergency_contact must include both name and phone.",
+        message: "emergency_contact must include both name and phone.",
       });
     }
 
     /* ─────────────────────────────
-       Password Hash
+       Check for existing user with this email
     ───────────────────────────── */
-    const hashed = await bcrypt.hash(password, 8);
+    const existingUser = await User.findOne({
+      where: { email: rawEmail },
+      transaction,
+    });
+
+    let resident;
+    let isReused = false;
+
+    if (existingUser) {
+      // Check if already a member in this society
+      const existingMembership = await UserSociety.findOne({
+        where: {
+          user_id: existingUser.id,
+          society_id: targetSocietyId,
+          membership_status: { [Op.ne]: "REJECTED" },
+        },
+        transaction,
+      });
+
+      if (existingMembership || String(existingUser.society_id) === String(targetSocietyId)) {
+        await transaction.rollback();
+        return res.status(400).json({
+          message: "Resident with this email is already registered in the selected society.",
+        });
+      }
+
+      // Reuse existing account for this new society
+      isReused = true;
+      resident = existingUser;
+    } else {
+      // New user registration validation
+      if (!isValidPersonName(rawName)) {
+        await transaction.rollback();
+        return res.status(400).json({
+          message: "Name must be at least 2 characters and contain only letters, spaces, dots, apostrophes or hyphens.",
+        });
+      }
+      if (isEmpty(password)) {
+        password = "Admin@123";
+      }
+      if (typeof password === "string" && password.length < 6) {
+        await transaction.rollback();
+        return res.status(400).json({ message: "Password must be at least 6 characters." });
+      }
+      if (phone && !isValidMobile(phone)) {
+        await transaction.rollback();
+        return res.status(400).json({ message: "Please provide a valid 10-digit Indian mobile number." });
+      }
+
+      const hashed = await bcrypt.hash(password, 8);
+      const profilePic = req.file ? readUploadedProfilePicture(req.file) : null;
+
+      resident = await User.create({
+        name: rawName,
+        email: rawEmail,
+        phone: phone || null,
+        password: hashed,
+        role: "RESIDENT",
+        roles: ["RESIDENT"],
+        society_id: targetSocietyId,
+        approval_status: "APPROVED",
+        status: "ACTIVE",
+        resident_type: resident_type || "OWNER",
+        vehicle_count: 0,
+        occupant_count: occupant_count != null ? Number(occupant_count) : 1,
+        emergency_contact: emergency_contact || null,
+        profile_picture: profilePic?.url || null,
+        profile_picture_public_id: profilePic?.publicId || null,
+      }, { transaction });
+    }
 
     /* ─────────────────────────────
-       Create Resident User
+       Normalized Multi-Society Membership & Roles
     ───────────────────────────── */
-    const resident = await User.create({
-      name,
-      email,
-      phone,
-      password:        hashed,
-      role:            "RESIDENT",
-      roles:           ["RESIDENT"],
-      society_id:      req.user.society_id,
-      approval_status: "APPROVED",
-      status:          "ACTIVE",
-      resident_type:   resident_type || "OWNER",
-      vehicle_count:   0,
-      occupant_count:  occupant_count != null ? Number(occupant_count) : 1,
-      emergency_contact: emergency_contact || null,
-      profile_picture: req.file ? readUploadedProfilePicture(req.file)?.url || null : null,
-      profile_picture_public_id: req.file ? readUploadedProfilePicture(req.file)?.publicId || null : null,
+    const [userSociety] = await UserSociety.findOrCreate({
+      where: {
+        user_id: resident.id,
+        society_id: targetSocietyId,
+      },
+      defaults: {
+        membership_status: "ACTIVE",
+        resident_type: resident_type || "OWNER",
+        occupant_count: occupant_count != null ? Number(occupant_count) : 1,
+        vehicle_count: 0,
+        emergency_contact: emergency_contact || null,
+        source: "ADMIN_ASSIGNED",
+      },
+      transaction,
+    });
+
+    if (userSociety.membership_status !== "ACTIVE") {
+      await userSociety.update({ membership_status: "ACTIVE" }, { transaction });
+    }
+
+    await UserSocietyRole.findOrCreate({
+      where: {
+        user_society_id: userSociety.id,
+        role: "RESIDENT",
+      },
+      defaults: {
+        user_society_id: userSociety.id,
+        role: "RESIDENT",
+      },
+      transaction,
     });
 
     let targetFlatId = flat_id || null;
@@ -528,7 +706,7 @@ const createResident = async (req, res) => {
 
         await ResidentHistory.update(
           { move_out_date: new Date(), is_current: false },
-          { where: { flat_id: aFlatId, is_current: true } }
+          { where: { flat_id: aFlatId, is_current: true }, transaction }
         );
 
         await ResidentHistory.create({
@@ -536,7 +714,7 @@ const createResident = async (req, res) => {
           user_id:      resident.id,
           move_in_date: new Date(),
           is_current:   true,
-        });
+        }, { transaction });
 
         const isTenant = resident_type === "TENANT";
 
@@ -546,23 +724,24 @@ const createResident = async (req, res) => {
             occupancy_status: isTenant ? "RENTED" : "OWNER_OCCUPIED",
             ...(aFlatType && { flat_type: aFlatType }),
           },
-          { where: { id: aFlatId } }
+          { where: { id: aFlatId }, transaction }
         );
 
         await FlatMembership.update(
           { is_current: false, move_out_date: new Date() },
-          { where: { flat_id: aFlatId, is_current: true } }
+          { where: { flat_id: aFlatId, is_current: true }, transaction }
         );
 
         await FlatMembership.create({
           flat_id:          aFlatId,
           user_id:          resident.id,
+          society_id:       targetSocietyId,
           role:             resident_type || "OWNER",
           is_staying:       true,
           pays_maintenance: true,
           move_in_date:     new Date(),
           is_current:       true,
-        });
+        }, { transaction });
 
         /* ── Multi slot assignment per flat ── */
         if (
@@ -577,7 +756,7 @@ const createResident = async (req, res) => {
                 status:       "ASSIGNED",
                 parking_type: slotData.parking_type,
               },
-              { where: { id: slotData.slot_id } }
+              { where: { id: slotData.slot_id }, transaction }
             );
           }
         }
@@ -590,7 +769,7 @@ const createResident = async (req, res) => {
     else if (flat_id) {
       await ResidentHistory.update(
         { move_out_date: new Date(), is_current: false },
-        { where: { flat_id, is_current: true } }
+        { where: { flat_id, is_current: true }, transaction }
       );
 
       await ResidentHistory.create({
@@ -598,7 +777,7 @@ const createResident = async (req, res) => {
         user_id:      resident.id,
         move_in_date: new Date(),
         is_current:   true,
-      });
+      }, { transaction });
 
       const isTenant = resident_type === "TENANT";
 
@@ -608,23 +787,24 @@ const createResident = async (req, res) => {
           occupancy_status: isTenant ? "RENTED" : "OWNER_OCCUPIED",
           ...(flat_type && { flat_type }),
         },
-        { where: { id: flat_id } }
+        { where: { id: flat_id }, transaction }
       );
 
       await FlatMembership.update(
         { is_current: false, move_out_date: new Date() },
-        { where: { flat_id, is_current: true } }
+        { where: { flat_id, is_current: true }, transaction }
       );
 
       await FlatMembership.create({
         flat_id,
         user_id:          resident.id,
+        society_id:       targetSocietyId,
         role:             resident_type || "OWNER",
         is_staying:       true,
         pays_maintenance: true,
         move_in_date:     new Date(),
         is_current:       true,
-      });
+      }, { transaction });
     }
 
     /* ====
@@ -655,10 +835,10 @@ const createResident = async (req, res) => {
         vehicle_name:    v.vehicle_name   || "TBD",
         resident_id:     resident.id,
         flat_id:         targetFlatId,
-        society_id:      req.user.society_id,
+        society_id:      targetSocietyId,
         parking_slot_id: v.parking_slot_id || null,
         parking_type:    typeOfParking,
-      });
+      }, { transaction });
 
       if (v.parking_slot_id) {
         await ParkingSlot.update(
@@ -667,12 +847,14 @@ const createResident = async (req, res) => {
             flat_id:     targetFlatId,
             status:      "ASSIGNED",
           },
-          { where: { id: v.parking_slot_id } }
+          { where: { id: v.parking_slot_id }, transaction }
         );
       }
     }
 
-    await resident.update({ vehicle_count: vehicleData.length });
+    await resident.update({ vehicle_count: vehicleData.length }, { transaction });
+
+    await transaction.commit();
 
     /* ====
        RESPONSE
@@ -681,17 +863,40 @@ const createResident = async (req, res) => {
       id:       resident.id,
       user:     { id: resident.id },
       resident,
+      reused:   isReused,
+      message:  isReused
+        ? "Existing resident added to society successfully"
+        : "Resident created successfully",
     });
 
-    sendEmail({
-      to:      email,
-      subject: "Society Resident Account Created",
-      html:    `<h2>Welcome ${name}</h2><p>Your Resident account has been created.</p>`,
-    }).catch((err) =>
-      console.error("[Mailer] Resident create email failed:", err.message)
-    );
+    if (!isReused) {
+      sendEmail({
+        to:      rawEmail,
+        subject: "Society Resident Account Created",
+        html:    `<h2>Welcome ${resident.name}</h2><p>Your Resident account has been created.</p>`,
+      }).catch((err) =>
+        console.error("[Mailer] Resident create email failed:", err.message)
+      );
+    } else {
+      sendEmail({
+        to:      rawEmail,
+        subject: "Added to New Society",
+        html:    `<h2>Hello ${resident.name}</h2><p>You have been assigned to a flat in a new society. You can now switch to this society using your existing login credentials.</p>`,
+      }).catch((err) =>
+        console.error("[Mailer] Resident add society email failed:", err.message)
+      );
+    }
 
   } catch (err) {
+    if (transaction && !transaction.finished) {
+      await transaction.rollback();
+    }
+    if (req.file) {
+      const pic = readUploadedProfilePicture(req.file);
+      if (pic?.publicId) {
+        destroyProfilePicture(pic.publicId).catch(() => {});
+      }
+    }
     console.error("[createResident]", err);
     res.status(500).json({ message: err.message });
   }
@@ -976,22 +1181,44 @@ const getResidents = async (req, res) => {
     // Cascading Filter Params
     const { society_id, block_id, floor_id, flat_id } = req.query;
 
-    const searchWhere = {};
-    
-    // 1. Filter by Society (Super Admin vs Regular Admin)
-    if (req.user.activeRole === "SUPER_ADMIN") {
-      if (society_id) searchWhere.society_id = society_id;
+    // 1. Filter by Society (Super Admin vs Regular Admin, supporting multi-society memberships)
+    let targetSocietyId = null;
+    if (req.user.activeRole === "SUPER_ADMIN" || req.user.role === "SUPER_ADMIN") {
+      if (society_id) targetSocietyId = society_id;
     } else {
-      searchWhere.society_id = req.user.society_id;
+      targetSocietyId = req.user.society_id;
+    }
+
+    const conditions = [];
+
+    if (targetSocietyId) {
+      const userSocieties = await UserSociety.findAll({
+        where: {
+          society_id: targetSocietyId,
+          membership_status: { [Op.ne]: "REJECTED" },
+        },
+        attributes: ["user_id"],
+      });
+      const memberIds = userSocieties.map((us) => us.user_id);
+      conditions.push({
+        [Op.or]: [
+          { society_id: targetSocietyId },
+          ...(memberIds.length > 0 ? [{ id: { [Op.in]: memberIds } }] : []),
+        ],
+      });
     }
 
     // 2. Filter by Search Query
     if (search) {
-      searchWhere[Op.or] = [
-        { name:  { [Op.like]: `%${search}%` } },
-        { email: { [Op.like]: `%${search}%` } },
-      ];
+      conditions.push({
+        [Op.or]: [
+          { name:  { [Op.like]: `%${search}%` } },
+          { email: { [Op.like]: `%${search}%` } },
+        ],
+      });
     }
+
+    const searchWhere = conditions.length > 0 ? { [Op.and]: conditions } : {};
 
     const allUsers = await User.findAll({
       where: searchWhere,
@@ -1032,11 +1259,11 @@ const getResidents = async (req, res) => {
             model: Floor,
             attributes: ["id", "floor_number"],
             required: false,
-            include: [{ model: Block, attributes: ["id", "name"], required: false }],
+            include: [{ model: Block, attributes: ["id", "name", "society_id"], required: false }],
           },
           {
             model: Block,
-            attributes: ["id", "name"],
+            attributes: ["id", "name", "society_id"],
             required: false,
           },
         ],
@@ -1052,11 +1279,11 @@ const getResidents = async (req, res) => {
           model: Floor,
           attributes: ["id", "floor_number"],
           required: false,
-          include: [{ model: Block, attributes: ["id", "name"], required: false }],
+          include: [{ model: Block, attributes: ["id", "name", "society_id"], required: false }],
         },
         {
           model: Block,
-          attributes: ["id", "name"],
+          attributes: ["id", "name", "society_id"],
           required: false,
         },
       ],
@@ -1138,12 +1365,50 @@ const getResidents = async (req, res) => {
       else roleCounts.resident += 1;
     });
 
+    const paginatedIds = paginated.map((u) => u.id);
+    const docRecords = paginatedIds.length > 0 ? await UserDocuments.findAll({
+      where: { user_id: { [Op.in]: paginatedIds } },
+      attributes: ["user_id", "aadhar_url", "pan_url"],
+    }) : [];
+    const docMap = {};
+    docRecords.forEach((d) => {
+      docMap[d.user_id] = {
+        aadhar_url: d.aadhar_url,
+        pan_url: d.pan_url,
+      };
+    });
+
+    // Query multi-society memberships for paginated residents
+    const userSocieties = paginatedIds.length > 0 ? await UserSociety.findAll({
+      where: {
+        user_id: { [Op.in]: paginatedIds },
+        membership_status: { [Op.ne]: "REJECTED" },
+      },
+      include: [
+        { model: Society, as: "society", attributes: ["id", "name", "address"] },
+        { model: UserSocietyRole, as: "societyRoles", attributes: ["role"] },
+      ],
+    }) : [];
+
+    const primarySocIds = paginated.map((u) => u.society_id).filter(Boolean);
+    const allSocIds = [...new Set([
+      ...primarySocIds,
+      ...userSocieties.map((us) => us.society_id),
+    ])];
+    const allSocieties = allSocIds.length > 0 ? await Society.findAll({
+      where: { id: { [Op.in]: allSocIds } },
+      attributes: ["id", "name", "address"],
+    }) : [];
+    const societyMap = {};
+    allSocieties.forEach((s) => { societyMap[s.id] = s.toJSON ? s.toJSON() : s; });
+
     const data = paginated.map(user => {
       const userMemberships = allMemberships.filter(m => m.user_id === user.id && m.Flat);
       const userFlats = userMemberships.map(m => {
         const flat = m.Flat;
         if (!flat || !flat.id) return null;
         const occupants = flatOccupantMap[flat.id] || {};
+        const bSocId = flat.Floor?.Block?.society_id || flat.Block?.society_id || user.society_id;
         return {
           id:           flat.id,
           flat_id:      flat.id,
@@ -1153,9 +1418,11 @@ const getResidents = async (req, res) => {
           Floor: flat.Floor ? {
             id:           flat.Floor.id,
             floor_number: flat.Floor.floor_number,
-            Block: flat.Floor.Block ? { id: flat.Floor.Block.id, name: flat.Floor.Block.name } : null,
+            Block: flat.Floor.Block ? { id: flat.Floor.Block.id, name: flat.Floor.Block.name, society_id: flat.Floor.Block.society_id } : null,
           } : null,
-          Block: flat.Block ? { id: flat.Block.id, name: flat.Block.name } : null,
+          Block: flat.Block ? { id: flat.Block.id, name: flat.Block.name, society_id: flat.Block.society_id } : null,
+          society_id:   bSocId || null,
+          society_name: societyMap[bSocId]?.name || null,
           floor_number: flat.Floor?.floor_number ?? null,
           block_name:   flat.Floor?.Block?.name || flat.Block?.name || null,
           owner:  occupants.owner  ? { id: occupants.owner.id,  name: occupants.owner.name }  : null,
@@ -1168,6 +1435,7 @@ const getResidents = async (req, res) => {
       directFlats.filter(f => f && f.resident_id === user.id && f.id).forEach(flat => {
         if (!existingFlatIds.has(flat.id)) {
           const occupants = flatOccupantMap[flat.id] || {};
+          const bSocId = flat.Floor?.Block?.society_id || flat.Block?.society_id || user.society_id;
           userFlats.push({
             id:           flat.id,
             flat_id:      flat.id,
@@ -1177,9 +1445,11 @@ const getResidents = async (req, res) => {
             Floor: flat.Floor ? {
               id:           flat.Floor.id,
               floor_number: flat.Floor.floor_number,
-              Block: flat.Floor.Block ? { id: flat.Floor.Block.id, name: flat.Floor.Block.name } : null,
+              Block: flat.Floor.Block ? { id: flat.Floor.Block.id, name: flat.Floor.Block.name, society_id: flat.Floor.Block.society_id } : null,
             } : null,
-            Block: flat.Block ? { id: flat.Block.id, name: flat.Block.name } : null,
+            Block: flat.Block ? { id: flat.Block.id, name: flat.Block.name, society_id: flat.Block.society_id } : null,
+            society_id:   bSocId || null,
+            society_name: societyMap[bSocId]?.name || null,
             floor_number: flat.Floor?.floor_number ?? null,
             block_name:   flat.Floor?.Block?.name || flat.Block?.name || null,
             owner:        occupants.owner ? { id: occupants.owner.id, name: occupants.owner.name } : { id: user.id, name: user.name },
@@ -1188,6 +1458,95 @@ const getResidents = async (req, res) => {
           existingFlatIds.add(flat.id);
         }
       });
+
+      // Build user's societies list
+      const userSocRecords = userSocieties.filter((us) => us.user_id === user.id);
+      const userSocMap = new Map();
+      userSocRecords.forEach((us) => {
+        const soc = us.society || societyMap[us.society_id];
+        if (soc) {
+          const sRoles = (us.societyRoles || []).map((r) => r.role);
+          userSocMap.set(soc.id, {
+            id: soc.id,
+            name: soc.name,
+            address: soc.address,
+            membership_status: us.membership_status,
+            is_default: us.is_default,
+            roles: sRoles.length > 0 ? sRoles : (us.resident_type ? [us.resident_type] : ["RESIDENT"]),
+            flats: [],
+          });
+        }
+      });
+
+      if (user.society_id && societyMap[user.society_id] && !userSocMap.has(user.society_id)) {
+        const s = societyMap[user.society_id];
+        userSocMap.set(s.id, {
+          id: s.id,
+          name: s.name,
+          address: s.address,
+          membership_status: "ACTIVE",
+          is_default: true,
+          flats: [],
+        });
+      }
+
+      // Link flats to user's societies
+      userFlats.forEach((f) => {
+        const bSocId = f.society_id || user.society_id;
+        if (bSocId && userSocMap.has(bSocId)) {
+          userSocMap.get(bSocId).flats.push({
+            id: f.id,
+            flat_number: f.flat_number,
+            flat_type: f.flat_type,
+            floor_number: f.floor_number,
+            block_name: f.block_name,
+            role: user.resident_type || "OWNER",
+          });
+        }
+      });
+
+      const userSocietiesList = Array.from(userSocMap.values());
+      const primarySociety = userSocMap.get(user.society_id) || userSocietiesList[0] || null;
+
+      // If requester is a Society Admin (or scoped to targetSocietyId),
+      // only show the data, flats, and roles for that specific society!
+      const isSuperAdminNoFilter = req.user.role === "SUPER_ADMIN" && !targetSocietyId;
+
+      let scopedSocieties = userSocietiesList;
+      let scopedFlats = userFlats;
+      let scopedRoles = user.roles || [user.role];
+      let scopedPrimarySoc = primarySociety;
+
+      if (!isSuperAdminNoFilter && targetSocietyId) {
+        scopedSocieties = userSocietiesList.filter((s) => s.id === targetSocietyId);
+        scopedFlats = userFlats.filter((f) => f.society_id === targetSocietyId);
+        const thisSoc = userSocMap.get(targetSocietyId);
+        if (thisSoc && Array.isArray(thisSoc.roles) && thisSoc.roles.length > 0) {
+          scopedRoles = thisSoc.roles;
+        } else {
+          scopedRoles = ["RESIDENT"];
+        }
+        if (thisSoc) scopedPrimarySoc = thisSoc;
+      }
+
+      // Determine society-scoped or overall approval status
+      const targetSocRecord = targetSocietyId ? userSocMap.get(targetSocietyId) : null;
+      let effectiveApprovalStatus = user.approval_status;
+      let effectiveStatus = user.status;
+
+      if (targetSocRecord) {
+        if (targetSocRecord.membership_status === "PENDING") {
+          effectiveApprovalStatus = "PENDING";
+          effectiveStatus = "PENDING";
+        } else if (targetSocRecord.membership_status === "REJECTED") {
+          effectiveApprovalStatus = "REJECTED";
+          effectiveStatus = "INACTIVE";
+        }
+      }
+
+      const hasPendingMembership =
+        userSocietiesList.some((s) => s.membership_status === "PENDING") ||
+        user.approval_status === "PENDING";
 
       return {
         id:                user.id,
@@ -1199,20 +1558,24 @@ const getResidents = async (req, res) => {
         // selects every column, so the value is on the model - it just has to
         // be forwarded here.
         profile_picture:   user.profile_picture || null,
-        status:            user.status,
-        approval_status:   user.approval_status,
-        roles:             user.roles || [user.role],
+        status:            effectiveStatus,
+        approval_status:   effectiveApprovalStatus,
+        has_pending_approval: hasPendingMembership,
+        roles:             scopedRoles,
         resident_type:     user.resident_type || null,
         vehicle_count:     user.vehicle_count  ?? 0,
         occupant_count:    user.occupant_count ?? 1,
         emergency_contact: user.emergency_contact || null,
-        society_id:        user.society_id,
-        flats:             userFlats,
-        flat_id:      userFlats[0]?.id           || null,
-        flat_number:  userFlats[0]?.flat_number   || null,
-        flat_type:    userFlats[0]?.flat_type     || null,
-        floor_number: userFlats[0]?.floor_number  || null,
-        block_name:   userFlats[0]?.block_name    || null,
+        documents:         docMap[user.id] || null,
+        society_id:        targetSocietyId || user.society_id,
+        societies:         scopedSocieties,
+        society_name:      scopedPrimarySoc?.name || (scopedSocieties.map((s) => s.name).join(", ") || null),
+        flats:             scopedFlats,
+        flat_id:      scopedFlats[0]?.id           || null,
+        flat_number:  scopedFlats[0]?.flat_number   || null,
+        flat_type:    scopedFlats[0]?.flat_type     || null,
+        floor_number: scopedFlats[0]?.floor_number  || null,
+        block_name:   scopedFlats[0]?.block_name    || null,
       };
     });
 
@@ -1249,7 +1612,7 @@ const updateResident = async (req, res) => {
       revoke_parking_slot,
       revoke_flat_id,
       vehicle_count, occupant_count, emergency_contact,
-    } = req.body;
+    } = normaliseMultipartBody(req.body);
 
     const resident = await User.findByPk(id);
     if (!resident) return res.status(404).json({ message: "Resident not found" });
@@ -1267,12 +1630,27 @@ const updateResident = async (req, res) => {
       if (!assignable.ok) return res.status(assignable.status).json(assignable.payload);
     }
 
-    const userUpdatePayload = { name, phone, resident_type };
+    const userUpdatePayload = {};
+    if (name) userUpdatePayload.name = name;
+    if (phone !== undefined) userUpdatePayload.phone = phone || null;
+    if (resident_type) userUpdatePayload.resident_type = resident_type;
     if (vehicle_count  != null) userUpdatePayload.vehicle_count  = Number(vehicle_count);
     if (occupant_count != null) userUpdatePayload.occupant_count = Number(occupant_count);
     if (emergency_contact !== undefined) {
       userUpdatePayload.emergency_contact = emergency_contact || null;
     }
+
+    if (req.file) {
+      const pic = readUploadedProfilePicture(req.file);
+      if (pic?.url) {
+        if (resident.profile_picture_public_id) {
+          destroyProfilePicture(resident.profile_picture_public_id).catch(() => {});
+        }
+        userUpdatePayload.profile_picture = pic.url;
+        userUpdatePayload.profile_picture_public_id = pic.publicId;
+      }
+    }
+
     await resident.update(userUpdatePayload);
 
     if (flat_id) {
@@ -1420,6 +1798,9 @@ const getUnassignedResidents = async (req, res) => {
 const getMyFlat = async (req, res) => {
   try {
     const userId = req.user.id;
+    const activeSocietyId = req.query.all === "1" || req.query.all === "true"
+      ? null
+      : (req.query.society_id ? parseInt(req.query.society_id, 10) : (req.user?.society_id ? parseInt(req.user.society_id, 10) : null));
 
     const user = await User.findByPk(userId, { attributes: ["id", "name"] });
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -1435,14 +1816,14 @@ const getMyFlat = async (req, res) => {
       where: { user_id: userId, is_current: true },
       include: [{
         model: Flat,
-        attributes: ["id", "flat_number", "occupancy_status"],
+        attributes: ["id", "flat_number", "occupancy_status", "block_id", "floor_id"],
         include: [
-          { model: Block, attributes: ["id", "name"], required: false },
+          { model: Block, attributes: ["id", "name", "society_id"], required: false },
           {
             model: Floor,
             attributes: ["id", "floor_number"],
             required: false,
-            include: [{ model: Block, attributes: ["id", "name"], required: false }],
+            include: [{ model: Block, attributes: ["id", "name", "society_id"], required: false }],
           },
         ],
       }],
@@ -1451,6 +1832,11 @@ const getMyFlat = async (req, res) => {
     for (const m of memberships) {
       if (m.Flat && !addedFlatIds.has(m.flat_id)) {
         const flat = m.Flat;
+        const flatSocietyId = flat?.Floor?.Block?.society_id || flat?.Block?.society_id || null;
+        if (activeSocietyId && flatSocietyId && flatSocietyId !== activeSocietyId) {
+          continue; // Skip flats from other societies
+        }
+
         const blockName   = flat?.Floor?.Block?.name || flat?.Block?.name || null;
         const floorNumber = flat?.Floor?.floor_number ?? null;
 
@@ -1461,6 +1847,7 @@ const getMyFlat = async (req, res) => {
           flat_number:  flat.flat_number || null,
           block_name:   blockName,
           floor_number: floorNumber,
+          society_id:   flatSocietyId,
           isAdmin:      true,
           role:         m.role,
           occupancy_status: flat.occupancy_status,
@@ -1476,14 +1863,14 @@ const getMyFlat = async (req, res) => {
       where: { user_id: userId },
       include: [{
         model: Flat,
-        attributes: ["id", "flat_number", "occupancy_status"],
+        attributes: ["id", "flat_number", "occupancy_status", "block_id", "floor_id"],
         include: [
-          { model: Block, attributes: ["id", "name"], required: false },
+          { model: Block, attributes: ["id", "name", "society_id"], required: false },
           {
             model: Floor,
             attributes: ["id", "floor_number"],
             required: false,
-            include: [{ model: Block, attributes: ["id", "name"], required: false }],
+            include: [{ model: Block, attributes: ["id", "name", "society_id"], required: false }],
           },
         ],
       }],
@@ -1492,6 +1879,11 @@ const getMyFlat = async (req, res) => {
     for (const hm of householdMembers) {
       if (hm.Flat && !addedFlatIds.has(hm.flat_id)) {
         const flat = hm.Flat;
+        const flatSocietyId = flat?.Floor?.Block?.society_id || flat?.Block?.society_id || null;
+        if (activeSocietyId && flatSocietyId && flatSocietyId !== activeSocietyId) {
+          continue;
+        }
+
         const blockName   = flat?.Floor?.Block?.name || flat?.Block?.name || null;
         const floorNumber = flat?.Floor?.floor_number ?? null;
 
@@ -1502,6 +1894,7 @@ const getMyFlat = async (req, res) => {
           flat_number:  flat.flat_number || null,
           block_name:   blockName,
           floor_number: floorNumber,
+          society_id:   flatSocietyId,
           isAdmin:      hm.isAdmin,
           role:         "FAMILY_MEMBER",
           occupancy_status: flat.occupancy_status,
@@ -1519,18 +1912,23 @@ const getMyFlat = async (req, res) => {
       const directFlats = await Flat.findAll({
         where: { resident_id: userId },
         include: [
-          { model: Block, attributes: ["id", "name"], required: false },
+          { model: Block, attributes: ["id", "name", "society_id"], required: false },
           {
             model: Floor,
             attributes: ["id", "floor_number"],
             required: false,
-            include: [{ model: Block, attributes: ["id", "name"], required: false }],
+            include: [{ model: Block, attributes: ["id", "name", "society_id"], required: false }],
           },
         ],
       });
 
       for (const flat of directFlats) {
         if (!addedFlatIds.has(flat.id)) {
+          const flatSocietyId = flat?.Floor?.Block?.society_id || flat?.Block?.society_id || null;
+          if (activeSocietyId && flatSocietyId && flatSocietyId !== activeSocietyId) {
+            continue;
+          }
+
           const blockName   = flat?.Floor?.Block?.name || flat?.Block?.name || null;
           const floorNumber = flat?.Floor?.floor_number ?? null;
 
@@ -1541,6 +1939,7 @@ const getMyFlat = async (req, res) => {
             flat_number:      flat.flat_number || null,
             block_name:       blockName,
             floor_number:     floorNumber,
+            society_id:       flatSocietyId,
             isAdmin:          true,
             role:             "OWNER",
             occupancy_status: flat.occupancy_status,
@@ -2104,9 +2503,17 @@ const getMyProfile = async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
 
     const activeRole = (req.user.activeRole || user.role || "RESIDENT").toUpperCase();
-    const dynamicPermissions = await fetchEffectivePermissions(user.society_id, activeRole);
+    const activeSocietyId = req.user.society_id ? parseInt(req.user.society_id, 10) : user.society_id;
+    const dynamicPermissions = await fetchEffectivePermissions(activeSocietyId, activeRole);
 
     const userObj = user.toJSON();
+    if (activeSocietyId && activeSocietyId !== user.society_id) {
+      const activeSociety = await Society.findByPk(activeSocietyId, { attributes: ["id", "name"] });
+      if (activeSociety) {
+        userObj.society_id = activeSocietyId;
+        userObj.Society = activeSociety;
+      }
+    }
     userObj.activeRole = activeRole;
     userObj.dynamic_permissions = dynamicPermissions;
     userObj.permissions = dynamicPermissions;
@@ -2268,7 +2675,7 @@ const updateFCMToken = async (req, res) => {
    ===== */
 const promoteToCommittee = async (req, res) => {
   try {
-    const { userId } = req.body;
+    const { userId, societyId } = req.body;
     const user = await User.findByPk(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
     if (user.role !== "RESIDENT" && !user.roles?.includes("RESIDENT"))
@@ -2297,10 +2704,47 @@ const promoteToCommittee = async (req, res) => {
       });
     }
 
+    const targetSocietyId = societyId
+      ? parseInt(societyId, 10)
+      : (req.user?.society_id || user.society_id);
+
+    if (targetSocietyId) {
+      let userSociety = await UserSociety.findOne({
+        where: { user_id: userId, society_id: targetSocietyId },
+      });
+      if (!userSociety && user.society_id === targetSocietyId) {
+        userSociety = await UserSociety.create({
+          user_id: userId,
+          society_id: targetSocietyId,
+          membership_status: "ACTIVE",
+          is_default: true,
+          resident_type: user.resident_type || "OWNER",
+        });
+      }
+
+      if (userSociety) {
+        await UserSocietyRole.findOrCreate({
+          where: { user_society_id: userSociety.id, role: "COMMITTEE_MEMBER" },
+          defaults: { user_society_id: userSociety.id, role: "COMMITTEE_MEMBER" },
+        });
+        await UserSocietyRole.findOrCreate({
+          where: { user_society_id: userSociety.id, role: "RESIDENT" },
+          defaults: { user_society_id: userSociety.id, role: "RESIDENT" },
+        });
+      }
+    }
+
     if (!roles.includes("COMMITTEE_MEMBER")) roles.push("COMMITTEE_MEMBER");
 
     await user.update({ roles, role: "COMMITTEE_MEMBER" });
-    res.json({ message: "Promoted to Committee Member", roles });
+    const targetSociety = targetSocietyId ? await Society.findByPk(targetSocietyId) : null;
+    res.json({
+      message: targetSociety
+        ? `Promoted to Committee Member in ${targetSociety.name}`
+        : "Promoted to Committee Member",
+      roles,
+      societyId: targetSocietyId,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: err.message });
@@ -2309,17 +2753,55 @@ const promoteToCommittee = async (req, res) => {
 
 const removeCommittee = async (req, res) => {
   try {
-    const { userId } = req.body;
+    const { userId, societyId } = req.body;
     const user = await User.findByPk(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    let roles = Array.isArray(user.roles) ? [...user.roles] : [];
-    roles = roles.filter((r) => r !== "COMMITTEE_MEMBER");
-    if (!roles.includes("RESIDENT")) roles.push("RESIDENT");
+    const targetSocietyId = societyId
+      ? parseInt(societyId, 10)
+      : (req.user?.society_id || null);
 
-    await User.update({ roles, role: "RESIDENT" }, { where: { id: userId } });
+    if (targetSocietyId) {
+      const userSociety = await UserSociety.findOne({
+        where: { user_id: userId, society_id: targetSocietyId },
+      });
+      if (userSociety) {
+        await UserSocietyRole.destroy({
+          where: { user_society_id: userSociety.id, role: "COMMITTEE_MEMBER" },
+        });
+      }
+    }
+
+    // Check if user still holds COMMITTEE_MEMBER role in any other society
+    const otherCommitteeRoles = await UserSocietyRole.findAll({
+      include: [{
+        model: UserSociety,
+        as: "userSociety",
+        where: { user_id: userId },
+        required: true,
+      }],
+      where: { role: "COMMITTEE_MEMBER" },
+    });
+
+    let roles = Array.isArray(user.roles) ? [...user.roles] : [];
+    if (otherCommitteeRoles.length === 0) {
+      roles = roles.filter((r) => r !== "COMMITTEE_MEMBER");
+      if (!roles.includes("RESIDENT")) roles.push("RESIDENT");
+      await User.update(
+        { roles, role: user.role === "COMMITTEE_MEMBER" ? "RESIDENT" : user.role },
+        { where: { id: userId } }
+      );
+    }
+
     const updatedUser = await User.findByPk(userId);
-    res.json({ message: "Removed from Committee successfully", roles: updatedUser.roles });
+    const targetSociety = targetSocietyId ? await Society.findByPk(targetSocietyId) : null;
+    res.json({
+      message: targetSociety
+        ? `Removed from Committee in ${targetSociety.name}`
+        : "Removed from Committee successfully",
+      roles: updatedUser.roles,
+      societyId: targetSocietyId,
+    });
   } catch (err) {
     console.error("REMOVE COMMITTEE ERROR:", err);
     res.status(500).json({ message: err.message });
@@ -2610,6 +3092,7 @@ const getPendingResidents = async (req, res) => {
 module.exports = {
   createSocietyAdmin,
   createResident,
+  checkResidentEmail,
   createGuard,
   getResidents,
   getPendingResidents,

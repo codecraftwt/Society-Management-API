@@ -254,4 +254,80 @@ describe("Auth API", () => {
       expectForbidden(res);
     });
   });
+
+  describe("GET /api/auth/societies", () => {
+    it("requires authentication", async () => {
+      const res = await request(app).get("/api/auth/societies");
+      expectUnauthorized(res);
+    });
+
+    it("returns user's active societies", async () => {
+      const { headers, user } = await login("admin");
+      const res = await request(app).get("/api/auth/societies").set(headers);
+      expectOk(res);
+      expect(Array.isArray(res.body.societies)).toBe(true);
+      expect(res.body.societies.length).toBeGreaterThan(0);
+      expect(res.body.societies[0]).toHaveProperty("id");
+      expect(res.body.societies[0]).toHaveProperty("name");
+    });
+  });
+
+  describe("POST /api/auth/switch-society", () => {
+    it("requires authentication", async () => {
+      const res = await request(app).post("/api/auth/switch-society").send({ society_id: 1 });
+      expectUnauthorized(res);
+    });
+
+    it("returns 400 when society_id is missing", async () => {
+      const { headers } = await login("admin");
+      const res = await request(app).post("/api/auth/switch-society").set(headers).send({});
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/society_id is required/i);
+    });
+
+    it("returns 404 when society does not exist", async () => {
+      const { headers } = await login("admin");
+      const res = await request(app)
+        .post("/api/auth/switch-society")
+        .set(headers)
+        .send({ society_id: 999999 });
+      expect(res.status).toBe(404);
+      expect(res.body.message).toMatch(/society not found/i);
+    });
+
+    it("returns 403 when user is not member of target society", async () => {
+      const Society = require("../models/Society");
+      const { Op } = require("sequelize");
+      const { headers } = await login("resident");
+      const socRes = await request(app).get("/api/auth/societies").set(headers);
+      const userSocIds = (socRes.body.societies || []).map((s) => s.id);
+
+      let otherSoc = await Society.findOne({
+        where: { id: { [Op.notIn]: userSocIds } },
+      });
+      if (!otherSoc) {
+        otherSoc = await Society.create({ name: "Unjoined Test Society", address: "123 Test St" });
+      }
+
+      const res = await request(app)
+        .post("/api/auth/switch-society")
+        .set(headers)
+        .send({ society_id: otherSoc.id });
+      expectForbidden(res);
+    });
+
+    it("allows switching to an active society membership", async () => {
+      const { headers, user } = await login("admin");
+      const socRes = await request(app).get("/api/auth/societies").set(headers);
+      const activeSoc = socRes.body.societies[0];
+      const res = await request(app)
+        .post("/api/auth/switch-society")
+        .set(headers)
+        .send({ society_id: activeSoc.id });
+      expectOk(res);
+      expect(res.body.token).toBeTruthy();
+      expect(res.body.activeSocietyId).toBe(activeSoc.id);
+      expect(res.body.user.society_id).toBe(activeSoc.id);
+    });
+  });
 });

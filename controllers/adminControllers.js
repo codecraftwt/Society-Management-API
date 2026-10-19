@@ -6,6 +6,9 @@ const FlatMembership = require("../models/FlatMembership");
 const ResidentHistory = require("../models/ResidentHistory");
 const Block = require("../models/Block");
 const Floor = require("../models/Floor");
+const UserSociety = require("../models/UserSociety");
+const UserSocietyRole = require("../models/UserSocietyRole");
+const { Op } = require("sequelize");
 const sequelize = require("../config/db");
 const transporter = require("../utils/mailer");
 const { resolveSocietyAdminContact } = require("../utils/approvalGuard");
@@ -250,9 +253,23 @@ exports.approveResident = async (req, res) => {
       return res.status(404).json({ message: "Resident not found" });
     }
 
-    if (!isSuperAdmin && Number(resident.society_id) !== Number(req.user.society_id)) {
+    // Target society being approved (defaults to caller's society or resident's society)
+    const targetSocietyId = Number(req.body?.society_id || req.query?.society_id || req.user.society_id || resident.society_id);
+
+    // Check if resident has a membership in target society
+    const userSocTarget = await UserSociety.findOne({
+      where: { user_id: resident.id, society_id: targetSocietyId },
+      transaction,
+    });
+
+    if (!isSuperAdmin && Number(req.user.society_id) !== targetSocietyId) {
       await transaction.rollback();
       return res.status(403).json({ message: "Invalid society access" });
+    }
+
+    if (!isSuperAdmin && !userSocTarget && Number(resident.society_id) !== targetSocietyId) {
+      await transaction.rollback();
+      return res.status(403).json({ message: "Resident is not registered in your society" });
     }
 
     // 1. Activate Account with Approval Audit
@@ -266,42 +283,98 @@ exports.approveResident = async (req, res) => {
     resident.approved_at = new Date();
     await resident.save({ transaction });
 
-    // 2. Sync Flat & Membership Data
+    // 1b. Ensure Multi-Society membership is active for targetSocietyId
+    if (userSocTarget) {
+      await userSocTarget.update({ membership_status: "ACTIVE" }, { transaction });
+      await UserSocietyRole.findOrCreate({
+        where: { user_society_id: userSocTarget.id, role: "RESIDENT" },
+        defaults: { user_society_id: userSocTarget.id, role: "RESIDENT" },
+        transaction,
+      });
+    } else {
+      const [newSoc] = await UserSociety.findOrCreate({
+        where: { user_id: resident.id, society_id: targetSocietyId },
+        defaults: {
+          user_id: resident.id,
+          society_id: targetSocietyId,
+          membership_status: "ACTIVE",
+          resident_type: resident.resident_type || "OWNER",
+          is_default: true,
+        },
+        transaction,
+      });
+      await UserSocietyRole.findOrCreate({
+        where: { user_society_id: newSoc.id, role: "RESIDENT" },
+        defaults: { user_society_id: newSoc.id, role: "RESIDENT" },
+        transaction,
+      });
+    }
+
+    // 2. Sync Flat & Membership Data for this specific society
+    const isTenant = resident.resident_type === "TENANT";
+
+    // Find flats in target society where resident_id is resident.id
+    const targetFlats = await Flat.findAll({
+      where: { resident_id: resident.id },
+      include: [{
+        model: Block,
+        where: { society_id: targetSocietyId },
+        required: true,
+      }],
+      transaction,
+    });
+
+    for (const flat of targetFlats) {
+      await Flat.update({
+        occupancy_status: isTenant ? "RENTED" : "OWNER_OCCUPIED",
+      }, { where: { id: flat.id }, transaction });
+
+      await FlatMembership.findOrCreate({
+        where: { flat_id: flat.id, user_id: resident.id, is_current: true },
+        defaults: {
+          flat_id: flat.id,
+          user_id: resident.id,
+          role: resident.resident_type || "OWNER",
+          is_current: true,
+          is_staying: true,
+        },
+        transaction,
+      });
+
+      await ResidentHistory.findOrCreate({
+        where: { flat_id: flat.id, user_id: resident.id, is_current: true },
+        defaults: {
+          flat_id: flat.id,
+          user_id: resident.id,
+          move_in_date: new Date(),
+          is_current: true,
+        },
+        transaction,
+      });
+    }
+
     const pendingMembership = await FlatMembership.findOne({
       where: { user_id: resident.id, is_current: true },
-      transaction
+      include: [{
+        model: Flat,
+        include: [{ model: Block, where: { society_id: targetSocietyId }, required: true }],
+        required: true,
+      }],
+      transaction,
     });
 
     if (pendingMembership) {
       const flatId = pendingMembership.flat_id;
-      const isTenant = resident.resident_type === "TENANT";
-
-      // If a tenant is moving in, the owner is technically no longer staying
       if (isTenant) {
         await FlatMembership.update(
           { is_staying: false },
           { where: { flat_id: flatId, role: "OWNER", is_current: true }, transaction }
         );
       }
-
-      // Update the Physical Flat Unit
       await Flat.update({
         resident_id: resident.id,
-        occupancy_status: isTenant ? "RENTED" : "OWNER_OCCUPIED"
+        occupancy_status: isTenant ? "RENTED" : "OWNER_OCCUPIED",
       }, { where: { id: flatId }, transaction });
-
-      // Update Resident History Log
-      await ResidentHistory.update(
-        { move_out_date: new Date(), is_current: false },
-        { where: { flat_id: flatId, is_current: true }, transaction }
-      );
-      
-      await ResidentHistory.create({
-        flat_id: flatId, 
-        user_id: resident.id, 
-        move_in_date: new Date(), 
-        is_current: true 
-      }, { transaction });
     }
 
     // 3. Send Notifications
@@ -369,10 +442,12 @@ exports.approveResident = async (req, res) => {
 
 
 exports.rejectResident = async (req, res) => {
+  const transaction = await sequelize.transaction();
   try {
     const { userId } = req.params;
     const callerRole = req.user.activeRole || req.user.role;
     if (!["SOCIETY_ADMIN", "SUPER_ADMIN", "COMMITTEE_MEMBER"].includes(callerRole)) {
+      await transaction.rollback();
       return res.status(403).json({ message: "Access denied. Admin or Committee Member required." });
     }
     const isSuperAdmin = req.user.activeRole === "SUPER_ADMIN" || req.user.role === "SUPER_ADMIN" ||
@@ -383,98 +458,170 @@ exports.rejectResident = async (req, res) => {
     // reason is mandatory.
     const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
     if (!reason) {
+      await transaction.rollback();
       return res.status(400).json({
         code: "REJECTION_REASON_REQUIRED",
         message: "Rejection reason is required. Please tell the resident why their registration was rejected.",
       });
     }
 
-    const user = await User.findByPk(userId);
-    if (!user) return res.status(404).json({ message: "User not found" });
+    const user = await User.findByPk(userId, { transaction });
+    if (!user) {
+      await transaction.rollback();
+      return res.status(404).json({ message: "User not found" });
+    }
 
-    if (!isSuperAdmin && Number(user.society_id) !== Number(req.user.society_id)) {
+    // Target society being rejected (defaults to req.body.society_id || req.user.society_id || user.society_id)
+    const targetSocietyId = Number(req.body?.society_id || req.query?.society_id || req.user.society_id || user.society_id);
+
+    // Check if resident has a membership in target society
+    const userSocTarget = await UserSociety.findOne({
+      where: { user_id: user.id, society_id: targetSocietyId },
+      transaction,
+    });
+
+    if (!isSuperAdmin && Number(req.user.society_id) !== targetSocietyId) {
+      await transaction.rollback();
       return res.status(403).json({ message: "Invalid society access" });
     }
 
-    // 1. Set the User to REJECTED and INACTIVE, persisting the reason
-    await user.update({
-      approval_status: "REJECTED",
-      status: "INACTIVE",
-      rejection_reason: reason,
-      approved_by_user_id: req.user.id,
-      approved_by_name: req.user.name || (callerRole === "COMMITTEE_MEMBER" ? "Committee Member" : "Society Admin"),
-      approved_by_role: callerRole,
-      approved_at: new Date(),
+    if (!isSuperAdmin && !userSocTarget && Number(user.society_id) !== targetSocietyId) {
+      await transaction.rollback();
+      return res.status(403).json({ message: "Resident is not registered in your society" });
+    }
+
+    // Check if user has other active societies
+    const otherActiveSocieties = await UserSociety.findAll({
+      where: {
+        user_id: user.id,
+        society_id: { [Op.ne]: targetSocietyId },
+        membership_status: "ACTIVE",
+      },
+      transaction,
     });
 
-    // 2. Find any FlatMembership for this user
-    const pendingMembership = await FlatMembership.findOne({ where: { user_id: userId } });
+    // 1. Update UserSociety for targetSocietyId
+    if (userSocTarget) {
+      await userSocTarget.update({ membership_status: "REJECTED" }, { transaction });
+    }
+
+    // If user has NO other active societies, mark global user as REJECTED & INACTIVE
+    if (otherActiveSocieties.length === 0) {
+      await user.update({
+        approval_status: "REJECTED",
+        status: "INACTIVE",
+        rejection_reason: reason,
+        approved_by_user_id: req.user.id,
+        approved_by_name: req.user.name || (callerRole === "COMMITTEE_MEMBER" ? "Committee Member" : "Society Admin"),
+        approved_by_role: callerRole,
+        approved_at: new Date(),
+      }, { transaction });
+    }
+
+    // 2. Free up any flat / membership in targetSocietyId
+    const targetFlats = await Flat.findAll({
+      where: { resident_id: user.id },
+      include: [{
+        model: Block,
+        where: { society_id: targetSocietyId },
+        required: true,
+      }],
+      transaction,
+    });
 
     let ownerId = null;
     let flatNumber = null;
 
-    if (pendingMembership) {
-      const flatId = pendingMembership.flat_id;
-      
-      // Destroy their membership and history completely
-      await FlatMembership.destroy({ where: { user_id: userId } });
-      await ResidentHistory.destroy({ where: { user_id: userId } });
+    for (const flat of targetFlats) {
+      flatNumber = flat.flat_number;
+      await FlatMembership.destroy({ where: { user_id: user.id, flat_id: flat.id }, transaction });
+      await ResidentHistory.destroy({ where: { user_id: user.id, flat_id: flat.id }, transaction });
 
-      // Get flat number for notification
-      const flat = await Flat.findByPk(flatId, { attributes: ["flat_number"] });
-      flatNumber = flat?.flat_number || flatId;
-
-      // Find the owner of this flat to revert back to them
       const ownerMembership = await FlatMembership.findOne({
-        where: { flat_id: flatId, role: "OWNER", is_current: true }
+        where: { flat_id: flat.id, role: "OWNER", is_current: true },
+        transaction,
       });
 
       if (ownerMembership) {
         ownerId = ownerMembership.user_id;
-        await ownerMembership.update({ is_staying: true });
+        await ownerMembership.update({ is_staying: true }, { transaction });
         await Flat.update(
           { resident_id: ownerMembership.user_id, occupancy_status: "OWNER_OCCUPIED" },
-          { where: { id: flatId } }
+          { where: { id: flat.id }, transaction }
         );
       } else {
         await Flat.update(
           { resident_id: null, occupancy_status: "VACANT" },
-          { where: { id: flatId } }
+          { where: { id: flat.id }, transaction }
         );
       }
-    } else {
-      // If no membership (e.g. resident registered themselves but wasn't fully set up)
-      await Flat.update(
-        { resident_id: null, occupancy_status: "VACANT" }, 
-        { where: { resident_id: userId } }
-      );
     }
 
-    // 3. Notify the OWNER that their tenant was rejected
-    if (ownerId && user.resident_type === "TENANT") {
-      const ownerNotification = await Notification.create({
-        title:            "Tenant Rejected ❌",
-        message:          `Your tenant ${user.name} for Flat ${flatNumber} has been rejected by the admin.`,
-        type:             "SYSTEM",
-        society_id:       user.society_id,
-        user_id:          ownerId,
-        receiver_role:    "RESIDENT",
-        receiver_user_id: ownerId,
+    const targetMemberships = await FlatMembership.findAll({
+      where: { user_id: user.id },
+      include: [{
+        model: Flat,
+        include: [{ model: Block, where: { society_id: targetSocietyId }, required: true }],
+        required: true,
+      }],
+      transaction,
+    });
+
+    for (const fm of targetMemberships) {
+      await FlatMembership.destroy({ where: { id: fm.id }, transaction });
+      await ResidentHistory.destroy({ where: { user_id: user.id, flat_id: fm.flat_id }, transaction });
+      if (!flatNumber && fm.Flat?.flat_number) flatNumber = fm.Flat.flat_number;
+
+      const ownerMembership = await FlatMembership.findOne({
+        where: { flat_id: fm.flat_id, role: "OWNER", is_current: true },
+        transaction,
       });
 
-      if (global.io) {
-        global.io.to(`user_${ownerId}`).emit("new_notification", ownerNotification);
+      if (ownerMembership) {
+        ownerId = ownerMembership.user_id;
+        await ownerMembership.update({ is_staying: true }, { transaction });
+        await Flat.update(
+          { resident_id: ownerMembership.user_id, occupancy_status: "OWNER_OCCUPIED" },
+          { where: { id: fm.flat_id }, transaction }
+        );
+      } else {
+        await Flat.update(
+          { resident_id: null, occupancy_status: "VACANT" },
+          { where: { id: fm.flat_id }, transaction }
+        );
       }
     }
 
-    // 4. Email the resident the reason so they are not left guessing.
-    // The rejection is already committed at this point; an SMTP failure must not
-    // roll it back, so it is reported back to the admin instead.
+    // Commit transaction
+    await transaction.commit();
+
+    // 3. Notify the OWNER that their tenant was rejected (if applicable)
+    if (ownerId && user.resident_type === "TENANT") {
+      try {
+        const ownerNotification = await Notification.create({
+          title: "Tenant Rejected ❌",
+          message: `Your tenant ${user.name} for Flat ${flatNumber || ""} has been rejected by the admin.`,
+          type: "SYSTEM",
+          society_id: targetSocietyId,
+          user_id: ownerId,
+          receiver_role: "RESIDENT",
+          receiver_user_id: ownerId,
+        });
+
+        if (global.io) {
+          global.io.to(`user_${ownerId}`).emit("new_notification", ownerNotification);
+        }
+      } catch (err) {
+        console.error("[rejectResident] notify owner failed:", err.message);
+      }
+    }
+
+    // 4. Send email
     let emailSent = false;
     if (user.email) {
       try {
-        const society = await Society.findByPk(user.society_id, { attributes: ["name"] });
-        const contact = await resolveSocietyAdminContact(user.society_id);
+        const society = await Society.findByPk(targetSocietyId, { attributes: ["name"] });
+        const contact = await resolveSocietyAdminContact(targetSocietyId);
         await sendRejectionEmail(
           user.email,
           user.name,
@@ -497,8 +644,9 @@ exports.rejectResident = async (req, res) => {
       }),
     });
   } catch (error) {
+    await transaction.rollback();
     console.error("Error in rejectResident:", error);
-    res.status(500).json({ error: "Internal Server Error while rejecting resident." });
+    res.status(500).json({ message: error.message || "Internal Server Error while rejecting resident." });
   }
 };
 

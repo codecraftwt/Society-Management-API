@@ -1,37 +1,79 @@
 const UserDocuments = require("../models/UserDocuments");
 const User = require("../models/User");
+const UserSociety = require("../models/UserSociety");
+const { Op } = require("sequelize");
+
+const verifyUserAccess = async (req, targetUserId) => {
+  const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
+  if (isSuperAdmin) return true;
+
+  if (targetUserId === req.user.id) return true;
+
+  const isSocietyAdmin = req.user.role === "SOCIETY_ADMIN" || req.user.activeRole === "SOCIETY_ADMIN";
+  const isCommittee = req.user.role === "COMMITTEE_MEMBER" || req.user.activeRole === "COMMITTEE_MEMBER";
+  const isAccountant = req.user.role === "ACCOUNTANT" || req.user.activeRole === "ACCOUNTANT";
+
+  if (isSocietyAdmin || isCommittee || isAccountant) {
+    const targetUser = await User.findByPk(targetUserId);
+    if (!targetUser) return false;
+    if (String(targetUser.society_id) === String(req.user.society_id)) return true;
+
+    const membership = await UserSociety.findOne({
+      where: {
+        user_id: targetUserId,
+        society_id: req.user.society_id,
+        membership_status: { [Op.ne]: "REJECTED" },
+      },
+    });
+    return Boolean(membership);
+  }
+
+  return false;
+};
 
 const uploadDocumentsController = async (req, res) => {
   try {
-    const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
-    const isSocietyAdmin = req.user.role === "SOCIETY_ADMIN" || req.user.activeRole === "SOCIETY_ADMIN";
     let userId = req.user.id;
 
     if (req.query.userId) {
-      if (isSuperAdmin) {
-        userId = parseInt(req.query.userId, 10) || req.user.id;
-      } else if (isSocietyAdmin) {
-        const targetUserId = parseInt(req.query.userId, 10);
-        if (targetUserId && targetUserId !== req.user.id) {
-          const targetUser = await User.findOne({ where: { id: targetUserId, society_id: req.user.society_id } });
-          if (!targetUser) {
-            return res.status(403).json({ message: "Cannot upload documents for a user outside your society" });
-          }
-          userId = targetUserId;
+      const targetUserId = parseInt(req.query.userId, 10);
+      if (targetUserId && targetUserId !== req.user.id) {
+        const allowed = await verifyUserAccess(req, targetUserId);
+        if (!allowed) {
+          return res.status(403).json({ message: "Cannot upload documents for a user outside your society" });
         }
-      } else if (parseInt(req.query.userId, 10) !== req.user.id) {
-        return res.status(403).json({ message: "You can only upload documents for yourself" });
+        userId = targetUserId;
       }
     }
 
     const aadhar = req.files?.aadhar?.[0];
     const pan    = req.files?.pan?.[0];
 
-    if (!aadhar || !pan) {
+    const existing = await UserDocuments.findOne({ where: { user_id: userId } });
+
+    if (!existing && (!aadhar || !pan)) {
       return res.status(400).json({ message: "Both documents required" });
     }
 
-    await UserDocuments.upsert({
+    if (existing && !aadhar && !pan) {
+      return res.status(400).json({ message: "At least one document (Aadhaar or PAN) is required to update" });
+    }
+
+    if (existing) {
+      const updateData = {};
+      if (aadhar) {
+        updateData.aadhar_url = aadhar.path;
+        updateData.aadhar_public_id = aadhar.filename;
+      }
+      if (pan) {
+        updateData.pan_url = pan.path;
+        updateData.pan_public_id = pan.filename;
+      }
+      await existing.update(updateData);
+      return res.json({ message: "Documents updated successfully", documents: existing });
+    }
+
+    const newDocs = await UserDocuments.create({
       user_id:          userId,
       aadhar_url:       aadhar.path,
       aadhar_public_id: aadhar.filename,
@@ -39,7 +81,26 @@ const uploadDocumentsController = async (req, res) => {
       pan_public_id:    pan.filename,
     });
 
-    res.json({ message: "Documents uploaded successfully" });
+    res.json({ message: "Documents uploaded successfully", documents: newDocs });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+const getUserDocumentsController = async (req, res) => {
+  try {
+    const targetUserId = parseInt(req.params.userId, 10);
+    if (!targetUserId) {
+      return res.status(400).json({ message: "Valid user ID is required" });
+    }
+
+    const allowed = await verifyUserAccess(req, targetUserId);
+    if (!allowed) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const docs = await UserDocuments.findOne({ where: { user_id: targetUserId } });
+    return res.json(docs || null);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -47,7 +108,18 @@ const uploadDocumentsController = async (req, res) => {
 
 const updateDocumentController = async (req, res) => {
   try {
-    const userId = req.user.id;
+    let userId = req.user.id;
+    if (req.query.userId) {
+      const targetUserId = parseInt(req.query.userId, 10);
+      if (targetUserId && targetUserId !== req.user.id) {
+        const allowed = await verifyUserAccess(req, targetUserId);
+        if (!allowed) {
+          return res.status(403).json({ message: "Cannot update documents for a user outside your society" });
+        }
+        userId = targetUserId;
+      }
+    }
+
     const { type } = req.params; // "aadhar" | "pan"
 
     // Only accept the file matching the type in the URL
@@ -93,7 +165,18 @@ const updateDocumentController = async (req, res) => {
 
 const deleteDocumentController = async (req, res) => {
   try {
-    const userId = req.user.id;
+    let userId = req.user.id;
+    if (req.query.userId) {
+      const targetUserId = parseInt(req.query.userId, 10);
+      if (targetUserId && targetUserId !== req.user.id) {
+        const allowed = await verifyUserAccess(req, targetUserId);
+        if (!allowed) {
+          return res.status(403).json({ message: "Cannot delete documents for a user outside your society" });
+        }
+        userId = targetUserId;
+      }
+    }
+
     const { type } = req.params; // "aadhar" | "pan"
 
     if (!["aadhar", "pan"].includes(type)) {
@@ -143,4 +226,10 @@ const deleteDocumentController = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-module.exports = { uploadDocumentsController, updateDocumentController ,deleteDocumentController}; // ← ADD THIS LINE
+
+module.exports = {
+  uploadDocumentsController,
+  getUserDocumentsController,
+  updateDocumentController,
+  deleteDocumentController,
+};

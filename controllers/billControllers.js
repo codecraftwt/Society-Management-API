@@ -44,7 +44,7 @@ const resolveBillScope = (req) => {
    caller may act on it. Global super admins are unrestricted. */
 const billInScope = (scope, bill) => {
   if (scope.isSuperAdmin && scope.societyId === null) return true;
-  const billSociety = parseInt(bill?.Flat?.Block?.society_id, 10);
+  const billSociety = parseInt(bill?.society_id || bill?.Flat?.Block?.society_id, 10);
   return scope.societyId !== null && Number.isInteger(billSociety) && billSociety === scope.societyId;
 };
 
@@ -83,7 +83,9 @@ const createBill = async (req, res) => {
     /* ==== INDIVIDUAL BILL ==== */
     if (targetFlatType === "INDIVIDUAL") {
 
-      const flat = await Flat.findByPk(flat_id);
+      const flat = await Flat.findByPk(flat_id, {
+        include: [{ model: Block, attributes: ["society_id"] }],
+      });
 
       let residentId = flat?.resident_id;
       if (!residentId && flat_id) {
@@ -107,6 +109,7 @@ const createBill = async (req, res) => {
       }
 
       const bill = await Bill.create({
+        society_id: req.user?.society_id || flat?.Block?.society_id || null,
         flat_id,
         resident_id: residentId,
         title,
@@ -197,6 +200,7 @@ const createBill = async (req, res) => {
         if (!residentId) continue;
 
         const bill = await Bill.create({
+          society_id: req.user.society_id,
           flat_id: flat.id,
           resident_id: residentId,
           title,

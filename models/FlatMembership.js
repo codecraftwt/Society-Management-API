@@ -76,6 +76,10 @@ const FlatMembership = sequelize.define(
       type: DataTypes.INTEGER,
       allowNull: false,
     },
+    society_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
     role: {
       type: DataTypes.ENUM("OWNER", "TENANT"),
       allowNull: false,
