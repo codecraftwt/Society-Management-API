@@ -5,30 +5,30 @@ const Flat = require("../models/Flat");
 const Block = require("../models/Block");
 const FlatMembership = require("../models/FlatMembership");
 const Payment = require("../models/Payment");
+const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
 
 /* === RESOLVE FLAT IDS ===
-   Flats are associated with residents via FlatMembership (is_current).
-   Fall back to the legacy flat.resident_id column when no memberships exist. */
-const getMyFlatIds = async (userId) => {
-  const memberships = await FlatMembership.findAll({
-    where:      { user_id: userId, is_current: true },
-    attributes: ["flat_id"],
-  });
-
-  const ids = memberships.map((m) => m.flat_id);
-  if (ids.length > 0) return ids;
-
-  const flat = await Flat.findOne({ where: { resident_id: userId } });
-  return flat ? [flat.id] : [];
+   Resolve the resident's flats, scoped to the ACTIVE society so reports never
+   span their other societies. Falls back to all flats when no society is set. */
+const getMyFlatIds = async (userId, societyId = null) => {
+  const scoped =
+    Number.isInteger(Number(societyId)) && Number(societyId) > 0
+      ? Number(societyId)
+      : null;
+  return getUserAuthorizedFlatIds(userId, scoped);
 };
 
 /* === MY COMPLAINTS === */
 const getMyComplaints = async (req, res) => {
   try {
 
+    const activeSocietyId = parseInt(req.user?.society_id, 10);
     const complaints = await Complaint.findAll({
       where: {
-        resident_id: req.user.id   // ✅ FIXED HERE
+        resident_id: req.user.id,
+        ...(Number.isInteger(activeSocietyId) && activeSocietyId > 0
+          ? { society_id: activeSocietyId }
+          : {}),
       },
       order: [["created_at", "DESC"]]
     });
@@ -46,7 +46,7 @@ const getMyComplaints = async (req, res) => {
 const getMyVisitors = async (req, res) => {
   try {
 
-    const myFlatIds = await getMyFlatIds(req.user.id);
+    const myFlatIds = await getMyFlatIds(req.user.id, req.user?.society_id);
     if (myFlatIds.length === 0) return res.json([]);
 
     const visitors = await VisitorLog.findAll({
@@ -76,7 +76,7 @@ const getMyVisitors = async (req, res) => {
 const getMyBills = async (req, res) => {
   try {
 
-    const myFlatIds = await getMyFlatIds(req.user.id);
+    const myFlatIds = await getMyFlatIds(req.user.id, req.user.society_id);
     if (myFlatIds.length === 0) return res.json([]);
 
     const bills = await Bill.findAll({

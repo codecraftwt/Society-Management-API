@@ -17,6 +17,8 @@ const Society = sequelize.define("Society", {
   accent_color: { type: DataTypes.STRING(20), allowNull: true, defaultValue: null },
   card_style: { type: DataTypes.STRING(50), allowNull: true, defaultValue: "default" },
   quick_link_style: { type: DataTypes.STRING(50), allowNull: true, defaultValue: "default" },
+  logo_url: { type: DataTypes.STRING(500), allowNull: true, defaultValue: null },
+  logo_public_id: { type: DataTypes.STRING(255), allowNull: true, defaultValue: null },
   theme_updated_by: { type: DataTypes.INTEGER, allowNull: true, defaultValue: null },
   theme_updated_at: { type: DataTypes.DATE, allowNull: true, defaultValue: null },
   // Society location/geofence configuration

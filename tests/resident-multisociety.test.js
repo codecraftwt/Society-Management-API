@@ -416,4 +416,75 @@ describe("Resident Multi-Society Management API & Security Tests", () => {
       expect(memberships.length).toBe(2);
     });
   });
+
+  describe("Phase 5: Assign Flat from Different Society via /api/flats/assign/:flatId", () => {
+    it("adds new UserSociety membership when assigned flat from different society without overriding primary society", async () => {
+      // 1. Create a resident belonging strictly to Society A
+      const assignEmail = `assign_diff_${Date.now()}@example.com`;
+      const residentSocA = await User.create({
+        name: "Assign Cross Society User",
+        email: assignEmail,
+        password: await bcrypt.hash("Password@123", 8),
+        role: "RESIDENT",
+        roles: ["RESIDENT"],
+        society_id: societyAId,
+        approval_status: "APPROVED",
+        status: "ACTIVE",
+      });
+
+      // Create an unassigned flat in Society B
+      const Block = require("../models/Block");
+      let blockB = await Block.findOne({ where: { society_id: societyBId } });
+      const crossFlatB = await Flat.create({
+        flat_number: `X-${Date.now().toString().slice(-4)}`,
+        block_id: blockB.id,
+      });
+
+      // 2. Assign flat from Society B to residentSocA via PUT /api/flats/assign/:flatId
+      const assignRes = await request(app)
+        .put(`/api/flats/assign/${crossFlatB.id}`)
+        .set({ ...superAdminHeaders, "x-society-id": String(societyBId) })
+        .send({
+          resident_id: residentSocA.id,
+          resident_type: "OWNER",
+          society_id: societyBId,
+        });
+
+      expect(assignRes.status).toBe(200);
+
+      // 3. User's primary society_id should NOT be overwritten (it must still be societyAId)
+      await residentSocA.reload();
+      expect(residentSocA.society_id).toBe(societyAId);
+
+      // 4. User should now have UserSociety records for BOTH Society A and Society B
+      const allMemberships = await UserSociety.findAll({ where: { user_id: residentSocA.id } });
+      const socIds = allMemberships.map((m) => m.society_id);
+      expect(socIds).toContain(societyAId);
+      expect(socIds).toContain(societyBId);
+
+      // 5. FlatMembership for crossFlatB should have society_id set to Society B
+      const fm = await FlatMembership.findOne({ where: { flat_id: crossFlatB.id, user_id: residentSocA.id } });
+      expect(fm).toBeTruthy();
+      expect(fm.society_id).toBe(societyBId);
+      expect(fm.is_current).toBe(true);
+
+      // 6. Resident should be findable when querying residents for Society A AND for Society B
+      const resA = await request(app)
+        .get("/api/users/resident")
+        .query({ society_id: societyAId, search: assignEmail })
+        .set(superAdminHeaders);
+      expect(resA.status).toBe(200);
+      const residentsA = resA.body.data || resA.body;
+      expect(residentsA.some((r) => r.email === assignEmail)).toBe(true);
+
+      const resB = await request(app)
+        .get("/api/users/resident")
+        .query({ society_id: societyBId, search: assignEmail })
+        .set(superAdminHeaders);
+      expect(resB.status).toBe(200);
+      const residentsB = resB.body.data || resB.body;
+      expect(residentsB.some((r) => r.email === assignEmail)).toBe(true);
+    });
+  });
 });
+

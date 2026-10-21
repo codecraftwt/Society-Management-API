@@ -25,6 +25,7 @@ const FlatMembership = require("../models/FlatMembership");
 /* ── IST helpers + shift timing (single source of truth) ── */
 const { getCurrentISTDate, getCurrentISTMinutes } = require("../utils/istTime");
 const { getShiftTimings, isTimeInShift } = require("../utils/shiftTiming");
+const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
 const getTodayIST = () => getCurrentISTDate();
 
 /* ── Generate gate pass ── */
@@ -732,14 +733,12 @@ const getMyGatePasses = async (req, res) => {
     const userId = req.user.id;
     const today = getTodayIST();
 
-    // 1. Get all flats the user belongs to
-    const FlatMembership = require("../models/FlatMembership"); // Ensure it's required
-    const userMemberships = await FlatMembership.findAll({
-      where: { user_id: userId, is_current: true },
-      attributes: ["flat_id"],
-    });
-
-    const myFlatIds = userMemberships.map((m) => m.flat_id);
+    // 1. Resolve only the flats the user holds in the ACTIVE society, so gate
+    //    passes from their other societies never leak into this panel.
+    const activeSocietyId = parseInt(req.user?.society_id, 10);
+    const scopedSocietyId =
+      Number.isInteger(activeSocietyId) && activeSocietyId > 0 ? activeSocietyId : null;
+    const myFlatIds = await getUserAuthorizedFlatIds(userId, scopedSocietyId);
 
     if (myFlatIds.length === 0) {
       return res.json([]);
@@ -766,6 +765,7 @@ const getMyGatePasses = async (req, res) => {
     const passes = await VisitorPreApproval.findAll({
       where: {
         flat_id: { [Op.in]: myFlatIds },
+        ...(scopedSocietyId ? { society_id: scopedSocietyId } : {}),
       },
       include: [
         {

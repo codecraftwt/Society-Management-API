@@ -36,7 +36,7 @@ async function fetchUserSocietiesList(userId) {
         {
           model: Society,
           as: "society",
-          attributes: ["id", "name", "address"],
+          attributes: ["id", "name", "address", "logo_url"],
         },
         {
           model: UserSocietyRole,
@@ -54,6 +54,7 @@ async function fetchUserSocietiesList(userId) {
           id: us.society_id,
           name: us.society?.name || `Society #${us.society_id}`,
           address: us.society?.address || null,
+          logo_url: us.society?.logo_url || null,
           roles: roles.length > 0 ? roles : (us.resident_type ? [us.resident_type] : ["RESIDENT"]),
           resident_type: us.resident_type || null,
           is_default: Boolean(us.is_default),
@@ -64,7 +65,7 @@ async function fetchUserSocietiesList(userId) {
 
     // Fallback if no user_societies row yet:
     const user = await User.findByPk(userId, {
-      include: [{ model: Society, attributes: ["id", "name", "address"] }],
+      include: [{ model: Society, attributes: ["id", "name", "address", "logo_url"] }],
     });
     if (user && user.society_id) {
       const roles = resolveUserRoles(user);
@@ -73,6 +74,7 @@ async function fetchUserSocietiesList(userId) {
           id: user.society_id,
           name: user.Society?.name || "My Society",
           address: user.Society?.address || null,
+          logo_url: user.Society?.logo_url || null,
           roles,
           resident_type: user.resident_type || null,
           is_default: true,
@@ -385,7 +387,7 @@ exports.login = async (req, res) => {
 
     const user = await User.findOne({
       where: { email },
-      include: [{ model: Society, attributes: ["id", "name"] }],
+      include: [{ model: Society, attributes: ["id", "name", "logo_url"] }],
     });
 
     if (!user) return res.status(400).json({ message: "User not found" });
@@ -472,6 +474,8 @@ exports.login = async (req, res) => {
         ...residencyFlags,
         society_id: user.society_id,
         society_name: user.Society?.name || null,
+        society_logo: user.Society?.logo_url || null,
+        society_logo_url: user.Society?.logo_url || null,
         profile_picture: user.profile_picture || null,
       },
     });
@@ -548,7 +552,7 @@ exports.verifyOtp = async (req, res) => {
     const [user] = await Promise.all([
       User.findOne({
         where: { id: userId },
-        include: [{ model: Society, attributes: ["id", "name"] }],
+        include: [{ model: Society, attributes: ["id", "name", "logo_url"] }],
       }),
       record.destroy(),
     ]);
@@ -598,6 +602,8 @@ exports.verifyOtp = async (req, res) => {
         resident_type: scopedUser.resident_type || null,
         society_id: activeSocietyId,
         society_name: defaultSociety?.name || user.Society?.name || null,
+        society_logo: defaultSociety?.logo_url || user.Society?.logo_url || null,
+        society_logo_url: defaultSociety?.logo_url || user.Society?.logo_url || null,
         profile_picture: user.profile_picture || null,
       },
     });
@@ -864,6 +870,8 @@ exports.switchRole = async (req, res) => {
         resident_type: scopedUser.resident_type || null,
         society_id: targetSocietyId,
         society_name: society?.name || null,
+        society_logo: society?.logo_url || null,
+        society_logo_url: society?.logo_url || null,
         profile_picture: user.profile_picture || null,
       },
     });
@@ -992,6 +1000,8 @@ exports.switchSociety = async (req, res) => {
         resident_type: scopedUser.resident_type || null,
         society_id: targetSocietyId,
         society_name: society.name,
+        society_logo: society.logo_url || null,
+        society_logo_url: society.logo_url || null,
         profile_picture: user.profile_picture || null,
       },
     });

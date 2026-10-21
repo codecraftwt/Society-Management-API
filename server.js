@@ -376,6 +376,14 @@ sequelize
         await sequelize.query("ALTER TABLE societies ADD COLUMN theme_updated_at DATETIME NULL DEFAULT NULL");
         console.log("[DB Migration] Added societies.theme_updated_at");
       }
+      if (!socCols.has("logo_url")) {
+        await sequelize.query("ALTER TABLE societies ADD COLUMN logo_url VARCHAR(500) NULL DEFAULT NULL");
+        console.log("[DB Migration] Added societies.logo_url");
+      }
+      if (!socCols.has("logo_public_id")) {
+        await sequelize.query("ALTER TABLE societies ADD COLUMN logo_public_id VARCHAR(255) NULL DEFAULT NULL");
+        console.log("[DB Migration] Added societies.logo_public_id");
+      }
       // Geofence columns: declared on the Society model, so a missing column here
       // makes every Society query fail with "Unknown column 'Society.latitude'".
       if (!socCols.has("latitude")) {

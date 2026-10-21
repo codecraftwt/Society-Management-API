@@ -1,4 +1,5 @@
 const { User, Block, HouseHoldMember, Society, FlatMembership } = require("../models");
+const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
 
 const Bill = require("../models/Bill");
 const Flat = require("../models/Flat");
@@ -440,14 +441,13 @@ const getResidentBills = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Find ALL flats this user is actively associated with
-    const FlatMembership = require("../models/FlatMembership");
-    const userMemberships = await FlatMembership.findAll({
-      where:      { user_id: userId, is_current: true },
-      attributes: ["flat_id"],
-    });
-
-    const myFlatIds = userMemberships.map(m => m.flat_id);
+    // Resolve only the flats this user holds in the ACTIVE society, so bills
+    // from their other societies never leak into this panel.
+    const activeSocietyId = parseInt(req.user?.society_id, 10);
+    const myFlatIds = await getUserAuthorizedFlatIds(
+      userId,
+      Number.isInteger(activeSocietyId) && activeSocietyId > 0 ? activeSocietyId : null
+    );
 
     // ── Pagination ──
     const page   = Math.max(1, parseInt(req.query.page)  || 1);

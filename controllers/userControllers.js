@@ -718,11 +718,14 @@ const createResident = async (req, res) => {
 
         const isTenant = resident_type === "TENANT";
 
+        const existingFlat = await Flat.findByPk(aFlatId, { transaction });
+        const shouldSetFlatType = !existingFlat?.flat_type && aFlatType && ["1BHK", "2BHK", "3BHK"].includes(aFlatType);
+
         await Flat.update(
           {
             resident_id:      resident.id,
             occupancy_status: isTenant ? "RENTED" : "OWNER_OCCUPIED",
-            ...(aFlatType && { flat_type: aFlatType }),
+            ...(shouldSetFlatType && { flat_type: aFlatType }),
           },
           { where: { id: aFlatId }, transaction }
         );
@@ -781,11 +784,14 @@ const createResident = async (req, res) => {
 
       const isTenant = resident_type === "TENANT";
 
+      const existingFlat = await Flat.findByPk(flat_id, { transaction });
+      const shouldSetFlatType = !existingFlat?.flat_type && flat_type && ["1BHK", "2BHK", "3BHK"].includes(flat_type);
+
       await Flat.update(
         {
           resident_id:      resident.id,
           occupancy_status: isTenant ? "RENTED" : "OWNER_OCCUPIED",
-          ...(flat_type && { flat_type }),
+          ...(shouldSetFlatType && { flat_type }),
         },
         { where: { id: flat_id }, transaction }
       );
@@ -1517,10 +1523,12 @@ const getResidents = async (req, res) => {
       let scopedRoles = user.roles || [user.role];
       let scopedPrimarySoc = primarySociety;
 
-      if (!isSuperAdminNoFilter && targetSocietyId) {
-        scopedSocieties = userSocietiesList.filter((s) => s.id === targetSocietyId);
-        scopedFlats = userFlats.filter((f) => f.society_id === targetSocietyId);
-        const thisSoc = userSocMap.get(targetSocietyId);
+      const targetSocietyNum = targetSocietyId ? Number(targetSocietyId) : null;
+
+      if (!isSuperAdminNoFilter && targetSocietyNum) {
+        scopedSocieties = userSocietiesList.filter((s) => Number(s.id) === targetSocietyNum);
+        scopedFlats = userFlats.filter((f) => Number(f.society_id) === targetSocietyNum);
+        const thisSoc = userSocMap.get(targetSocietyNum);
         if (thisSoc && Array.isArray(thisSoc.roles) && thisSoc.roles.length > 0) {
           scopedRoles = thisSoc.roles;
         } else {
@@ -1530,7 +1538,7 @@ const getResidents = async (req, res) => {
       }
 
       // Determine society-scoped or overall approval status
-      const targetSocRecord = targetSocietyId ? userSocMap.get(targetSocietyId) : null;
+      const targetSocRecord = targetSocietyNum ? userSocMap.get(targetSocietyNum) : null;
       let effectiveApprovalStatus = user.approval_status;
       let effectiveStatus = user.status;
 
@@ -1538,15 +1546,20 @@ const getResidents = async (req, res) => {
         if (targetSocRecord.membership_status === "PENDING") {
           effectiveApprovalStatus = "PENDING";
           effectiveStatus = "PENDING";
+        } else if (targetSocRecord.membership_status === "ACTIVE") {
+          effectiveApprovalStatus = "APPROVED";
+          effectiveStatus = "ACTIVE";
         } else if (targetSocRecord.membership_status === "REJECTED") {
           effectiveApprovalStatus = "REJECTED";
           effectiveStatus = "INACTIVE";
         }
       }
 
-      const hasPendingMembership =
-        userSocietiesList.some((s) => s.membership_status === "PENDING") ||
-        user.approval_status === "PENDING";
+      // If viewing a specific society, only flag pending approval if pending in THIS society.
+      // If super admin viewing across all societies (no targetSocietyNum), flag if any society or user itself is pending.
+      const hasPendingMembership = targetSocietyNum
+        ? (targetSocRecord ? targetSocRecord.membership_status === "PENDING" : user.approval_status === "PENDING")
+        : (userSocietiesList.some((s) => s.membership_status === "PENDING") || user.approval_status === "PENDING");
 
       return {
         id:                user.id,
@@ -1681,15 +1694,100 @@ const updateResident = async (req, res) => {
           move_in_date: new Date(),
           is_current: true,
         });
+        const targetFlat = await Flat.findByPk(flat_id, {
+          include: [
+            {
+              model: Floor,
+              attributes: ["id", "floor_number"],
+              include: [{ model: Block, attributes: ["id", "society_id"] }],
+            },
+            {
+              model: Block,
+              attributes: ["id", "society_id"],
+            },
+          ],
+        });
         const flatUpdatePayload = {
           resident_id: resident.id,
           occupancy_status: resident_type === "TENANT" ? "RENTED" : "OWNER_OCCUPIED",
         };
-        if (flat_type) flatUpdatePayload.flat_type = flat_type;
+        // Routine resident update must not overwrite configured BHK; legacy fallback only for unconfigured flats
+        if (!targetFlat?.flat_type && flat_type && ["1BHK", "2BHK", "3BHK"].includes(flat_type)) {
+          flatUpdatePayload.flat_type = flat_type;
+        }
         await Flat.update(flatUpdatePayload, { where: { id: flat_id } });
-      } else if (flat_type) {
-        await Flat.update({ flat_type }, { where: { id: flat_id } });
+
+        const targetSocId =
+          targetFlat?.Block?.society_id ||
+          targetFlat?.Floor?.Block?.society_id ||
+          req.headers["x-society-id"];
+
+        if (targetSocId) {
+          if (resident.society_id) {
+            const [origSoc] = await UserSociety.findOrCreate({
+              where: { user_id: resident.id, society_id: resident.society_id },
+              defaults: {
+                membership_status: "ACTIVE",
+                resident_type: resident.resident_type || "OWNER",
+                occupant_count: resident.occupant_count || 1,
+                vehicle_count: resident.vehicle_count || 0,
+                emergency_contact: resident.emergency_contact || null,
+                source: "MIGRATED",
+                is_default: true,
+              },
+            });
+            if (origSoc.membership_status !== "ACTIVE") {
+              await origSoc.update({ membership_status: "ACTIVE" });
+            }
+            await UserSocietyRole.findOrCreate({
+              where: { user_society_id: origSoc.id, role: "RESIDENT" },
+              defaults: { user_society_id: origSoc.id, role: "RESIDENT" },
+            });
+          }
+
+          const [userSociety] = await UserSociety.findOrCreate({
+            where: {
+              user_id: resident.id,
+              society_id: targetSocId,
+            },
+            defaults: {
+              membership_status: "ACTIVE",
+              resident_type: resident_type || "OWNER",
+              source: "ADMIN_ASSIGNED",
+              is_default: !resident.society_id,
+            },
+          });
+          if (userSociety.membership_status !== "ACTIVE") {
+            await userSociety.update({ membership_status: "ACTIVE" });
+          }
+          await UserSocietyRole.findOrCreate({
+            where: {
+              user_society_id: userSociety.id,
+              role: "RESIDENT",
+            },
+            defaults: {
+              user_society_id: userSociety.id,
+              role: "RESIDENT",
+            },
+          });
+        }
+
+        await FlatMembership.update(
+          { is_current: false, move_out_date: new Date() },
+          { where: { flat_id, is_current: true } }
+        );
+        await FlatMembership.create({
+          flat_id,
+          user_id: resident.id,
+          society_id: targetSocId || null,
+          role: resident_type || "OWNER",
+          is_staying: true,
+          pays_maintenance: true,
+          move_in_date: new Date(),
+          is_current: true,
+        });
       }
+      // Routine resident profile update must never mutate a flat's BHK
     }
 
     if (parking_slot_id) {
@@ -1769,8 +1867,33 @@ const deleteResident = async (req, res) => {
    ===== */
 const getUnassignedResidents = async (req, res) => {
   try {
+    const rawSocietyId = req.headers["x-society-id"] || req.query.society_id;
+    const targetSocietyId =
+      req.user?.role === "SUPER_ADMIN" || req.user?.activeRole === "SUPER_ADMIN"
+        ? rawSocietyId || req.user?.society_id
+        : req.user?.society_id;
+
+    const conditions = [{ status: "ACTIVE" }];
+
+    if (targetSocietyId) {
+      const userSocieties = await UserSociety.findAll({
+        where: {
+          society_id: targetSocietyId,
+          membership_status: { [Op.ne]: "REJECTED" },
+        },
+        attributes: ["user_id"],
+      });
+      const memberIds = userSocieties.map((us) => us.user_id);
+      conditions.push({
+        [Op.or]: [
+          { society_id: targetSocietyId },
+          ...(memberIds.length > 0 ? [{ id: { [Op.in]: memberIds } }] : []),
+        ],
+      });
+    }
+
     const allUsers = await User.findAll({
-      where: { society_id: req.user.society_id, status: "ACTIVE" },
+      where: { [Op.and]: conditions },
       attributes: ["id", "name", "role", "roles", "resident_type"],
       include: { model: Flat, required: false },
     });
@@ -2498,7 +2621,7 @@ const getMyProfile = async (req, res) => {
   try {
     const user = await User.findByPk(req.user.id, {
       attributes: ["id", "name", "email", "role", "roles", "phone", "resident_type", "society_id", "profile_picture"],
-      include: { model: Society, attributes: ["id", "name"] },
+      include: { model: Society, attributes: ["id", "name", "logo_url"] },
     });
     if (!user) return res.status(404).json({ message: "User not found" });
 
@@ -2508,13 +2631,16 @@ const getMyProfile = async (req, res) => {
 
     const userObj = user.toJSON();
     if (activeSocietyId && activeSocietyId !== user.society_id) {
-      const activeSociety = await Society.findByPk(activeSocietyId, { attributes: ["id", "name"] });
+      const activeSociety = await Society.findByPk(activeSocietyId, { attributes: ["id", "name", "logo_url"] });
       if (activeSociety) {
         userObj.society_id = activeSocietyId;
         userObj.Society = activeSociety;
       }
     }
     userObj.activeRole = activeRole;
+    userObj.society_name = userObj.Society?.name || null;
+    userObj.society_logo = userObj.Society?.logo_url || null;
+    userObj.society_logo_url = userObj.Society?.logo_url || null;
     userObj.dynamic_permissions = dynamicPermissions;
     userObj.permissions = dynamicPermissions;
 
@@ -2662,8 +2788,17 @@ const resetPassword = async (req, res) => {
 const updateFCMToken = async (req, res) => {
   try {
     const { fcm_token } = req.body;
+    if (fcm_token) {
+      // ✅ Disassociate token from any other accounts on this physical device
+      // to prevent duplicate notifications being delivered to the device
+      await User.update(
+        { fcm_token: null },
+        { where: { fcm_token, id: { [Op.ne]: req.user.id } } }
+      );
+    }
     const user = await User.findByPk(req.user.id);
-    await user.update({ fcm_token });
+    if (!user) return res.status(404).json({ message: "User not found" });
+    await user.update({ fcm_token: fcm_token || null });
     res.json({ message: "FCM token updated successfully" });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -3033,17 +3168,57 @@ const getPendingResidents = async (req, res) => {
     const Flat = require("../models/Flat");
     const Floor = require("../models/Floor");
     const Block = require("../models/Block");
+    const UserSociety = require("../models/UserSociety");
     const { Op } = require("sequelize");
 
-    const users = await User.findAll({
-      where: {
-        society_id: req.user.society_id,
+    const targetSocId = (req.user.activeRole === "SUPER_ADMIN" || req.user.role === "SUPER_ADMIN")
+      ? (req.query.society_id ? Number(req.query.society_id) : null)
+      : Number(req.user.society_id);
+
+    // Also include residents who have a PENDING UserSociety record for this society
+    const pendingUserSocieties = targetSocId
+      ? await UserSociety.findAll({
+          where: { society_id: targetSocId, membership_status: "PENDING" },
+          attributes: ["user_id"],
+        })
+      : await UserSociety.findAll({
+          where: { membership_status: "PENDING" },
+          attributes: ["user_id"],
+        });
+    const pendingSocUserIds = pendingUserSocieties.map((us) => us.user_id);
+
+    const whereConditions = [
+      {
+        role: { [Op.notIn]: ["GUARD", "SUPER_ADMIN", "SOCIETY_ADMIN"] },
+      },
+    ];
+    if (targetSocId) {
+      whereConditions.push({
+        [Op.or]: [
+          {
+            society_id: targetSocId,
+            [Op.or]: [
+              { approval_status: "PENDING" },
+              { approval_status: "pending" },
+              { approval_status: null, status: "INACTIVE" },
+            ],
+          },
+          ...(pendingSocUserIds.length > 0 ? [{ id: { [Op.in]: pendingSocUserIds } }] : []),
+        ],
+      });
+    } else {
+      whereConditions.push({
         [Op.or]: [
           { approval_status: "PENDING" },
           { approval_status: "pending" },
           { approval_status: null, status: "INACTIVE" },
+          ...(pendingSocUserIds.length > 0 ? [{ id: { [Op.in]: pendingSocUserIds } }] : []),
         ],
-      },
+      });
+    }
+
+    const users = await User.findAll({
+      where: { [Op.and]: whereConditions },
       include: [
         { model: UserDocuments, required: false },
         {

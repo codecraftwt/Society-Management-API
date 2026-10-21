@@ -33,6 +33,7 @@ const {
   getCurrentShiftTypeFromTimings,
   isTimeInShift,
 } = require("../utils/shiftTiming");
+const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
 
 const getTodayIST = () => getCurrentISTDate();
 
@@ -370,11 +371,13 @@ const getResidentVisitors = async (req, res) => {
     const search = req.query.search || "";
     const purposeParam = String(req.query.purpose || req.query.type || "").toUpperCase();
 
-    const userMemberships = await FlatMembership.findAll({
-      where:      { user_id: userId, is_current: true },
-      attributes: ["flat_id"],
-    });
-    const myFlatIds = userMemberships.map((m) => m.flat_id);
+    // Scope to flats the resident holds in the ACTIVE society only, so visitor
+    // logs from their other societies do not leak into this panel.
+    const activeSocietyId = parseInt(req.user?.society_id, 10);
+    const myFlatIds = await getUserAuthorizedFlatIds(
+      userId,
+      Number.isInteger(activeSocietyId) && activeSocietyId > 0 ? activeSocietyId : null
+    );
 
     if (myFlatIds.length === 0) {
       return res.status(200).json({

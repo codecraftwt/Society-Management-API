@@ -82,6 +82,12 @@ beforeAll(async () => {
         if (!socCols.has("theme_updated_at")) {
             await sequelize.query("ALTER TABLE societies ADD COLUMN theme_updated_at DATETIME NULL DEFAULT NULL");
         }
+        if (!socCols.has("logo_url")) {
+            await sequelize.query("ALTER TABLE societies ADD COLUMN logo_url VARCHAR(500) NULL DEFAULT NULL");
+        }
+        if (!socCols.has("logo_public_id")) {
+            await sequelize.query("ALTER TABLE societies ADD COLUMN logo_public_id VARCHAR(255) NULL DEFAULT NULL");
+        }
         // Geofence columns are declared on the Society model; without them every
         // unpinned Society query throws "Unknown column 'latitude' in 'field list'".
         if (!socCols.has("latitude")) {

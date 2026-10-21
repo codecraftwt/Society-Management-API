@@ -699,9 +699,9 @@ exports.getTenantHistory = async (req, res) => {
           model: User,
           attributes: [
             "id", "name", "email", "phone", "approval_status", "status", "resident_type", "society_id",
+            "role", "roles",
             "approved_by_user_id", "approved_by_name", "approved_by_role", "approved_at"
           ],
-          where: societyScope,
           include: [{ model: UserDocuments, required: false }],
         },
         {
@@ -709,9 +709,9 @@ exports.getTenantHistory = async (req, res) => {
           attributes: ["id", "flat_number", "flat_type", "occupancy_status"],
           include: [
             { model: Floor, attributes: ["id", "floor_number"], required: false,
-              include: [{ model: Block, attributes: ["id", "name"], required: false }]
+              include: [{ model: Block, attributes: ["id", "name", "society_id"], required: false }]
             },
-            { model: Block, attributes: ["id", "name"], required: false },
+            { model: Block, attributes: ["id", "name", "society_id"], required: false },
           ],
         },
       ],
@@ -740,7 +740,21 @@ exports.getTenantHistory = async (req, res) => {
     for (const m of memberships) {
       const user = m.User;
       if (!user) continue;
+
+      // Strict role filtering: Guards and Super Admins are never tenants
+      const userRoles = Array.isArray(user.roles)
+        ? user.roles
+        : (typeof user.roles === "string" ? JSON.parse(user.roles || "[]") : [user.role]);
+      if (userRoles.includes("GUARD") || userRoles.includes("SUPER_ADMIN")) continue;
+      if (user.role === "GUARD" || user.role === "SUPER_ADMIN") continue;
+      if (user.role === "SOCIETY_ADMIN" && !userRoles.includes("RESIDENT")) continue;
+
       const flat = m.Flat;
+      const flatSocId = flat?.Block?.society_id || flat?.Floor?.Block?.society_id || m.society_id || user.society_id;
+      if (societyId && Number(flatSocId) !== Number(societyId) && Number(user.society_id) !== Number(societyId)) {
+        continue;
+      }
+
       const bName = flat?.Block?.name || flat?.Floor?.Block?.name || "";
       const fNum = flat?.flat_number || "";
       const flatLabel = bName ? `${fNum} - ${bName}` : fNum;
@@ -765,8 +779,8 @@ exports.getTenantHistory = async (req, res) => {
         approval_status: user.approval_status,
         user_status: user.status,
         resident_type: user.resident_type || "TENANT",
-        society_id: user.society_id || null,
-        society_name: societyMap[user.society_id] || null,
+        society_id: flatSocId || user.society_id || null,
+        society_name: societyMap[flatSocId || user.society_id] || null,
         approved_by_user_id: user.approved_by_user_id,
         approved_by_name: user.approved_by_name,
         approved_by_role: user.approved_by_role,
@@ -792,17 +806,53 @@ exports.getTenantHistory = async (req, res) => {
       });
     }
 
-    // 4. Also fetch pending or unassigned tenants/residents so nothing is missed
+    // 4. Also fetch pending or unassigned TENANTS (strictly genuine tenants, not guards, admins, or owners)
+    let tenantUserIds = [];
+    if (societyId) {
+      const userSocieties = await UserSociety.findAll({
+        where: {
+          society_id: societyId,
+          resident_type: "TENANT",
+        },
+        attributes: ["user_id"],
+      });
+      tenantUserIds = userSocieties.map((us) => us.user_id);
+    } else {
+      const userSocieties = await UserSociety.findAll({
+        where: {
+          resident_type: "TENANT",
+        },
+        attributes: ["user_id"],
+      });
+      tenantUserIds = userSocieties.map((us) => us.user_id);
+    }
+
+    const tenantConditions = [
+      // Exclude guards, super admins, and society admins
+      {
+        role: { [Op.notIn]: ["GUARD", "SUPER_ADMIN", "SOCIETY_ADMIN"] },
+      },
+      // Must be a tenant either directly or via UserSociety
+      {
+        [Op.or]: [
+          { resident_type: "TENANT" },
+          ...(tenantUserIds.length > 0 ? [{ id: { [Op.in]: tenantUserIds } }] : []),
+        ],
+      },
+    ];
+
+    if (societyId) {
+      tenantConditions.push({
+        [Op.or]: [
+          { society_id: societyId },
+          ...(tenantUserIds.length > 0 ? [{ id: { [Op.in]: tenantUserIds } }] : []),
+        ],
+      });
+    }
+
     const additionalUsers = await User.findAll({
       where: {
-        ...societyScope,
-        [Op.or]: [
-          { approval_status: "PENDING" },
-          { approval_status: "pending" },
-          { approval_status: "REJECTED" },
-          { approval_status: "rejected" },
-          { resident_type: "TENANT" },
-        ],
+        [Op.and]: tenantConditions,
       },
       include: [
         { model: UserDocuments, required: false },
@@ -811,20 +861,42 @@ exports.getTenantHistory = async (req, res) => {
           required: false,
           include: [
             { model: Floor, attributes: ["id", "floor_number"], required: false,
-              include: [{ model: Block, attributes: ["id", "name"], required: false }]
+              include: [{ model: Block, attributes: ["id", "name", "society_id"], required: false }]
             },
-            { model: Block, attributes: ["id", "name"], required: false },
+            { model: Block, attributes: ["id", "name", "society_id"], required: false },
           ],
         },
       ],
       attributes: [
         "id", "name", "email", "phone", "approval_status", "status", "resident_type", "society_id",
+        "role", "roles",
         "approved_by_user_id", "approved_by_name", "approved_by_role", "approved_at"
       ],
     });
 
     for (const u of additionalUsers) {
       if (results.some(r => r.tenant_id === u.id)) continue;
+
+      const uRoles = Array.isArray(u.roles)
+        ? u.roles
+        : (typeof u.roles === "string" ? JSON.parse(u.roles || "[]") : [u.role]);
+
+      // Guards and Admins are never tenants
+      if (
+        uRoles.includes("GUARD") ||
+        uRoles.includes("SUPER_ADMIN") ||
+        uRoles.includes("SOCIETY_ADMIN") ||
+        u.role === "GUARD" ||
+        u.role === "SUPER_ADMIN" ||
+        u.role === "SOCIETY_ADMIN"
+      ) {
+        continue;
+      }
+
+      // Must be a tenant
+      const isTenant = u.resident_type === "TENANT" || tenantUserIds.includes(u.id);
+      if (!isTenant) continue;
+
       const flat = u.Flat;
       const bName = flat?.Block?.name || flat?.Floor?.Block?.name || "";
       const fNum = flat?.flat_number || "";
@@ -844,7 +916,7 @@ exports.getTenantHistory = async (req, res) => {
         tenant_phone: u.phone,
         approval_status: u.approval_status || "PENDING",
         user_status: u.status,
-        resident_type: u.resident_type || "TENANT",
+        resident_type: "TENANT",
         society_id: u.society_id || null,
         society_name: societyMap[u.society_id] || null,
         approved_by_user_id: u.approved_by_user_id,

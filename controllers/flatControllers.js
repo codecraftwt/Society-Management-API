@@ -3,6 +3,8 @@ const Floor = require("../models/Floor");
 const ParkingSlot = require("../models/ParkingSlot");
 const Block = require("../models/Block");
 const User = require("../models/User");
+const UserSociety = require("../models/UserSociety");
+const UserSocietyRole = require("../models/UserSocietyRole");
 const HouseHoldMember = require("../models/HouseHoldMember");
 const Payment = require("../models/Payment");
 const Bill = require("../models/Bill");
@@ -103,9 +105,31 @@ const assignFlatToResident = async (req, res) => {
     const { flatId } = req.params;
     const { resident_id, flat_type } = req.body;
 
-    const flat = await Flat.findByPk(flatId);
+    const flat = await Flat.findByPk(flatId, {
+      include: [
+        {
+          model: Floor,
+          attributes: ["id", "floor_number"],
+          include: [{ model: Block, attributes: ["id", "name", "society_id"] }],
+        },
+        {
+          model: Block,
+          attributes: ["id", "name", "society_id"],
+        },
+      ],
+    });
     if (!flat) return res.status(404).json({ message: "Flat not found" });
     if (flat.resident_id) return res.status(400).json({ message: "Flat is already occupied" });
+
+    const resident = await User.findByPk(resident_id);
+    if (!resident) return res.status(404).json({ message: "Resident not found" });
+
+    const targetSocId = req.body.society_id || req.headers["x-society-id"];
+    const effectiveSocietyId =
+      flat.Block?.society_id ||
+      flat.Floor?.Block?.society_id ||
+      (targetSocId ? parseInt(targetSocId, 10) : null) ||
+      req.user.society_id;
 
     await ResidentHistory.update(
       { move_out_date: new Date(), is_current: false },
@@ -118,6 +142,60 @@ const assignFlatToResident = async (req, res) => {
       is_current: true,
     });
 
+    if (effectiveSocietyId) {
+      // Preserve existing primary society in UserSociety if not already recorded
+      if (resident.society_id) {
+        const [origSociety] = await UserSociety.findOrCreate({
+          where: { user_id: resident.id, society_id: resident.society_id },
+          defaults: {
+            membership_status: "ACTIVE",
+            resident_type: resident.resident_type || "OWNER",
+            occupant_count: resident.occupant_count || 1,
+            vehicle_count: resident.vehicle_count || 0,
+            emergency_contact: resident.emergency_contact || null,
+            source: "MIGRATED",
+            is_default: true,
+          },
+        });
+        if (origSociety.membership_status !== "ACTIVE") {
+          await origSociety.update({ membership_status: "ACTIVE" });
+        }
+        await UserSocietyRole.findOrCreate({
+          where: { user_society_id: origSociety.id, role: "RESIDENT" },
+          defaults: { user_society_id: origSociety.id, role: "RESIDENT" },
+        });
+      }
+
+      // Add or activate target society membership
+      const [userSociety] = await UserSociety.findOrCreate({
+        where: { user_id: resident.id, society_id: effectiveSocietyId },
+        defaults: {
+          membership_status: "ACTIVE",
+          resident_type: "OWNER",
+          occupant_count: resident.occupant_count || 1,
+          vehicle_count: 0,
+          emergency_contact: resident.emergency_contact || null,
+          source: "ADMIN_ASSIGNED",
+          is_default: !resident.society_id,
+        },
+      });
+      if (userSociety.membership_status !== "ACTIVE") {
+        await userSociety.update({ membership_status: "ACTIVE" });
+      }
+      await UserSocietyRole.findOrCreate({
+        where: { user_society_id: userSociety.id, role: "RESIDENT" },
+        defaults: { user_society_id: userSociety.id, role: "RESIDENT" },
+      });
+    }
+
+    const userUpdate = {};
+    if (!resident.society_id && effectiveSocietyId) {
+      userUpdate.society_id = effectiveSocietyId;
+    }
+    if (Object.keys(userUpdate).length > 0) {
+      await resident.update(userUpdate);
+    }
+
     await FlatMembership.update(
       { is_current: false, move_out_date: new Date() },
       { where: { flat_id: flatId, is_current: true } }
@@ -125,6 +203,7 @@ const assignFlatToResident = async (req, res) => {
     await FlatMembership.create({
       flat_id:          flatId,
       user_id:          resident_id,
+      society_id:       effectiveSocietyId || null,
       role:             "OWNER",
       is_staying:       true,
       pays_maintenance: true,
@@ -133,7 +212,10 @@ const assignFlatToResident = async (req, res) => {
     });
 
     const flatUpdate = { resident_id };
-    if (flat_type) flatUpdate.flat_type = flat_type;
+    // Routine resident assignment must not overwrite an already-configured BHK
+    if (!flat.flat_type && flat_type && ["1BHK", "2BHK", "3BHK"].includes(flat_type)) {
+      flatUpdate.flat_type = flat_type;
+    }
     await flat.update(flatUpdate);
 
     res.json({ message: "Flat assigned successfully", flat });
@@ -144,8 +226,8 @@ const assignFlatToResident = async (req, res) => {
 
 const getAllFlats = async (req, res) => {
   try {
-    const targetSocietyId = (req.user?.activeRole === "SUPER_ADMIN" && req.headers["x-society-id"])
-      ? req.headers["x-society-id"]
+    const targetSocietyId = (req.user?.activeRole === "SUPER_ADMIN")
+      ? (req.headers["x-society-id"] || req.query?.society_id)
       : req.user?.society_id;
 
     const blockWhere = targetSocietyId ? { society_id: targetSocietyId } : {};
@@ -196,8 +278,15 @@ const getAllFlats = async (req, res) => {
 
 const getUnassignedFlats = async (req, res) => {
   try {
+    const rawSocId = req.headers["x-society-id"] || req.query.society_id;
+    const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
+    const targetSocietyId = (isSuperAdmin && rawSocId)
+      ? parseInt(rawSocId, 10)
+      : (req.user.society_id || (rawSocId ? parseInt(rawSocId, 10) : null));
+
+    const blockWhere = targetSocietyId ? { society_id: targetSocietyId } : {};
     const blocks = await Block.findAll({
-      where: { society_id: req.user.society_id },
+      where: blockWhere,
       attributes: ["id"],
     });
     const blockIds = blocks.map((b) => b.id);
@@ -238,12 +327,28 @@ const assignResident = async (req, res) => {
     const assignable = await ensureAssignable(resident_id);
     if (!assignable.ok) return res.status(assignable.status).json(assignable.payload);
 
-    const flat = await Flat.findByPk(flatId);
+    const flat = await Flat.findByPk(flatId, {
+      include: [
+        {
+          model: Floor,
+          attributes: ["id", "floor_number"],
+          include: [{ model: Block, attributes: ["id", "name", "society_id"] }],
+        },
+        {
+          model: Block,
+          attributes: ["id", "name", "society_id"],
+        },
+      ],
+    });
     if (!flat)
       return res.status(404).json({ message: "Flat not found" });
 
     if (flat.resident_id)
       return res.status(400).json({ message: "Flat already occupied" });
+
+    const resident = await User.findByPk(resident_id);
+    if (!resident)
+      return res.status(404).json({ message: "Resident not found" });
 
     /* ─────────────────────────────
        1️⃣ Resident History
@@ -267,21 +372,129 @@ const assignResident = async (req, res) => {
 
     const flatUpdate = {
       resident_id,
-      flat_type:        flat_type || flat.flat_type,
+      // Routine resident assignment must not overwrite an already-configured BHK
+      flat_type:        flat.flat_type || (["1BHK", "2BHK", "3BHK"].includes(flat_type) ? flat_type : null),
       occupancy_status: isTenant ? "RENTED" : "OWNER_OCCUPIED",
     };
     if (req.body.area_sqft != null) flatUpdate.area_sqft = Number(req.body.area_sqft);
     await flat.update(flatUpdate);
 
-    if (resident_type) {
-      await User.update(
-        { resident_type },
-        { where: { id: resident_id } }
-      );
+    const targetSocId = req.body.society_id || req.headers["x-society-id"];
+    const effectiveSocietyId =
+      flat.Block?.society_id ||
+      flat.Floor?.Block?.society_id ||
+      (targetSocId ? parseInt(targetSocId, 10) : null) ||
+      req.user.society_id;
+
+    /* ─────────────────────────────
+       3️⃣ Normalized Multi-Society Membership & Roles
+       - Preserve resident's initial society in UserSociety (do not overwrite!)
+       - Create or activate UserSociety & UserSocietyRole in the assigned society
+    ───────────────────────────── */
+    if (effectiveSocietyId) {
+      // Step A: Safety net for resident's original primary society
+      if (resident.society_id) {
+        const [origSociety] = await UserSociety.findOrCreate({
+          where: {
+            user_id: resident.id,
+            society_id: resident.society_id,
+          },
+          defaults: {
+            membership_status: "ACTIVE",
+            resident_type: resident.resident_type || "OWNER",
+            occupant_count: resident.occupant_count || 1,
+            vehicle_count: resident.vehicle_count || 0,
+            emergency_contact: resident.emergency_contact || null,
+            source: "MIGRATED",
+            is_default: true,
+          },
+        });
+        if (origSociety.membership_status !== "ACTIVE") {
+          await origSociety.update({ membership_status: "ACTIVE" });
+        }
+        await UserSocietyRole.findOrCreate({
+          where: {
+            user_society_id: origSociety.id,
+            role: "RESIDENT",
+          },
+          defaults: {
+            user_society_id: origSociety.id,
+            role: "RESIDENT",
+          },
+        });
+      }
+
+      // Step B: Create / activate membership in the target society
+      const [userSociety] = await UserSociety.findOrCreate({
+        where: {
+          user_id: resident.id,
+          society_id: effectiveSocietyId,
+        },
+        defaults: {
+          membership_status: "ACTIVE",
+          resident_type: resident_type || "OWNER",
+          occupant_count: resident.occupant_count || 1,
+          vehicle_count: 0,
+          emergency_contact: resident.emergency_contact || null,
+          source: "ADMIN_ASSIGNED",
+          is_default: !resident.society_id,
+        },
+      });
+
+      if (userSociety.membership_status !== "ACTIVE") {
+        await userSociety.update({ membership_status: "ACTIVE" });
+      }
+
+      await UserSocietyRole.findOrCreate({
+        where: {
+          user_society_id: userSociety.id,
+          role: "RESIDENT",
+        },
+        defaults: {
+          user_society_id: userSociety.id,
+          role: "RESIDENT",
+        },
+      });
+    }
+
+    // Step C: Update User fields without overriding existing society_id
+    const userUpdate = {};
+    if (resident_type && (!resident.resident_type || resident.society_id === effectiveSocietyId)) {
+      userUpdate.resident_type = resident_type;
+    }
+    // Only set user.society_id if user has NO society_id at all (never overwrite existing)
+    if (!resident.society_id && effectiveSocietyId) {
+      userUpdate.society_id = effectiveSocietyId;
+    }
+
+    let roles = [];
+    if (Array.isArray(resident.roles)) {
+      roles = [...resident.roles];
+    } else if (typeof resident.roles === "string") {
+      try { roles = JSON.parse(resident.roles) || []; } catch (e) { roles = []; }
+    }
+    if (resident.role && !roles.includes(resident.role)) {
+      roles.push(resident.role);
+    }
+    if (!roles.includes("RESIDENT")) {
+      roles.push("RESIDENT");
+      userUpdate.roles = roles;
+    }
+    if (!resident.role) {
+      userUpdate.role = "RESIDENT";
+    }
+    if (resident.approval_status !== "APPROVED") {
+      userUpdate.approval_status = "APPROVED";
+    }
+    if (resident.status !== "ACTIVE") {
+      userUpdate.status = "ACTIVE";
+    }
+    if (Object.keys(userUpdate).length > 0) {
+      await resident.update(userUpdate);
     }
 
     /* ─────────────────────────────
-       3️⃣ FlatMembership
+       4️⃣ FlatMembership
     ───────────────────────────── */
     await FlatMembership.update(
       { is_current: false, move_out_date: new Date() },
@@ -291,6 +504,7 @@ const assignResident = async (req, res) => {
     await FlatMembership.create({
       flat_id:          flatId,
       user_id:          resident_id,
+      society_id:       effectiveSocietyId || null,
       role:             resident_type || "OWNER",
       is_staying:       true,
       pays_maintenance: true,
@@ -317,12 +531,15 @@ const assignResident = async (req, res) => {
     // Assign new slots if provided
     if (parking_slots.length > 0) {
       for (const [idx, slotData] of parking_slots.entries()) {
+        const slotWhere = {
+          id:     slotData.slot_id,
+          status: "AVAILABLE",
+        };
+        if (effectiveSocietyId) {
+          slotWhere.society_id = effectiveSocietyId;
+        }
         const slot = await ParkingSlot.findOne({
-          where: {
-            id:         slotData.slot_id,
-            society_id: req.user.society_id, // ✅ security: must belong to this society
-            status:     "AVAILABLE",
-          },
+          where: slotWhere,
         });
 
         if (!slot) {
@@ -602,7 +819,16 @@ const updateFlat = async (req, res) => {
     const updates = {};
     for (const field of allowed) {
       if (req.body[field] !== undefined) {
-        updates[field] = field === "area_sqft" ? (req.body[field] != null ? Number(req.body[field]) : null) : req.body[field];
+        if (field === "flat_type") {
+          if (req.body.flat_type !== null && !["1BHK", "2BHK", "3BHK"].includes(req.body.flat_type)) {
+            return res.status(400).json({ message: "Invalid flat_type. Allowed: 1BHK, 2BHK, 3BHK." });
+          }
+          updates.flat_type = req.body.flat_type;
+        } else if (field === "area_sqft") {
+          updates.area_sqft = req.body.area_sqft != null ? Number(req.body.area_sqft) : null;
+        } else {
+          updates[field] = req.body[field];
+        }
       }
     }
 
@@ -614,9 +840,9 @@ const updateFlat = async (req, res) => {
 };
 
 /* ─────────────────────────────────────────────────────────────
-   BULK UPDATE FLATS (area assignment for row houses)
+   BULK UPDATE FLATS (area / BHK assignment)
    PUT /flats/bulk-update
-   Body: { flats: [{ flat_id, area_sqft }] }
+   Body: { flats: [{ flat_id, area_sqft, flat_type }] }
 ───────────────────────────────────────────────────────────── */
 const bulkUpdateFlats = async (req, res) => {
   try {
@@ -632,9 +858,14 @@ const bulkUpdateFlats = async (req, res) => {
       if (!flat) continue;
       const updates = {};
       if (item.area_sqft !== undefined) updates.area_sqft = item.area_sqft != null ? Number(item.area_sqft) : null;
+      if (item.flat_type !== undefined) {
+        if (item.flat_type === null || ["1BHK", "2BHK", "3BHK"].includes(item.flat_type)) {
+          updates.flat_type = item.flat_type;
+        }
+      }
       if (Object.keys(updates).length > 0) {
         await flat.update(updates);
-        results.push({ flat_id: flat.id, area_sqft: flat.area_sqft });
+        results.push({ flat_id: flat.id, area_sqft: flat.area_sqft, flat_type: flat.flat_type });
       }
     }
 

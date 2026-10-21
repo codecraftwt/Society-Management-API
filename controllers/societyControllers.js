@@ -6,6 +6,7 @@ const {
   Floor, Vehicle, ParkingSlot, Amenity, EmergencyAlert, Document, GuardShift,
   AccountantAssignment,
 } = require("../models");
+const { readUploadedSocietyLogo, destroySocietyLogo } = require("../utils/societyLogo");
 
 // CREATE SOCIETY
 const createSociety = async (req, res) => {
@@ -276,13 +277,43 @@ const deleteSociety = async (req, res) => {
     }
 };
 
-// ─── SOCIETY THEME CUSTOMIZATION ─────────────────────────────────────────────
+// ─── SOCIETY THEME & LOGO BRANDING CUSTOMIZATION ─────────────────────────────
 
 const HEX_COLOR_REGEX = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
 
 /**
+ * Validates if the authenticated user has permission to manage the target society's branding.
+ * - Super Admin can manage branding for all societies.
+ * - Society Admin (or committee member with society admin role) can ONLY manage their assigned society.
+ * - All other roles are denied.
+ */
+const canManageSocietyBranding = (user, targetSocietyId) => {
+  if (!user) return false;
+  const userRoles = Array.isArray(user.roles) ? user.roles : [user.role].filter(Boolean);
+  const isSuperAdmin =
+    user.activeRole === "SUPER_ADMIN" ||
+    user.role === "SUPER_ADMIN" ||
+    userRoles.includes("SUPER_ADMIN");
+  if (isSuperAdmin) return true;
+
+  const isSocietyAdmin =
+    user.activeRole === "SOCIETY_ADMIN" ||
+    user.role === "SOCIETY_ADMIN" ||
+    userRoles.includes("SOCIETY_ADMIN") ||
+    user.activeRole === "COMMITTEE_MEMBER" ||
+    userRoles.includes("COMMITTEE_MEMBER") ||
+    user.role === "ADMIN" ||
+    userRoles.includes("ADMIN");
+
+  const userSocId = Number(user.society_id || user.society?.id);
+  const isOwnSociety = !isNaN(userSocId) && userSocId === targetSocietyId;
+
+  return isSocietyAdmin && isOwnSociety;
+};
+
+/**
  * GET /api/societies/:id/theme
- * Fetches the active custom theme branding for a society or default fallback.
+ * Fetches the active custom theme branding and logo for a society or default fallback.
  */
 const getSocietyTheme = async (req, res) => {
   const targetId = parseInt(req.params.id, 10);
@@ -313,19 +344,38 @@ const getSocietyTheme = async (req, res) => {
 
   try {
     const society = await Society.findByPk(targetId, {
-      attributes: ["id", "name", "primary_color", "accent_color", "card_style", "quick_link_style", "theme_updated_by", "theme_updated_at"],
+      attributes: [
+        "id",
+        "name",
+        "primary_color",
+        "accent_color",
+        "card_style",
+        "quick_link_style",
+        "logo_url",
+        "logo_public_id",
+        "theme_updated_by",
+        "theme_updated_at",
+      ],
     });
 
     if (!society) {
       return res.status(404).json({ success: false, message: "Society not found." });
     }
 
-    const configured = Boolean(society.primary_color || society.accent_color || (society.card_style && society.card_style !== "default") || (society.quick_link_style && society.quick_link_style !== "default"));
+    const configured = Boolean(
+      society.primary_color ||
+      society.accent_color ||
+      society.logo_url ||
+      (society.card_style && society.card_style !== "default") ||
+      (society.quick_link_style && society.quick_link_style !== "default")
+    );
 
     return res.status(200).json({
       success: true,
       society_id: society.id,
       society_name: society.name,
+      logo_url: society.logo_url || null,
+      logo_public_id: society.logo_public_id || null,
       configured,
       theme: {
         primary: society.primary_color || null,
@@ -334,6 +384,7 @@ const getSocietyTheme = async (req, res) => {
         card_style: society.card_style || "default",
         quickLinkStyle: society.quick_link_style || "default",
         quick_link_style: society.quick_link_style || "default",
+        logo_url: society.logo_url || null,
       },
       theme_updated_by: society.theme_updated_by,
       theme_updated_at: society.theme_updated_at,
@@ -354,23 +405,8 @@ const updateSocietyTheme = async (req, res) => {
     return res.status(400).json({ success: false, message: "Invalid society ID." });
   }
 
-  const userRoles = Array.isArray(req.user?.roles) ? req.user.roles : [req.user?.role].filter(Boolean);
-  const isSuperAdmin =
-    req.user?.activeRole === "SUPER_ADMIN" ||
-    req.user?.role === "SUPER_ADMIN" ||
-    userRoles.includes("SUPER_ADMIN");
-  const isSocietyAdmin =
-    req.user?.activeRole === "SOCIETY_ADMIN" ||
-    req.user?.role === "SOCIETY_ADMIN" ||
-    userRoles.includes("SOCIETY_ADMIN") ||
-    req.user?.activeRole === "COMMITTEE_MEMBER" ||
-    userRoles.includes("COMMITTEE_MEMBER") ||
-    req.user?.role === "ADMIN" ||
-    userRoles.includes("ADMIN");
-  const isOwnSociety = req.user?.society_id === targetId;
-
-  // Authorization check: Super Admin or own Society Admin only
-  if (!isSuperAdmin && (!isSocietyAdmin || !isOwnSociety)) {
+  // Authorization check: Super Admin or authorized Society Admin only
+  if (!canManageSocietyBranding(req.user, targetId)) {
     return res.status(403).json({
       success: false,
       message: "You are not authorized to modify theme settings for this society.",
@@ -381,11 +417,12 @@ const updateSocietyTheme = async (req, res) => {
   const accent = req.body.accent_color || req.body.accent;
   const cardStyle = req.body.card_style || req.body.cardStyle;
   const quickLinkStyle = req.body.quick_link_style || req.body.quickLinkStyle;
+  const logoUrl = req.body.logo_url !== undefined ? req.body.logo_url : undefined;
 
-  if (!primary && !accent && !cardStyle && !quickLinkStyle) {
+  if (!primary && !accent && !cardStyle && !quickLinkStyle && logoUrl === undefined) {
     return res.status(400).json({
       success: false,
-      message: "At least one theme property (primary color, accent color, or card style) is required.",
+      message: "At least one theme property (primary color, accent color, card style, or logo) is required.",
     });
   }
 
@@ -417,6 +454,9 @@ const updateSocietyTheme = async (req, res) => {
     if (quickLinkStyle) {
       society.quick_link_style = String(quickLinkStyle).trim();
     }
+    if (logoUrl !== undefined) {
+      society.logo_url = logoUrl ? String(logoUrl).trim() : null;
+    }
     society.theme_updated_by = req.user.id;
     society.theme_updated_at = new Date();
     await society.save();
@@ -432,13 +472,16 @@ const updateSocietyTheme = async (req, res) => {
         card_style: society.card_style || "default",
         quickLinkStyle: society.quick_link_style || "default",
         quick_link_style: society.quick_link_style || "default",
+        logo_url: society.logo_url || null,
       };
       global.io.to(`society_${society.id}`).emit("society_theme_updated", {
         society_id: society.id,
+        logo_url: society.logo_url || null,
         theme: themePayload,
       });
       global.io.emit("society_theme_updated", {
         society_id: society.id,
+        logo_url: society.logo_url || null,
         theme: themePayload,
       });
     }
@@ -447,7 +490,9 @@ const updateSocietyTheme = async (req, res) => {
       success: true,
       message: "Society theme updated successfully.",
       society_id: society.id,
+      society_name: society.name,
       configured: true,
+      logo_url: society.logo_url || null,
       theme: {
         primary: society.primary_color,
         accent: society.accent_color,
@@ -455,11 +500,216 @@ const updateSocietyTheme = async (req, res) => {
         card_style: society.card_style || "default",
         quickLinkStyle: society.quick_link_style || "default",
         quick_link_style: society.quick_link_style || "default",
+        logo_url: society.logo_url || null,
       },
       theme_updated_at: society.theme_updated_at,
     });
   } catch (err) {
     console.error("updateSocietyTheme error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * POST /api/societies/:id/logo
+ * Uploads or replaces the logo for a society.
+ * Multipart field: `logo`
+ */
+const uploadSocietyLogo = async (req, res) => {
+  const targetId = parseInt(req.params.id, 10);
+  if (isNaN(targetId)) {
+    if (req.file) {
+      const uploaded = readUploadedSocietyLogo(req.file);
+      if (uploaded?.publicId) {
+        destroySocietyLogo(uploaded.publicId).catch(() => {});
+      }
+    }
+    return res.status(400).json({ success: false, message: "Invalid society ID." });
+  }
+
+  // Authorization check: Super Admin or authorized Society Admin only
+  if (!canManageSocietyBranding(req.user, targetId)) {
+    if (req.file) {
+      const uploaded = readUploadedSocietyLogo(req.file);
+      if (uploaded?.publicId) {
+        destroySocietyLogo(uploaded.publicId).catch(() => {});
+      }
+    }
+    return res.status(403).json({
+      success: false,
+      message: "You are not authorized to modify branding for this society.",
+    });
+  }
+
+  if (!req.file) {
+    return res.status(400).json({
+      success: false,
+      message: "Please select an image file to upload as the society logo.",
+    });
+  }
+
+  const uploaded = readUploadedSocietyLogo(req.file);
+  if (!uploaded || !uploaded.url) {
+    return res.status(400).json({
+      success: false,
+      message: "Failed to process the uploaded image. Please try another file.",
+    });
+  }
+
+  try {
+    const society = await Society.findByPk(targetId);
+    if (!society) {
+      if (uploaded.publicId) {
+        destroySocietyLogo(uploaded.publicId).catch(() => {});
+      }
+      return res.status(404).json({ success: false, message: "Society not found." });
+    }
+
+    const previousPublicId = society.logo_public_id;
+    society.logo_url = uploaded.url;
+    society.logo_public_id = uploaded.publicId;
+    society.theme_updated_by = req.user.id;
+    society.theme_updated_at = new Date();
+    await society.save();
+
+    // Clean up previous logo asset in Cloudinary if one existed and differs from the new one
+    if (previousPublicId && previousPublicId !== uploaded.publicId) {
+      destroySocietyLogo(previousPublicId).catch((err) => {
+        console.error("Failed to clean up old logo:", err);
+      });
+    }
+
+    // Broadcast real-time update to web & mobile clients
+    if (global.io) {
+      const themePayload = {
+        primary: society.primary_color,
+        primary_color: society.primary_color,
+        accent: society.accent_color,
+        accent_color: society.accent_color,
+        cardStyle: society.card_style || "default",
+        card_style: society.card_style || "default",
+        quickLinkStyle: society.quick_link_style || "default",
+        quick_link_style: society.quick_link_style || "default",
+        logo_url: society.logo_url,
+      };
+      global.io.to(`society_${society.id}`).emit("society_theme_updated", {
+        society_id: society.id,
+        logo_url: society.logo_url,
+        theme: themePayload,
+      });
+      global.io.emit("society_theme_updated", {
+        society_id: society.id,
+        logo_url: society.logo_url,
+        theme: themePayload,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Society logo updated successfully.",
+      society_id: society.id,
+      society_name: society.name,
+      logo_url: society.logo_url,
+      logo_public_id: society.logo_public_id,
+      theme: {
+        primary: society.primary_color,
+        accent: society.accent_color,
+        cardStyle: society.card_style || "default",
+        card_style: society.card_style || "default",
+        quickLinkStyle: society.quick_link_style || "default",
+        quick_link_style: society.quick_link_style || "default",
+        logo_url: society.logo_url,
+      },
+    });
+  } catch (err) {
+    if (uploaded.publicId) {
+      destroySocietyLogo(uploaded.publicId).catch(() => {});
+    }
+    console.error("uploadSocietyLogo error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * DELETE /api/societies/:id/logo
+ * Removes the logo for a society and cleans up its Cloudinary storage asset.
+ */
+const removeSocietyLogo = async (req, res) => {
+  const targetId = parseInt(req.params.id, 10);
+  if (isNaN(targetId)) {
+    return res.status(400).json({ success: false, message: "Invalid society ID." });
+  }
+
+  // Authorization check: Super Admin or authorized Society Admin only
+  if (!canManageSocietyBranding(req.user, targetId)) {
+    return res.status(403).json({
+      success: false,
+      message: "You are not authorized to modify branding for this society.",
+    });
+  }
+
+  try {
+    const society = await Society.findByPk(targetId);
+    if (!society) {
+      return res.status(404).json({ success: false, message: "Society not found." });
+    }
+
+    const previousPublicId = society.logo_public_id;
+    society.logo_url = null;
+    society.logo_public_id = null;
+    society.theme_updated_by = req.user.id;
+    society.theme_updated_at = new Date();
+    await society.save();
+
+    if (previousPublicId) {
+      destroySocietyLogo(previousPublicId).catch((err) => {
+        console.error("Failed to clean up removed logo:", err);
+      });
+    }
+
+    // Broadcast real-time update to web & mobile clients
+    if (global.io) {
+      const themePayload = {
+        primary: society.primary_color,
+        primary_color: society.primary_color,
+        accent: society.accent_color,
+        accent_color: society.accent_color,
+        cardStyle: society.card_style || "default",
+        card_style: society.card_style || "default",
+        quickLinkStyle: society.quick_link_style || "default",
+        quick_link_style: society.quick_link_style || "default",
+        logo_url: null,
+      };
+      global.io.to(`society_${society.id}`).emit("society_theme_updated", {
+        society_id: society.id,
+        logo_url: null,
+        theme: themePayload,
+      });
+      global.io.emit("society_theme_updated", {
+        society_id: society.id,
+        logo_url: null,
+        theme: themePayload,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Society logo removed successfully.",
+      society_id: society.id,
+      society_name: society.name,
+      logo_url: null,
+      theme: {
+        primary: society.primary_color,
+        accent: society.accent_color,
+        cardStyle: society.card_style || "default",
+        card_style: society.card_style || "default",
+        quickLinkStyle: society.quick_link_style || "default",
+        quick_link_style: society.quick_link_style || "default",
+        logo_url: null,
+      },
+    });
+  } catch (err) {
+    console.error("removeSocietyLogo error:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 };
@@ -474,22 +724,7 @@ const resetSocietyTheme = async (req, res) => {
     return res.status(400).json({ success: false, message: "Invalid society ID." });
   }
 
-  const userRoles = Array.isArray(req.user?.roles) ? req.user.roles : [req.user?.role].filter(Boolean);
-  const isSuperAdmin =
-    req.user?.activeRole === "SUPER_ADMIN" ||
-    req.user?.role === "SUPER_ADMIN" ||
-    userRoles.includes("SUPER_ADMIN");
-  const isSocietyAdmin =
-    req.user?.activeRole === "SOCIETY_ADMIN" ||
-    req.user?.role === "SOCIETY_ADMIN" ||
-    userRoles.includes("SOCIETY_ADMIN") ||
-    req.user?.activeRole === "COMMITTEE_MEMBER" ||
-    userRoles.includes("COMMITTEE_MEMBER") ||
-    req.user?.role === "ADMIN" ||
-    userRoles.includes("ADMIN");
-  const isOwnSociety = req.user?.society_id === targetId;
-
-  if (!isSuperAdmin && (!isSocietyAdmin || !isOwnSociety)) {
+  if (!canManageSocietyBranding(req.user, targetId)) {
     return res.status(403).json({
       success: false,
       message: "You are not authorized to reset theme settings for this society.",
@@ -520,13 +755,16 @@ const resetSocietyTheme = async (req, res) => {
         card_style: "default",
         quickLinkStyle: "default",
         quick_link_style: "default",
+        logo_url: society.logo_url || null,
       };
       global.io.to(`society_${society.id}`).emit("society_theme_updated", {
         society_id: society.id,
+        logo_url: society.logo_url || null,
         theme: resetPayload,
       });
       global.io.emit("society_theme_updated", {
         society_id: society.id,
+        logo_url: society.logo_url || null,
         theme: resetPayload,
       });
     }
@@ -535,7 +773,8 @@ const resetSocietyTheme = async (req, res) => {
       success: true,
       message: "Society theme reset to default successfully.",
       society_id: society.id,
-      configured: false,
+      configured: Boolean(society.logo_url),
+      logo_url: society.logo_url || null,
       theme: {
         primary: null,
         accent: null,
@@ -543,6 +782,7 @@ const resetSocietyTheme = async (req, res) => {
         card_style: "default",
         quickLinkStyle: "default",
         quick_link_style: "default",
+        logo_url: society.logo_url || null,
       },
     });
   } catch (err) {
@@ -692,6 +932,8 @@ module.exports = {
   getSocietyTheme,
   updateSocietyTheme,
   resetSocietyTheme,
+  uploadSocietyLogo,
+  removeSocietyLogo,
   getSocietyGeofence,
   updateSocietyGeofence,
 };
