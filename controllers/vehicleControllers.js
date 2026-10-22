@@ -2,6 +2,7 @@ const Vehicle = require("../models/Vehicle");
 const { ParkingSlot, Flat, HouseHoldMember, User } = require("../models");
 const { Op } = require("sequelize");
 const { literal } = require("sequelize");
+const notificationService = require("../services/notificationService");
 
 /* ── helpers ── */
 const getFlatIdForUser = async (userId) => {
@@ -523,35 +524,34 @@ const addVehicle = async (req, res) => {
 
         // Notify all admins
         const adminUsers = await User.findAll({
-          where:      { society_id: req.user.society_id, role: "ADMIN" },
+          where:      { society_id: req.user.society_id, role: "SOCIETY_ADMIN" },
           attributes: ["id", "fcm_token"],
         });
 
         for (const admin of adminUsers) {
-          await Notification.create({
-            society_id:       req.user.society_id,
-            receiver_user_id: admin.id,
+          await notificationService.sendNotification({
+            societyId:       req.user.society_id,
+            receiverUserId:  admin.id,
             title:            "Extra Parking Slot Request 🅿️",
             message:          `${requester?.name || "A resident"} needs a ${vehicle_type.toUpperCase()} parking slot for vehicle ${vehicle_number.toUpperCase()}.`,
             type:             "PARKING",
-            action_type:      "VIEW_PARKING",
-            action_route:     "/admin/parking",
-            is_read:          false,
+            actionType:       "VIEW_PARKING",
+            actionRoute:      "/admin/parking",
+            fcmToken:         admin.fcm_token,
           });
 
           global.io?.to(`user_${admin.id}`).emit("parking_request_new", pendingRequest);
         }
 
         // Confirm to resident
-        await Notification.create({
-          society_id:       req.user.society_id,
-          receiver_user_id: primaryResidentId,
+        await notificationService.sendNotification({
+          societyId:       req.user.society_id,
+          receiverUserId:  primaryResidentId,
           title:            "Parking Slot Request Submitted ✅",
           message:          `Your request for a ${vehicle_type.toUpperCase()} parking slot for ${vehicle_number.toUpperCase()} has been sent to the admin.`,
           type:             "PARKING",
-          action_type:      "VIEW_PARKING",
-          action_route:     "/resident/parking",
-          is_read:          false,
+          actionType:       "VIEW_PARKING",
+          actionRoute:      "/resident/parking",
         });
 
         global.io?.to(`user_${primaryResidentId}`).emit("parking_request_new", pendingRequest);
@@ -874,34 +874,33 @@ const updateVehicle = async (req, res) => {
         residentRequest = pendingRequest;
 
         const adminUsers = await User.findAll({
-          where:      { society_id: req.user.society_id, role: "ADMIN" },
+          where:      { society_id: req.user.society_id, role: "SOCIETY_ADMIN" },
           attributes: ["id", "fcm_token"],
         });
 
         for (const admin of adminUsers) {
-          await Notification.create({
-            society_id:       req.user.society_id,
-            receiver_user_id: admin.id,
+          await notificationService.sendNotification({
+            societyId:       req.user.society_id,
+            receiverUserId:  admin.id,
             title:            "Extra Parking Slot Request 🅿️",
             message:          `${requester?.name || "A resident"} needs a ${vehicle_type.toUpperCase()} parking slot for vehicle ${vehicle_number.toUpperCase()}.`,
             type:             "PARKING",
-            action_type:      "VIEW_PARKING",
-            action_route:     "/admin/parking",
-            is_read:          false,
+            actionType:       "VIEW_PARKING",
+            actionRoute:      "/admin/parking",
+            fcmToken:         admin.fcm_token,
           });
 
           global.io?.to(`user_${admin.id}`).emit("parking_request_new", pendingRequest);
         }
 
-        await Notification.create({
-          society_id:       req.user.society_id,
-          receiver_user_id: primaryResidentId,
+        await notificationService.sendNotification({
+          societyId:       req.user.society_id,
+          receiverUserId:  primaryResidentId,
           title:            "Parking Slot Request Submitted ✅",
           message:          `Your request for a ${vehicle_type.toUpperCase()} parking slot for ${vehicle_number.toUpperCase()} has been sent to the admin.`,
           type:             "PARKING",
-          action_type:      "VIEW_PARKING",
-          action_route:     "/resident/parking",
-          is_read:          false,
+          actionType:       "VIEW_PARKING",
+          actionRoute:      "/resident/parking",
         });
 
         global.io?.to(`user_${primaryResidentId}`).emit("parking_request_new", pendingRequest);

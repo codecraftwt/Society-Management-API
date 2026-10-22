@@ -11,6 +11,7 @@ const {
 } = require("../models");
 const { sendPushNotification } = require("../utils/pushNotification");
 const { auditLog } = require("../utils/ledgerService");
+const notificationService = require("../services/notificationService");
 
 /* Best-effort audit stamp so a failure in the audit book never blocks the
    actual maintenance operation (configs/bills are not transactional here). */
@@ -601,25 +602,19 @@ const generateBills = async (req, res) => {
         const settings = await UserSetting.findOne({ where: { user_id: user.id } });
         if (settings && settings.payment_updates === false) continue;
 
-        const notification = await Notification.create({
+        await notificationService.sendNotification({
+          societyId,
+          receiverUserId: user.id,
+          receiverRole: "RESIDENT",
           title: "New Maintenance Bill",
           message: `Your maintenance bill of ₹${Number(bill.amount).toFixed(2)} for ${requestedMonth} is now available.`,
           type: "BILL",
-          action_type: "BILL_PAYMENT",
-          action_route: "/resident/bills",
-          society_id: societyId,
-          receiver_role: "RESIDENT",
-          receiver_user_id: user.id,
+          actionType: "BILL_PAYMENT",
+          actionRoute: "/resident/bills",
+          fcmToken: user.fcm_token,
+          sourceEventId: `MAINTENANCE_BILL:${bill.id}:${user.id}`,
+          extraData: { route: "/resident/bills", billId: bill.id.toString() },
         });
-        if (global.io) global.io.to(`user_${user.id}`).emit("new_notification", notification);
-        if (user.fcm_token) {
-          sendPushNotification(
-            user.fcm_token,
-            "New Maintenance Bill",
-            `A new bill of ₹${Number(bill.amount).toFixed(2)} for ${requestedMonth} has been generated.`,
-            { route: "/resident/bills", billId: bill.id.toString() }
-          ).catch((err) => console.error("Push Error:", err));
-        }
       }
       continue;
     }
@@ -699,27 +694,19 @@ const generateBills = async (req, res) => {
         ? `Your maintenance bill of ₹${Number(bill.amount).toFixed(2)} for ${requestedMonth} is now available. Due date: ${formattedDueDate}.`
         : `Your maintenance bill of ₹${Number(bill.amount).toFixed(2)} for ${requestedMonth} is now available.`;
 
-      const notification = await Notification.create({
+      await notificationService.sendNotification({
+        societyId,
+        receiverUserId: user.id,
+        receiverRole: "RESIDENT",
         title: "New Maintenance Bill",
         message: notifMsg,
         type: "BILL",
-        action_type: "BILL_PAYMENT",
-        action_route: "/resident/bills",
-        society_id: societyId,
-        receiver_role: "RESIDENT",
-        receiver_user_id: user.id,
+        actionType: "BILL_PAYMENT",
+        actionRoute: "/resident/bills",
+        fcmToken: user.fcm_token,
+        sourceEventId: `MAINTENANCE_BILL:${bill.id}:${user.id}`,
+        extraData: { route: "/resident/bills", billId: bill.id.toString() },
       });
-      if (global.io) {
-        global.io.to(`user_${user.id}`).emit("new_notification", notification);
-      }
-      if (user.fcm_token) {
-        sendPushNotification(
-          user.fcm_token,
-          "New Maintenance Bill",
-          notifMsg,
-          { route: "/resident/bills", billId: bill.id.toString() }
-        ).catch((err) => console.error("Push Error:", err));
-      }
     }
   }
 

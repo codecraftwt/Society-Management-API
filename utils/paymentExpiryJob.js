@@ -2,8 +2,9 @@
 
 const cron          = require("node-cron");
 const { Op }        = require("sequelize");
-const { AmenityBooking, Amenity, User, Notification } = require("../models");
+const { AmenityBooking, Amenity, User } = require("../models");
 const { sendPushNotification } = require("../utils/pushNotification");
+const notificationService = require("../services/notificationService");
 
 const JOB_INTERVAL = "*/2 * * * *"; // every 2 minutes
 
@@ -36,28 +37,17 @@ cron.schedule(JOB_INTERVAL, async () => {
       const msg   = `⏰ Your reservation for ${booking.Amenity?.name} on ${booking.date} was released because payment was not completed in time. You can book again.`;
 
       try {
-        const notification = await Notification.create({
+        await notificationService.sendNotification({
+          societyId: booking.society_id,
+          receiverUserId: booking.user_id,
           title,
-          message:          msg,
-          type:             "AMENITY",
-          action_type:      "VIEW_AMENITY",
-          action_route:     "/resident/amenities",
-          society_id:       booking.society_id,
-          receiver_user_id: booking.user_id,
+          message: msg,
+          type: "AMENITY",
+          actionType: "VIEW_AMENITY",
+          actionRoute: "/resident/amenities",
+          fcmToken: booking.User?.fcm_token,
+          sourceEventId: `PAYMENT_EXPIRED:${booking.id}:${booking.user_id}`,
         });
-
-        if (global.io) {
-          global.io.to(`user_${booking.user_id}`).emit("new_notification", notification);
-        }
-
-        if (booking.User?.fcm_token) {
-          sendPushNotification(
-            booking.User.fcm_token,
-            title,
-            msg,
-            { route: "/resident/amenities" }
-          ).catch(console.error);
-        }
       } catch (notifErr) {
         console.error("[paymentExpiryJob] Notification error:", notifErr.message);
       }

@@ -4,12 +4,12 @@ const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
 const Bill = require("../models/Bill");
 const Flat = require("../models/Flat");
 const Floor = require("../models/Floor");
-const Notification = require("../models/Notification");
 const UserSetting = require("../models/UserSetting");
 const Payment = require("../models/Payment");
 const { sendPushNotification } = require("../utils/pushNotification");
 const { createLedgerEntry } = require("../utils/ledgerService");
 const sequelize = require("../config/db");
+const notificationService = require("../services/notificationService");
 
 const { Op } = require("sequelize");
 
@@ -54,17 +54,17 @@ const billInScope = (scope, bill) => {
 ===== */
 const createBill = async (req, res) => {
   try {
-    const { 
-      flat_id, 
-      title, 
-      amount, 
-      billing_month, 
-      bill_type, 
-      flat_type, 
-      bill_category, 
-      other_bill_type, 
-      issue_date, 
-      last_pay_date 
+    const {
+      flat_id,
+      title,
+      amount,
+      billing_month,
+      bill_type,
+      flat_type,
+      bill_category,
+      other_bill_type,
+      issue_date,
+      last_pay_date
     } = req.body;
 
     const parsedAmount = Number(amount);
@@ -141,28 +141,21 @@ const createBill = async (req, res) => {
       for (const user of usersToNotify) {
         const settings = await UserSetting.findOne({ where: { user_id: user.id } });
         if (!settings || settings.payment_updates !== false) {
-          const notification = await Notification.create({
+          await notificationService.sendNotification({
+            societyId: req.user.society_id,
+            receiverUserId: user.id,
             title: "Bill Payment Pending",
             message: `⚡ Your ${title} bill of ₹${amount} is waiting for payment`,
             type: "BILL",
-            action_type: "BILL_PAYMENT",
-            action_route: "/resident/bills",
-            society_id: req.user.society_id,
-            receiver_user_id: user.id,
+            actionType: "BILL_PAYMENT",
+            actionRoute: "/resident/bills",
+            fcmToken: user.fcm_token,
+            sourceEventId: `BILL:${bill.id}:${user.id}`,
+            extraData: {
+              route: "/resident/bills",
+              billId: bill.id.toString(),
+            },
           });
-
-          if (global.io) {
-            global.io.to(`user_${user.id}`).emit("new_notification", notification);
-          }
-
-          if (user.fcm_token) {
-            sendPushNotification(
-              user.fcm_token,
-              "New Maintenance Bill",
-              `⚡ A new bill of ₹${amount} for ${title} has been generated.`,
-              { route: "/resident/bills", billId: bill.id.toString() }
-            ).catch((err) => console.error("Push Error:", err));
-          }
         }
       }
 
@@ -220,29 +213,22 @@ const createBill = async (req, res) => {
         const settings = residentId ? await UserSetting.findOne({ where: { user_id: residentId } }) : null;
 
         if (!settings || settings.payment_updates !== false) {
-          const notification = await Notification.create({
+          await notificationService.sendNotification({
+            societyId: req.user.society_id,
+            receiverUserId: residentId,
+            receiverRole: "RESIDENT",
             title: "Bill Payment Pending",
             message: `⚡ Your ${title} bill of ₹${amount} is waiting for payment`,
             type: "BILL",
-            action_type: "BILL_PAYMENT",
-            action_route: "/resident/bills",
-            society_id: req.user.society_id,
-            receiver_role: "RESIDENT",
-            receiver_user_id: residentId,
+            actionType: "BILL_PAYMENT",
+            actionRoute: "/resident/bills",
+            fcmToken: user?.fcm_token,
+            sourceEventId: `BILL:${bill.id}:${residentId}`,
+            extraData: {
+              route: "/resident/bills",
+              billId: bill.id.toString(),
+            },
           });
-
-          if (global.io) {
-            global.io.to(`user_${residentId}`).emit("new_notification", notification);
-          }
-
-          if (user && user.fcm_token) {
-            sendPushNotification(
-              user.fcm_token,
-              "New Maintenance Bill",
-              `⚡ A new bill of ₹${amount} for ${title} has been generated.`,
-              { route: "/resident/bills", billId: bill.id.toString() }
-            ).catch((err) => console.error("Push Error:", err));
-          }
         }
       }
 
@@ -342,7 +328,7 @@ const getSocietyBills = async (req, res) => {
     const flatInclude = {
       model:      Flat,
       required:   false,
-      attributes: ["id", "flat_number", "floor_id", "block_id"],
+      attributes: ["id", "flat_number", "floor_id", "block_id", "resident_id"],
       include: [
         { model: Block, required: false, attributes: ["id", "name"], include: [{ model: Society, attributes: ["id", "name"] }] },
         { model: Floor, required: false, attributes: ["id", "floor_number"], include: [{ model: Block, required: false, attributes: ["id", "name"] }] },
@@ -351,6 +337,14 @@ const getSocietyBills = async (req, res) => {
           required: false,
           where: { is_current: true },
           include: [{ model: User, required: false, attributes: ["id", "name", "email", "phone"] }],
+        },
+        {
+          // Directly-assigned resident on the flat (legacy resident_id) — used
+          // as a fallback when the flat has no active FlatMembership row so the
+          // UI never shows "Unassigned" for a genuinely occupied flat.
+          model: User,
+          required: false,
+          attributes: ["id", "name", "email", "phone"],
         },
       ],
     };
@@ -403,9 +397,12 @@ const getSocietyBills = async (req, res) => {
       const b = bill.toJSON ? bill.toJSON() : bill;
       if (b.Flat) {
         const activeMember = b.Flat.FlatMemberships?.find((m) => m.is_current) || b.Flat.FlatMemberships?.[0];
-        b.Flat.User = activeMember?.User || null;
+        // Prefer the active membership's user; fall back to the flat's directly
+        // assigned resident (Flat.User via resident_id) so occupied flats
+        // without a FlatMembership row are not shown as "Unassigned".
+        b.Flat.User = activeMember?.User || b.Flat.User || null;
         if (!b.User) {
-          b.User = activeMember?.User || null;
+          b.User = b.Flat.User || null;
         }
       }
       return b;
@@ -677,30 +674,22 @@ const notifyBillConfirmation = async (bill, reqUser, targetSocietyId) => {
     for (const user of usersToNotify) {
       const settings = await UserSetting.findOne({ where: { user_id: user.id } });
       if (!settings || settings.payment_updates !== false) {
-        const notification = await Notification.create({
+        await notificationService.sendNotification({
+          societyId,
+          receiverUserId: user.id,
           title: "Bill Payment Confirmed",
           message: `✅ Your payment of ₹${bill.amount} for "${bill.title}" has been confirmed by Admin.`,
           type: "BILL",
-          action_type: "BILL_CONFIRMED",
-          action_route: "/resident/bills",
-          society_id: societyId,
-          receiver_user_id: user.id,
+          actionType: "BILL_CONFIRMED",
+          actionRoute: "/resident/bills",
+          fcmToken: user.fcm_token,
+          sourceEventId: `BILL_CONFIRMED:${bill.id}:${user.id}`,
+          extraData: {
+            route: "/resident/bills",
+            billId: bill.id.toString(),
+            status: "PAID",
+          },
         });
-
-        // 1. Web Socket real-time notification
-        if (global.io) {
-          global.io.to(`user_${user.id}`).emit("new_notification", notification);
-        }
-
-        // 2. Mobile FCM Push notification
-        if (user.fcm_token) {
-          sendPushNotification(
-            user.fcm_token,
-            "✅ Payment Confirmed",
-            `Your payment of ₹${bill.amount} for ${bill.title} was confirmed by Admin.`,
-            { route: "/resident/bills", billId: bill.id.toString(), status: "PAID" }
-          ).catch((err) => console.error("[confirmPayment] Push Error:", err.message));
-        }
       }
     }
   }
@@ -911,4 +900,4 @@ module.exports = {
   deleteBill,
   bulkConfirmPayment,
   bulkDeleteBills,
-};
+};

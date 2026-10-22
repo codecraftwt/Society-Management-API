@@ -1,6 +1,7 @@
 
 const { Op } = require("sequelize");
 const { sendPushNotification } = require("../utils/pushNotification");
+const notificationService = require("../services/notificationService");
 const {
   sanitizeText,
   isEmpty,
@@ -13,7 +14,6 @@ const VisitorPreApproval = require("../models/VisitorPreApproval");
 const VisitorLog = require("../models/VisitorLog");
 const Flat = require("../models/Flat");
 const HouseHoldMember = require("../models/HouseHoldMember");
-const Notification = require("../models/Notification");
 const GuardShift = require("../models/GuardShift");
 const ParkingRequest = require("../models/ParkingRequest"); // 🔥
 const ParkingSlot = require("../models/ParkingSlot"); // 🔥 was missing
@@ -82,29 +82,15 @@ const sendNotification = async ({
   type = "PARKING",
   actionType = "VIEW_PARKING",
 }) => {
-  const notification = await Notification.create({
-    society_id: societyId,
-    receiver_user_id: userId,
+  await notificationService.sendNotification({
+    societyId,
+    receiverUserId: userId,
     title,
     message,
     type,
-    action_type: actionType,
-    action_route: actionRoute,
-    is_read: false,
+    actionType,
+    actionRoute,
   });
-
-  if (global.io) {
-    console.log("SOCKET EMIT TO:", `user_${userId}`);
-    global.io.to(`user_${userId}`).emit("new_notification", notification);
-  }
-
-  const user = await User.findByPk(userId, { attributes: ["fcm_token"] });
-
-  if (user?.fcm_token) {
-    sendPushNotification(user.fcm_token, title, message, {
-      route: actionRoute,
-    }).catch((err) => console.log("Push Error:", err));
-  }
 };
 
 /* ── NOTIFY ONLY ON-DUTY GUARD ── */

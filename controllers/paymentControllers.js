@@ -3,9 +3,10 @@
 
 const { Op } = require("sequelize");
 const crypto = require("crypto");
-const { Bill, Payment, AmenityBooking, Amenity, FlatMembership, Flat, Block, Society } = require("../models");
+const { Bill, Payment, AmenityBooking, Amenity, Flat, Block, Society } = require("../models");
 const razorpay = require("../utils/razorpay");
 const sequelize = require("../config/db");
+const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
 
 /* ─── Demo UPI payment helper (mirrors amenityController.buildUpiPaymentData) ─── */
 function buildBillUpiData(bill) {
@@ -33,12 +34,13 @@ function buildBillUpiData(bill) {
 }
 
 /* ─── Resolve a pending bill that belongs to the current user's flats ─── */
-async function findOwnedPendingBill(billId, userId) {
-  const memberships = await FlatMembership.findAll({
-    where: { user_id: userId, is_current: true },
-    attributes: ["flat_id"],
-  });
-  const myFlatIds = memberships.map((m) => m.flat_id);
+async function findOwnedPendingBill(billId, userId, societyId = null) {
+  // Use the same authorization resolution as the resident bill list
+  // (getResidentBills) so a bill that is visible to the resident is always
+  // payable here. The previous FlatMembership-only lookup missed flats the
+  // resident owns directly (Flat.resident_id) or via household membership,
+  // producing a spurious 404 "Bill not found" for those bills.
+  const myFlatIds = await getUserAuthorizedFlatIds(userId, societyId);
   if (myFlatIds.length === 0) return null;
 
   const bill = await Bill.findOne({
@@ -66,7 +68,7 @@ const createDemoUpi = async (req, res) => {
       return res.status(400).json({ success: false, message: "bill_id is required" });
     }
 
-    const bill = await findOwnedPendingBill(bill_id, req.user.id);
+    const bill = await findOwnedPendingBill(bill_id, req.user.id, req.user.society_id);
 
     if (!bill) {
       return res.status(404).json({ success: false, message: "Bill not found" });
@@ -104,14 +106,15 @@ const verifyDemoPayment = async (req, res) => {
       return res.status(404).json({ success: false, message: "Bill not found" });
     }
 
-    // Owner check: bill must belong to one of the caller's current flats
-    const memberships = await FlatMembership.findAll({
-      where: { user_id: req.user.id, is_current: true },
-      attributes: ["flat_id"],
-      transaction: t,
-    });
-    const myFlatIds = memberships.map((m) => m.flat_id);
-    if (!myFlatIds.includes(bill.flat_id)) {
+    // Owner check: bill must belong to one of the caller's authorized flats.
+    // Uses the same resolver as the resident bill list so any bill the resident
+    // can see is payable (direct ownership, membership, or household access).
+    const activeSocietyId = parseInt(req.user?.society_id, 10);
+    const myFlatIds = await getUserAuthorizedFlatIds(
+      req.user.id,
+      Number.isInteger(activeSocietyId) && activeSocietyId > 0 ? activeSocietyId : null
+    );
+    if (!myFlatIds.includes(Number(bill.flat_id))) {
       await t.rollback();
       return res.status(403).json({ success: false, message: "Bill not found for this resident" });
     }

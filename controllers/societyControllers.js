@@ -6,6 +6,7 @@ const {
   Floor, Vehicle, ParkingSlot, Amenity, EmergencyAlert, Document, GuardShift,
   AccountantAssignment,
 } = require("../models");
+const notificationService = require("../services/notificationService");
 const { readUploadedSocietyLogo, destroySocietyLogo } = require("../utils/societyLogo");
 
 // CREATE SOCIETY
@@ -263,8 +264,8 @@ const deleteSociety = async (req, res) => {
         await Complaint.destroy({ where: { society_id: id } });
         await Notice.destroy({ where: { society_id: id } });
 
-        // 🔥 FIX HERE
-        await Notification.destroy({ where: { user_id: userIds } });
+        // Clean up notifications via notificationService
+        await notificationService.deleteUserNotifications(userIds);
 
         await User.destroy({ where: { society_id: id } });
 

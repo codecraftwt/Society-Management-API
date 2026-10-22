@@ -10,7 +10,6 @@ const Flat = require("../models/Flat");
 const Block = require("../models/Block");
 const Floor = require("../models/Floor");
 const HouseHoldMember = require("../models/HouseHoldMember");
-const Notification = require("../models/Notification");
 const Bill = require("../models/Bill");
 const ParkingRequest = require("../models/ParkingRequest");
 const ResidentHistory = require("../models/ResidentHistory");
@@ -23,6 +22,7 @@ const AccountantAssignment = require("../models/AccountantAssignment");
 const UserDocuments = require("../models/UserDocuments");
 const transporter = require("../utils/mailer");
 const { fetchEffectivePermissions } = require("./permissionController");
+const notificationService = require("../services/notificationService");
 const {
   readUploadedProfilePicture,
   destroyProfilePicture,
@@ -1852,11 +1852,59 @@ const deleteResident = async (req, res) => {
 
     await Promise.all([
       ParkingRequest.destroy({ where: { resident_id: id } }),
-      Notification.destroy({ where: { user_id: id } }),
+      notificationService.deleteUserNotifications(id),
     ]);
 
     await resident.destroy();
     res.json({ message: "Resident deleted successfully" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/* =====
+   TOGGLE RESIDENT STATUS (DEACTIVATE / REACTIVATE)
+   Non-destructive: flips User.status between ACTIVE and INACTIVE so the
+   resident can no longer sign in. Flats, memberships, bills and history are
+   left fully intact so the record can be restored without data confusion.
+   ===== */
+const toggleResidentStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const resident = await User.findByPk(id);
+    if (!resident) return res.status(404).json({ message: "Resident not found" });
+    if (!(resident.roles || [resident.role]).includes("RESIDENT"))
+      return res.status(404).json({ message: "Resident not found" });
+
+    const requested = String(req.body?.status || "").toUpperCase();
+    const newStatus = requested === "ACTIVE" || requested === "INACTIVE"
+      ? requested
+      : (resident.status === "INACTIVE" ? "ACTIVE" : "INACTIVE");
+
+    if (newStatus === "INACTIVE") {
+      await resident.update({ status: "INACTIVE", fcm_token: null });
+
+      // Best-effort: let the resident know their access was revoked.
+      try {
+        await notificationService.sendNotification({
+          societyId: resident.society_id,
+          receiverUserId: resident.id,
+          senderUserId: req.user?.id,
+          receiverRole: "RESIDENT",
+          title: "Account Deactivated",
+          message: "Your resident account has been deactivated by the society admin. Please contact the society office for assistance.",
+          type: "SYSTEM",
+          sourceEventId: `RESIDENT_DEACTIVATED:${resident.id}:${Date.now()}`,
+        });
+      } catch (notifyErr) {
+        console.error("Resident deactivate notification failed:", notifyErr.message);
+      }
+
+      return res.json({ message: "Resident deactivated successfully", status: "INACTIVE" });
+    }
+
+    await resident.update({ status: "ACTIVE" });
+    res.json({ message: "Resident reactivated successfully", status: "ACTIVE" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -2997,14 +3045,6 @@ const addTenantByOwner = async (req, res) => {
       { where: { id: flat_id } }
     );
 
-    await Notification.create({
-      title: "New Tenant Approval Required",
-      message: `Owner ${req.user.name} added tenant ${name} for Flat ${flat_id}. Please verify documents.`,
-      type: "SYSTEM",
-      society_id: req.user.society_id,
-      receiver_role: "SOCIETY_ADMIN",
-    });
-
     const admins = await User.findAll({
       where: {
         society_id: req.user.society_id,
@@ -3014,25 +3054,20 @@ const addTenantByOwner = async (req, res) => {
       attributes: ["id"],
     });
 
-    const adminNotifications = await Promise.all(
+    await Promise.all(
       admins.map((admin) =>
-        Notification.create({
+        notificationService.sendNotification({
+          societyId: req.user.society_id,
+          receiverUserId: admin.id,
+          senderUserId: admin.id,
+          receiverRole: "SOCIETY_ADMIN",
           title: "New Tenant Approval Required",
           message: `Owner ${req.user.name} added tenant ${name} for Flat ${flat_id}. Please verify documents.`,
           type: "SYSTEM",
-          society_id: req.user.society_id,
-          user_id: admin.id,
-          receiver_role: "SOCIETY_ADMIN",
-          receiver_user_id: admin.id,
+          sourceEventId: `TENANT_ADD_REQUEST:${flat_id}:${admin.id}`,
         })
       )
     );
-
-    if (global.io) {
-      adminNotifications.forEach((n) => {
-        global.io.to(`user_${n.receiver_user_id}`).emit("new_notification", n);
-      });
-    }
 
     res.status(201).json({ message: "Tenant added. Awaiting Admin approval.", tenant });
   } catch (err) {
@@ -3078,13 +3113,42 @@ const removeTenantByOwner = async (req, res) => {
       { where: { id: flat_id } }
     );
 
-    await Notification.create({
-      title: "Tenant Lease Ended",
-      message: `The owner has ended the lease for Flat ID ${flat_id}. The tenant's access has been revoked.`,
-      type: "SYSTEM",
-      society_id: req.user.society_id,
-      receiver_role: "SOCIETY_ADMIN",
+    const admins = await User.findAll({
+      where: {
+        society_id: req.user.society_id,
+        approval_status: "APPROVED",
+        status: "ACTIVE",
+      },
+      attributes: ["id"],
     });
+
+    await Promise.all(
+      admins.map((admin) =>
+        notificationService.sendNotification({
+          societyId: req.user.society_id,
+          receiverUserId: admin.id,
+          senderUserId: req.user.id,
+          receiverRole: "SOCIETY_ADMIN",
+          title: "Tenant Lease Ended",
+          message: `The owner has ended the lease for Flat ID ${flat_id}. The tenant's access has been revoked.`,
+          type: "SYSTEM",
+          sourceEventId: `TENANT_LEASE_ENDED:${flat_id}:${admin.id}`,
+        })
+      )
+    );
+
+    if (tenantUserId) {
+      await notificationService.sendNotification({
+        societyId: req.user.society_id,
+        receiverUserId: tenantUserId,
+        senderUserId: req.user.id,
+        receiverRole: "RESIDENT",
+        title: "Lease Ended",
+        message: `Your lease for Flat ID ${flat_id} has been ended by the owner.`,
+        type: "SYSTEM",
+        sourceEventId: `TENANT_LEASE_ENDED:${flat_id}:${tenantUserId}`,
+      });
+    }
 
     res.json({ message: "Tenant removed successfully. Flat reverted to you." });
   } catch (err) {
@@ -3115,40 +3179,31 @@ const renewTenantLease = async (req, res) => {
  
     const message = `Your lease for Flat ${flat_id} has been extended to ${new_move_out_date}.`;
  
-    /* ── DB Notification ── */
-    const notification = await Notification.create({
-      title:            "Lease Renewed",
+    /* ── DB Notification via notificationService ── */
+    const normalized = await notificationService.sendNotification({
+      societyId: req.user.society_id,
+      receiverUserId: tenantMembership.user_id,
+      title: "Lease Renewed",
       message,
-      type:             "LEASE",
-      action_type:      "LEASE_RENEWAL",
-      action_route:     "/resident/profile",
-      society_id:       req.user.society_id,
-      receiver_user_id: tenantMembership.user_id,
+      type: "LEASE",
+      actionType: "LEASE_RENEWAL",
+      actionRoute: "/resident/profile",
+      sourceEventId: `LEASE_RENEWED:${tenant_membership_id}:${new_move_out_date}`,
+      extraData: {
+        new_move_out_date,
+      },
     });
- 
-    /* ── Real-time socket event ── */
+
+    /* ── Real-time domain socket event ── */
     if (global.io) {
       global.io
         .to(`user_${tenantMembership.user_id}`)
         .emit("lease_renewed", {
-          type:         "LEASE_RENEWAL",
+          type: "LEASE_RENEWAL",
           message,
           new_move_out_date,
-          notification,  // front-end can push it straight into the bell list
+          notification: normalized,
         });
-    }
- 
-    /* ── FCM push ── */
-    const tenant = await User.findByPk(tenantMembership.user_id, {
-      attributes: ["fcm_token"],
-    });
-    if (tenant?.fcm_token) {
-      sendPushNotification(
-        tenant.fcm_token,
-        "🎉 Lease Renewed",
-        message,
-        { type: "LEASE_RENEWAL", route: "/resident/profile" }
-      ).catch((err) => console.error("[renewTenantLease] Push error:", err.message));
     }
  
     res.json({ message: "Tenant lease renewed successfully.", move_out_date: new_move_out_date });
@@ -3273,6 +3328,7 @@ module.exports = {
   getPendingResidents,
   updateResident,
   deleteResident,
+  toggleResidentStatus,
   getUnassignedResidents,
   getGuards,
   updateGuard,

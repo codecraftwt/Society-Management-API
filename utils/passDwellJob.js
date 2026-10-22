@@ -3,9 +3,9 @@ const { Op }        = require("sequelize");
 const VisitorLog    = require("../models/VisitorLog");
 const Flat          = require("../models/Flat");
 const GuardShift    = require("../models/GuardShift");
-const Notification  = require("../models/Notification");
 const User          = require("../models/User");
 const { sendPushNotification } = require("./pushNotification");
+const notificationService = require("../services/notificationService");
 const { getCurrentISTDate, getCurrentISTMinutes } = require("./istTime");
 const { getShiftTimings, isTimeInShift } = require("./shiftTiming");
 
@@ -72,26 +72,16 @@ cron.schedule(JOB_INTERVAL, async () => {
       const message = `${log.visitor_name} has been inside for more than the allowed ${log.dwell_minutes} minutes${flatNum ? ` (Flat ${flatNum})` : ""}.`;
 
       try {
-        const notification = await Notification.create({
+        await notificationService.sendNotification({
+          societyId: log.society_id,
+          receiverUserId: guard.guard_id,
           title,
           message,
-          type:             "VISITOR",
-          action_type:      "VIEW_VISITOR",
-          action_route:     "/guard",
-          society_id:       log.society_id,
-          receiver_user_id: guard.guard_id,
+          type: "VISITOR",
+          actionType: "VIEW_VISITOR",
+          actionRoute: "/guard",
+          sourceEventId: `OVERSTAY_ALERT:${log.id}:${guard.guard_id}`,
         });
-
-        if (global.io) {
-          global.io.to(`user_${guard.guard_id}`).emit("new_notification", notification);
-        }
-
-        const user = await User.findByPk(guard.guard_id, { attributes: ["fcm_token"] });
-        if (user?.fcm_token) {
-          sendPushNotification(user.fcm_token, title, message, { route: "/guard" }).catch((err) =>
-            console.log("Push Error:", err)
-          );
-        }
       } catch (notifErr) {
         console.error("[passDwellJob] Notification error:", notifErr.message);
       }

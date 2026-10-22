@@ -4,12 +4,12 @@ const { User, Flat, Block, HouseHoldMember, Society } = require("../models");
 const Complaint = require("../models/Complaint");
 const ComplaintComment = require("../models/ComplaintComment");
 const ComplaintReadStatus = require("../models/ComplaintReadStatus");
-const Notification = require("../models/Notification");
 const UserSetting = require("../models/UserSetting");
 const cloudinary = require("../config/cloudinary");
 const Floor = require("../models/Floor");
 const { sendPushNotification } = require("../utils/pushNotification");
 const { Op } = require("sequelize");
+const notificationService = require("../services/notificationService");
 const FlatMembership = require("../models/FlatMembership");
 const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
 
@@ -254,30 +254,23 @@ const updateStatus = async (req, res) => {
         const shouldNotify = !settings || settings.complaint_updates !== false;
 
         if (shouldNotify) {
-          const notification = await Notification.create({
+          await notificationService.sendNotification({
+            societyId: complaint.society_id,
+            receiverUserId: user.id,
+            senderUserId: req.user.id,
+            receiverRole: "RESIDENT",
             title: "Complaint Status Updated",
             message: `Your complaint "${complaint.title}" is now ${status}`,
             type: "COMPLAINT",
-            action_type: "VIEW_COMPLAINT",
-            action_route: "/resident/complaints",
-            society_id: complaint.society_id,
-            user_id: req.user.id,
-            receiver_role: "RESIDENT",
-            receiver_user_id: user.id,
+            actionType: "VIEW_COMPLAINT",
+            actionRoute: "/resident/complaints",
+            fcmToken: user.fcm_token,
+            sourceEventId: `COMPLAINT_STATUS:${complaint.id}:${status}:${user.id}`,
+            extraData: {
+              route: "/resident/complaints",
+              complaintId: complaint.id.toString(),
+            },
           });
-
-          if (global.io) {
-            global.io.to(`user_${user.id}`).emit("new_notification", notification);
-          }
-
-          if (user.fcm_token) {
-            sendPushNotification(
-              user.fcm_token,
-              "Complaint Status Updated",
-              `Your complaint "${complaint.title}" is now ${status}`,
-              { route: "/resident/complaints", complaintId: complaint.id.toString() }
-            ).catch((err) => console.error("Push Error:", err));
-          }
         }
       }
     }
@@ -456,21 +449,18 @@ const updateStatus = async (req, res) => {
 
       const name = user.name || "A resident";
       for (const admin of admins) {
-        const notification = await Notification.create({
+        await notificationService.sendNotification({
+          societyId: user.society_id,
+          receiverUserId: admin.id,
+          senderUserId: user.id,
+          receiverRole: "SOCIETY_ADMIN",
           title: "New Complaint Raised",
           message: `${name} raised a complaint: "${complaint.title}"`,
           type: "COMPLAINT",
-          action_type: "VIEW_COMPLAINT",
-          action_route: "/admin/complaints",
-          society_id: user.society_id,
-          user_id: user.id,
-          receiver_role: "SOCIETY_ADMIN",
-          receiver_user_id: admin.id,
+          actionType: "VIEW_COMPLAINT",
+          actionRoute: "/admin/complaints",
+          sourceEventId: `COMPLAINT_RAISED:${complaint.id}:${admin.id}`,
         });
-
-        if (global.io) {
-          global.io.to(`user_${admin.id}`).emit("new_notification", notification);
-        }
       }
 
       if (global.io) {

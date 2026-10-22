@@ -14,6 +14,7 @@ const {
 } = require("../models");
 
 const { Op } = require("sequelize");
+const notificationService = require("../services/notificationService");
 
 /* ═══════════════════════════════════════
    HELPERS (IST-AWARE)
@@ -214,15 +215,16 @@ const createParcel = async (req, res) => {
         const unitLabel = [blockName, flatNumber && `Unit ${flatNumber}`, floorNum !== "" && `Floor ${floorNum}`]
           .filter(Boolean).join(", ");
 
-        const notif = await Notification.create({
-          society_id,
-          receiver_user_id: activeGuardId,
+        await notificationService.sendNotification({
+          societyId,
+          receiverUserId: activeGuardId,
           title: "New Expected Parcel 📦",
           message: `Parcel expected from ${courier_name}${unitLabel ? ` for ${unitLabel}` : ""}`,
           type: "PARCEL",
-          is_read: false,
+          actionType: "VIEW_PARCEL",
+          actionRoute: "/guard/parcels",
+          sourceEventId: `PARCEL_EXPECTED:${courier_name}:${finalFlatId}:${activeGuardId}`,
         });
-        global.io?.to(`user_${activeGuardId}`).emit("new_notification", notif);
       }
     }
 
@@ -247,15 +249,16 @@ const createParcel = async (req, res) => {
       finalResidentId = flat.resident_id;
 
       if (finalResidentId) {
-        const notif = await Notification.create({
-          society_id,
-          receiver_user_id: finalResidentId,
+        await notificationService.sendNotification({
+          societyId,
+          receiverUserId: finalResidentId,
           title: "Parcel Arrived 📦",
           message: `Your parcel from ${courier_name} is at the gate. Code: ${pickup_code}`,
           type: "PARCEL",
-          is_read: false,
+          actionType: "VIEW_PARCEL",
+          actionRoute: "/resident/parcels",
+          sourceEventId: `PARCEL_ARRIVED:${pickup_code}:${finalResidentId}`,
         });
-        global.io?.to(`user_${finalResidentId}`).emit("new_notification", notif);
         global.io?.to(`user_${finalResidentId}`).emit("parcel_otp", {
           parcelId: null,
           otp: pickup_code,
@@ -480,15 +483,16 @@ const updateParcelStatus = async (req, res) => {
 
       const activeGuardId = await getActiveShiftGuard(parcel.society_id);
       if (activeGuardId) {
-        const notif = await Notification.create({
-          society_id: parcel.society_id,
-          receiver_user_id: activeGuardId,
+        await notificationService.sendNotification({
+          societyId: parcel.society_id,
+          receiverUserId: activeGuardId,
           title: "Parcel Cancelled ❌",
           message: `Parcel from ${parcel.courier_name} was cancelled by resident`,
           type: "PARCEL",
-          is_read: false,
+          actionType: "VIEW_PARCEL",
+          actionRoute: "/guard/parcels",
+          sourceEventId: `PARCEL_CANCELLED:${parcel.id}:${activeGuardId}`,
         });
-        global.io?.to(`user_${activeGuardId}`).emit("new_notification", notif);
         global.io?.to(`user_${activeGuardId}`).emit("parcel_updated", full);
       }
 
@@ -521,15 +525,16 @@ const updateParcelStatus = async (req, res) => {
       global.io?.to(`user_${req.user.id}`).emit("parcel_updated", full);
 
       if (parcel.resident_id) {
-        const notif = await Notification.create({
-          society_id: parcel.society_id,
-          receiver_user_id: parcel.resident_id,
+        await notificationService.sendNotification({
+          societyId: parcel.society_id,
+          receiverUserId: parcel.resident_id,
           title: "Parcel Arrived 📦",
           message: `Your parcel from ${parcel.courier_name} is at the gate. Code: ${parcel.pickup_code}`,
           type: "PARCEL",
-          is_read: false,
+          actionType: "VIEW_PARCEL",
+          actionRoute: "/resident/parcels",
+          sourceEventId: `PARCEL_ARRIVED:${parcel.id}:${parcel.resident_id}`,
         });
-        global.io?.to(`user_${parcel.resident_id}`).emit("new_notification", notif);
         global.io?.to(`user_${parcel.resident_id}`).emit("parcel_otp", {
           parcelId: parcel.id,
           otp: parcel.pickup_code,
@@ -568,15 +573,16 @@ const updateParcelStatus = async (req, res) => {
       global.io?.to(`user_${req.user.id}`).emit("parcel_collected", full);
 
       if (parcel.resident_id) {
-        const notif = await Notification.create({
-          society_id: parcel.society_id,
-          receiver_user_id: parcel.resident_id,
+        await notificationService.sendNotification({
+          societyId: parcel.society_id,
+          receiverUserId: parcel.resident_id,
           title: "Parcel Collected ✅",
           message: `Your parcel from ${parcel.courier_name} has been collected.`,
           type: "PARCEL",
-          is_read: false,
+          actionType: "VIEW_PARCEL",
+          actionRoute: "/resident/parcels",
+          sourceEventId: `PARCEL_COLLECTED:${parcel.id}:${parcel.resident_id}`,
         });
-        global.io?.to(`user_${parcel.resident_id}`).emit("new_notification", notif);
         global.io?.to(`user_${parcel.resident_id}`).emit("parcel_collected", full);
       }
 

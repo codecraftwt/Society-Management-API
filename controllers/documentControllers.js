@@ -2,6 +2,7 @@ const path = require("path");
 const fs   = require("fs");
 const { Op } = require("sequelize");
 const { Document, User, Flat, Block, Notification } = require("../models");
+const notificationService = require("../services/notificationService");
 
 /* ════════════════════════════════════════
    HELPER: bytes → "2.4 MB"
@@ -283,16 +284,20 @@ const adminUploadDocument = async (req, res) => {
     const residentIds = flats.map((f) => f.resident_id).filter(Boolean);
 
     if (residentIds.length > 0) {
-      const notifications = residentIds.map((id) => ({
-        title:            "New Document Uploaded",
-        message:          `${title} has been uploaded`,
-        type:             "DOCUMENT",
-        society_id:       req.user.society_id,
-        user_id:          id,
-        receiver_user_id: id,
-      }));
-
-      await Notification.bulkCreate(notifications);
+      await notificationService.sendBulkNotifications(
+        residentIds.map((id) => ({
+          title: "New Document Uploaded",
+          message: `${title} has been uploaded`,
+          type: "DOCUMENT",
+          actionType: "VIEW_DOCUMENT",
+          actionRoute: "/resident/documents",
+          societyId: req.user.society_id,
+          senderUserId: req.user.id,
+          receiverUserId: id,
+          receiverRole: "RESIDENT",
+          sourceEventId: `DOC_UPLOAD:${doc.id}:${id}`,
+        }))
+      );
     }
 
     return res.status(201).json({

@@ -3,9 +3,10 @@
 const EmergencyAlert = require("../models/EmergencyAlert");
 const EmergencyAcknowledgement = require("../models/EmergencyAcknowledgement");
 const GuardShift = require("../models/GuardShift");
-const { User, Flat, Block, HouseHoldMember, Notification, Society, FlatMembership } = require("../models");
+const { User, Flat, Block, HouseHoldMember, Society, FlatMembership } = require("../models");
 const { Op } = require("sequelize");
 const { sendPushNotification } = require("../utils/pushNotification");
+const notificationService = require("../services/notificationService");
 
 const { getCurrentISTDate, getCurrentISTMinutes } = require("../utils/istTime");
 const { getShiftTimings, isTimeInShift } = require("../utils/shiftTiming");
@@ -225,6 +226,16 @@ const createEmergency = async (req, res) => {
       }
     }
 
+    let societyName = "";
+    if (payload.society_id) {
+      try {
+        const soc = await Society.findByPk(payload.society_id, { attributes: ["id", "name"] });
+        if (soc) societyName = soc.name || "";
+      } catch (socErr) {
+        console.warn("Failed to lookup society name for emergency:", socErr.message);
+      }
+    }
+
     const emergencyPushData = {
       type: "EMERGENCY",
       alertId: String(emergency.id),
@@ -232,6 +243,8 @@ const createEmergency = async (req, res) => {
       title: alertTitle,
       message: payload.message || alertBody,
       senderName: user.name || "Resident",
+      societyName: societyName,
+      society_name: societyName,
       flatNumber: senderFlatNumber,
       blockName: senderBlockName,
       alert_type: payload.type,
@@ -289,45 +302,25 @@ const createEmergency = async (req, res) => {
       }
 
       try {
-        const notification = await Notification.create({
-          society_id: payload.society_id,
-          receiver_user_id: targetUser.id,
+        await notificationService.sendNotification({
+          societyId: payload.society_id,
+          receiverUserId: targetUser.id,
           title: userAlertTitle,
           message: userAlertBody,
           type: "EMERGENCY",
-          action_type: "VIEW_EMERGENCY",
-          action_route: actionRoute,
-          is_read: false
+          actionType: "VIEW_EMERGENCY",
+          actionRoute: `${actionRoute}?alertId=${emergency.id}`,
+          fcmToken: targetUser.fcm_token,
+          sourceEventId: `EMERGENCY:${emergency.id}:${targetUser.id}`,
+          extraData: {
+            ...emergencyPushData,
+            title: userAlertTitle,
+            message: userAlertBody,
+            route: actionRoute,
+            action_route: actionRoute,
+            alertId: String(emergency.id),
+          },
         });
-
-        const notifData = {
-          ...notification.toJSON(),
-          ...emergencyPushData,
-          title: userAlertTitle,
-          message: userAlertBody,
-          route: actionRoute,
-          action_route: actionRoute,
-          alertId: String(emergency.id),
-        };
-
-        if (global.io) {
-          global.io.to(`user_${targetUser.id}`).emit("new_notification", notifData);
-        }
-
-        if (targetUser.fcm_token) {
-          sendPushNotification(
-            targetUser.fcm_token,
-            userAlertTitle,
-            userAlertBody,
-            {
-              ...emergencyPushData,
-              title: userAlertTitle,
-              message: userAlertBody,
-              route: actionRoute,
-              action_route: actionRoute,
-            }
-          ).catch(err => console.error("Push Error for user " + targetUser.id + ":", err));
-        }
       } catch (err) {
         console.error("Failed to notify user " + targetUser.id + ":", err.message);
       }
@@ -574,17 +567,14 @@ const getEmergencyAcknowledgements = async (req, res) => {
       : [];
     const ackMap = Object.fromEntries(acks.map((a) => [a.user_id, a]));
 
-    const notifs = recipientIds.length > 0
-      ? await Notification.findAll({
-          where: {
-            society_id: alert.society_id,
-            receiver_user_id: { [Op.in]: recipientIds },
-            type: "EMERGENCY",
-            is_read: true,
-          },
+    const readUserIds = recipientIds.length > 0
+      ? await notificationService.getReadEmergencyUserIds({
+          societyId: alert.society_id,
+          alertId: id,
+          recipientIds,
         })
       : [];
-    const notifReadMap = new Set(notifs.map((n) => n.receiver_user_id));
+    const notifReadMap = new Set(readUserIds);
 
     let readCount = 0;
     let unreadCount = 0;
@@ -666,16 +656,12 @@ const markEmergencyAsRead = async (req, res) => {
       await ack.save();
     }
 
-    // Mark matching notifications as read
-    await Notification.update(
-      { is_read: true },
-      {
-        where: {
-          receiver_user_id: userId,
-          type: "EMERGENCY",
-        },
-      }
-    );
+    // Mark matching notifications as read for this specific emergency alert via notificationService
+    await notificationService.markEmergencyNotificationsAsRead({
+      userId,
+      societyId: alert.society_id,
+      alertId: id,
+    });
 
     if (global.io) {
       global.io.to(`user_${userId}`).emit("emergency_acknowledged", {
@@ -770,38 +756,22 @@ const resolveEmergency = async (req, res) => {
       const title = "Emergency Resolved ✅";
       const message = `Your emergency alert (${alert.type}) has been marked as resolved.`;
 
-      const notification = await Notification.create({
-        society_id: alert.society_id,
-        receiver_user_id: alert.resident_id,
+      await notificationService.sendNotification({
+        societyId: alert.society_id,
+        receiverUserId: alert.resident_id,
         title: title,
         message: message,
         type: "EMERGENCY_RESOLVED",
-        action_type: "VIEW_EMERGENCY",
-        action_route: "/resident/emergency",
-        is_read: false
+        actionType: "VIEW_EMERGENCY",
+        actionRoute: "/resident/emergency",
+        sourceEventId: `EMERGENCY_RESOLVED:${alert.id}:${alert.resident_id}`,
+        extraData: { alertId: String(alert.id), route: "/resident/emergency" },
       });
 
       if (global.io) {
         global.io
-          .to(`user_${alert.resident_id}`)
-          .emit("new_notification", {
-            ...notification.toJSON(),
-            alertId: String(alert.id),
-          });
-        global.io
           .to(`society_${alert.society_id}`)
           .emit("emergency_resolved", { id: alert.id, alertId: String(alert.id), status: "RESOLVED" });
-      }
-
-      const resident = await User.findByPk(alert.resident_id, { attributes: ['fcm_token'] });
-
-      if (resident && resident.fcm_token) {
-        sendPushNotification(
-          resident.fcm_token,
-          title,
-          message,
-          { route: "/resident/emergency", type: "EMERGENCY_RESOLVED", alertId: String(alert.id) }
-        ).catch(err => console.error("Push Error:", err));
       }
     } else if (global.io) {
       global.io

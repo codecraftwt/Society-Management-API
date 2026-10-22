@@ -29,11 +29,11 @@ const Flat           = require("../models/Flat");
 const Floor          = require("../models/Floor");
 const Block          = require("../models/Block");
 const User           = require("../models/User");
-const Notification   = require("../models/Notification");
 
 const { sendEmail }            = require("../services/emailService");
 const { sendPushNotification } = require("../utils/pushNotification");
 const { buildLeaseReminderHtml } = require("../services/leaseReminderEmail");
+const notificationService = require("../services/notificationService");
 
 /* ─────────────────────────────────────────────
    IST DATE HELPER
@@ -141,45 +141,41 @@ async function runLeaseReminderJob() {
         `Your lease for ${flatLabel} expires on ${membership.move_out_date}. ` +
         `Please contact your owner or admin to renew or plan your move-out.`;
 
-      /* ── 2b. Save in-app Notification ── */
+      /* ── 2b. Save notification & dispatch transports via notificationService ── */
       let notification = null;
       try {
-        notification = await Notification.create({
-          title:            "Lease Expiring in 5 Days",
-          message:          notificationMessage,
-          type:             "LEASE",
-          action_type:      "LEASE_REMINDER",
-          action_route:     "/resident/profile",   // wherever tenant sees lease info
-          society_id:       tenant.society_id,
-          receiver_user_id: tenant.id,
+        notification = await notificationService.sendNotification({
+          societyId: tenant.society_id,
+          receiverUserId: tenant.id,
+          title: "Lease Expiring in 5 Days",
+          message: notificationMessage,
+          type: "LEASE",
+          actionType: "LEASE_REMINDER",
+          actionRoute: "/resident/profile",
+          fcmToken: tenant.fcm_token,
+          sourceEventId: `LEASE_REMINDER:${membership.id}:${membership.move_out_date}`,
+          extraData: {
+            type: "LEASE_REMINDER",
+            route: "/resident/profile",
+            flatLabel,
+            moveOutDate: membership.move_out_date,
+          },
         });
         console.log(`[LeaseReminderCron] Notification created for user ${tenant.id}`);
       } catch (notifErr) {
         console.error(`[LeaseReminderCron] Notification create failed for user ${tenant.id}:`, notifErr.message);
       }
 
-      /* ── 2c. Emit real-time socket event ── */
+      /* ── 2c. Emit domain-specific socket event ── */
       if (global.io) {
         global.io.to(`user_${tenant.id}`).emit("lease_expiry_reminder", {
-          type:         "LEASE_REMINDER",
-          message:      notificationMessage,
+          type: "LEASE_REMINDER",
+          message: notificationMessage,
           flatLabel,
-          moveOutDate:  membership.move_out_date,
-          notification, // full row so the frontend can insert it into the bell list
+          moveOutDate: membership.move_out_date,
+          notification,
         });
         console.log(`[LeaseReminderCron] Socket event emitted to user_${tenant.id}`);
-      }
-
-      /* ── 2d. Push notification (FCM) ── */
-      if (tenant.fcm_token) {
-        sendPushNotification(
-          tenant.fcm_token,
-          "⏳ Lease Expiring in 5 Days",
-          `Your lease for ${flatLabel} ends on ${membership.move_out_date}. Tap to view details.`,
-          { type: "LEASE_REMINDER", route: "/resident/profile" }
-        ).catch((pushErr) =>
-          console.error(`[LeaseReminderCron] Push failed for user ${tenant.id}:`, pushErr.message)
-        );
       }
     }
 

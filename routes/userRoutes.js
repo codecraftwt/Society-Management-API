@@ -9,7 +9,7 @@ const uploadProfilePicture = require("../middlewares/uploadProfilePicture");
 const handleProfilePictureUploadErrors = require("../middlewares/profilePictureUploadErrors");
 const {
   createSocietyAdmin, createResident, checkResidentEmail, createGuard,
-  getResidents, updateResident, deleteResident,
+  getResidents, updateResident, deleteResident, toggleResidentStatus,
   getUnassignedResidents, getGuards, updateGuard, deleteGuard,
   getMyFlat, createAccountant, getAccountant,
   updateAccountant, getMyProfile, updateMyProfile,
@@ -43,6 +43,9 @@ router.put(
   updateResident
 );
 router.delete("/resident/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), deleteResident);
+
+// Deactivate / reactivate a resident (non-destructive status toggle)
+router.patch("/resident/:id/status", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), toggleResidentStatus);
 
 // Allow Super Admin to manage guards
 router.post(

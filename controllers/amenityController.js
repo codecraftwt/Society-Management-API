@@ -111,39 +111,33 @@ const paymentExpiresAt = () => {
   return d;
 };
 
-/* Notify admin helper */
-const notifyAdmin = async (adminUser, title, msg, route, societyId, transaction) => {
-  const notification = await Notification.create({
-    title, message: msg,
-    type: "AMENITY_APPROVAL",
-    action_type: "VIEW_AMENITY",
-    action_route: route,
-    society_id: societyId,
-    receiver_user_id: adminUser.id,
-  }, transaction ? { transaction } : {});
+const notificationService = require("../services/notificationService");
 
-  if (global.io) global.io.to(`user_${adminUser.id}`).emit("new_notification", notification);
-  if (adminUser.fcm_token) {
-    sendPushNotification(adminUser.fcm_token, title, msg, { route }).catch(console.error);
-  }
+/* Notify admin helper (dispatched post-commit) */
+const notifyAdmin = async (adminUser, title, msg, route, societyId) => {
+  await notificationService.sendNotification({
+    societyId,
+    receiverUserId: adminUser.id,
+    title,
+    message: msg,
+    type: "AMENITY_APPROVAL",
+    actionType: "VIEW_AMENITY",
+    actionRoute: route,
+    fcmToken: adminUser.fcm_token,
+  });
 };
 
 /* Notify resident helper */
 const notifyResident = async (userId, title, msg, societyId) => {
-  const notification = await Notification.create({
-    title, message: msg,
+  await notificationService.sendNotification({
+    societyId,
+    receiverUserId: userId,
+    title,
+    message: msg,
     type: "AMENITY",
-    action_type: "VIEW_AMENITY",
-    action_route: "/resident/amenities",
-    society_id: societyId,
-    receiver_user_id: userId,
+    actionType: "VIEW_AMENITY",
+    actionRoute: "/resident/amenities",
   });
-  if (global.io) global.io.to(`user_${userId}`).emit("new_notification", notification);
-
-  const user = await User.findByPk(userId, { attributes: ["fcm_token"] });
-  if (user?.fcm_token) {
-    sendPushNotification(user.fcm_token, title, msg, { route: "/resident/amenities" }).catch(console.error);
-  }
 };
 
 /* ═══════════════════════════════════════════
@@ -465,19 +459,18 @@ exports.createBooking = async (req, res) => {
         payment_status: "NA",
       }, { transaction: t });
 
+      await t.commit();
+
       if (amenity.requires_approval) {
         const detail = isFullDay ? `${fromDate} – ${toDate}` : slotLabel({ slots: slotList });
-        await notifyAdmin(
+        notifyAdmin(
           adminUser,
           "Booking Approval Required",
           `⏳ ${userName} is waiting for approval for ${amenity.name}: ${detail}.`,
           "/admin/amenities",
-          societyId,
-          t
-        );
+          societyId
+        ).catch(console.error);
       }
-
-      await t.commit();
       return res.status(201).json({ success: true, data: row, bookings: [row], requiresPayment: false });
     }
 
@@ -625,27 +618,25 @@ exports.verifyPayment = async (req, res) => {
       });
     }
 
+    await t.commit();
+
     /* 6. Notify admin (if approval required) */
     if (amenity?.requires_approval) {
       const adminUser = await User.findOne({
         where: { society_id: req.user.society_id, role: "SOCIETY_ADMIN" },
         attributes: ["id", "fcm_token"],
-        transaction: t,
       });
       if (adminUser) {
         const detail = pending.map((b) => `${dateRangeLabel(b)}${slotLabel(b) ? " (" + slotLabel(b) + ")" : ""}`).join(", ");
-        await notifyAdmin(
+        notifyAdmin(
           adminUser,
           "Booking Approval Required",
           `⏳ ${req.user.name} paid for ${amenity.name} (${pending.length} booking${pending.length > 1 ? "s" : ""}): ${detail}. Awaiting approval.`,
           "/admin/amenities",
-          req.user.society_id,
-          t
-        );
+          req.user.society_id
+        ).catch(console.error);
       }
     }
-
-    await t.commit();
 
     /* 7. Notify resident */
     notifyResident(

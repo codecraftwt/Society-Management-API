@@ -7,7 +7,7 @@ const getSocietyBills = async (req, res) => {
       include: {
         model: Flat,
         required: true,
-        attributes: ["id", "flat_number"],
+        attributes: ["id", "flat_number", "resident_id"],
         include: [
           {
             model: Block,
@@ -21,6 +21,12 @@ const getSocietyBills = async (req, res) => {
             where: { is_current: true },
             include: [{ model: User, required: false, attributes: ["id", "name"] }],
           },
+          {
+            // Directly-assigned resident fallback (legacy resident_id).
+            model: User,
+            required: false,
+            attributes: ["id", "name"],
+          },
         ],
       },
       order: [["created_at", "DESC"]],
@@ -30,7 +36,7 @@ const getSocietyBills = async (req, res) => {
       const b = bill.toJSON ? bill.toJSON() : bill;
       if (b.Flat) {
         const active = b.Flat.FlatMemberships?.find((m) => m.is_current) || b.Flat.FlatMemberships?.[0];
-        b.Flat.User = active?.User || null;
+        b.Flat.User = active?.User || b.Flat.User || null;
       }
       return b;
     });

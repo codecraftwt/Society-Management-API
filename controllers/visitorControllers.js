@@ -4,7 +4,6 @@ const VisitorLog     = require("../models/VisitorLog");
 const Flat           = require("../models/Flat");
 const Floor          = require("../models/Floor");
 const Block          = require("../models/Block");
-const Notification   = require("../models/Notification");
 const UserSetting    = require("../models/UserSetting");
 const User           = require("../models/User");
 const ParkingSlot    = require("../models/ParkingSlot");

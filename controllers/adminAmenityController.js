@@ -4,6 +4,8 @@ const { Op }                   = require("sequelize");
 const { sendPushNotification } = require("../utils/pushNotification");
 const { groupAmenityBookings } = require("../utils/groupAmenityBookings");
 
+const notificationService = require("../services/notificationService");
+
 /* ── Time helper ── */
 const addMinutes = (timeStr, minutes) => {
   const [h, m] = timeStr.split(":").map(Number);
@@ -15,17 +17,15 @@ const addMinutes = (timeStr, minutes) => {
 
 /* ── Shared notify helper ── */
 const notifyResident = async (userId, title, msg, societyId) => {
-  const notification = await Notification.create({
-    title, message: msg,
-    type: "AMENITY", action_type: "VIEW_AMENITY", action_route: "/resident/amenities",
-    society_id: societyId, receiver_user_id: userId,
+  await notificationService.sendNotification({
+    societyId,
+    receiverUserId: userId,
+    title,
+    message: msg,
+    type: "AMENITY",
+    actionType: "VIEW_AMENITY",
+    actionRoute: "/resident/amenities",
   });
-  if (global.io) global.io.to(`user_${userId}`).emit("new_notification", notification);
-
-  const user = await User.findByPk(userId, { attributes: ["fcm_token"] });
-  if (user?.fcm_token) {
-    sendPushNotification(user.fcm_token, title, msg, { route: "/resident/amenities" }).catch(console.error);
-  }
 };
 
 /* ── Date range label for notifications ── */
@@ -152,18 +152,18 @@ exports.disableAmenity = async (req, res) => {
         attributes: ["id", "fcm_token"],
       });
 
-      await Promise.all(residents.map(async (resident) => {
-        const notification = await Notification.create({
-          title: notifTitle, message: notifMsg,
-          type: "AMENITY", action_type: "VIEW_AMENITY", action_route: "/resident/amenities",
-          society_id: req.user.society_id, receiver_user_id: resident.id,
-        });
-        if (global.io) global.io.to(`user_${resident.id}`).emit("new_notification", notification);
-        if (resident.fcm_token) {
-          sendPushNotification(resident.fcm_token, notifTitle, notifMsg, { route: "/resident/amenities" })
-            .catch(console.error);
-        }
-      }));
+      await notificationService.sendBulkNotifications(
+        residents.map((resident) => ({
+          societyId: req.user.society_id,
+          receiverUserId: resident.id,
+          title: notifTitle,
+          message: notifMsg,
+          type: "AMENITY",
+          actionType: "VIEW_AMENITY",
+          actionRoute: "/resident/amenities",
+          fcmToken: resident.fcm_token,
+        }))
+      );
     }
 
     res.json({ success: true, message: `Amenity disabled (${disableType})`, data: amenity });

@@ -1,5 +1,4 @@
 const User = require("../models/User");
-const Notification = require("../models/Notification");
 const Society = require("../models/Society");
 const Flat = require("../models/Flat");
 const FlatMembership = require("../models/FlatMembership");
@@ -12,6 +11,7 @@ const { Op } = require("sequelize");
 const sequelize = require("../config/db");
 const transporter = require("../utils/mailer");
 const { resolveSocietyAdminContact } = require("../utils/approvalGuard");
+const notificationService = require("../services/notificationService");
 
 /* =====
     EMAIL HELPERS
@@ -377,19 +377,8 @@ exports.approveResident = async (req, res) => {
       }, { where: { id: flatId }, transaction });
     }
 
-    // 3. Send Notifications
-    const notification = await Notification.create({
-      title:            "Registration Approved ✅",
-      message:          "Your registration has been approved. You can now login.",
-      type:             "GENERAL",
-      society_id:       resident.society_id,
-      user_id:          resident.id,
-      receiver_role:    "RESIDENT",
-      receiver_user_id: resident.id,
-    }, { transaction });
-
-    // 3b. Notify the OWNER that their tenant was approved
-    let ownerNotification = null;
+    let ownerUserIdToNotify = null;
+    let flatNumberForOwner = null;
     if (pendingMembership && resident.resident_type === "TENANT") {
       const ownerMembership = await FlatMembership.findOne({
         where: { flat_id: pendingMembership.flat_id, role: "OWNER", is_current: true },
@@ -397,20 +386,38 @@ exports.approveResident = async (req, res) => {
       });
       if (ownerMembership) {
         const flat = await Flat.findByPk(pendingMembership.flat_id, { attributes: ["flat_number"], transaction });
-        ownerNotification = await Notification.create({
-          title:            "Tenant Approved ✅",
-          message:          `Your tenant ${resident.name} for Flat ${flat?.flat_number || pendingMembership.flat_id} has been approved by the admin.`,
-          type:             "SYSTEM",
-          society_id:       resident.society_id,
-          user_id:          ownerMembership.user_id,
-          receiver_role:    "RESIDENT",
-          receiver_user_id: ownerMembership.user_id,
-        }, { transaction });
+        ownerUserIdToNotify = ownerMembership.user_id;
+        flatNumberForOwner = flat?.flat_number || pendingMembership.flat_id;
       }
     }
 
     // Commit the transaction
     await transaction.commit();
+
+    // Send Notifications (outside transaction)
+    await notificationService.sendNotification({
+      societyId: resident.society_id,
+      receiverUserId: resident.id,
+      senderUserId: resident.id,
+      receiverRole: "RESIDENT",
+      title: "Registration Approved ✅",
+      message: "Your registration has been approved. You can now login.",
+      type: "GENERAL",
+      sourceEventId: `RESIDENT_APPROVED:${resident.id}`,
+    });
+
+    if (ownerUserIdToNotify) {
+      await notificationService.sendNotification({
+        societyId: resident.society_id,
+        receiverUserId: ownerUserIdToNotify,
+        senderUserId: ownerUserIdToNotify,
+        receiverRole: "RESIDENT",
+        title: "Tenant Approved ✅",
+        message: `Your tenant ${resident.name} for Flat ${flatNumberForOwner} has been approved by the admin.`,
+        type: "SYSTEM",
+        sourceEventId: `TENANT_APPROVED:${resident.id}:${ownerUserIdToNotify}`,
+      });
+    }
 
     if (global.io) {
       global.io.to(`user_${resident.id}`).emit("approval_status_update", {
@@ -418,10 +425,6 @@ exports.approveResident = async (req, res) => {
         rejection_reason: null,
         message:          "Your registration has been approved. You can now login.",
       });
-      global.io.to(`user_${resident.id}`).emit("new_notification", notification);
-      if (ownerNotification) {
-        global.io.to(`user_${ownerNotification.receiver_user_id}`).emit("new_notification", ownerNotification);
-      }
     }
 
     const society = await Society.findByPk(resident.society_id);
@@ -598,19 +601,16 @@ exports.rejectResident = async (req, res) => {
     // 3. Notify the OWNER that their tenant was rejected (if applicable)
     if (ownerId && user.resident_type === "TENANT") {
       try {
-        const ownerNotification = await Notification.create({
+        await notificationService.sendNotification({
+          societyId: targetSocietyId,
+          receiverUserId: ownerId,
+          senderUserId: ownerId,
+          receiverRole: "RESIDENT",
           title: "Tenant Rejected ❌",
           message: `Your tenant ${user.name} for Flat ${flatNumber || ""} has been rejected by the admin.`,
           type: "SYSTEM",
-          society_id: targetSocietyId,
-          user_id: ownerId,
-          receiver_role: "RESIDENT",
-          receiver_user_id: ownerId,
+          sourceEventId: `TENANT_REJECTED:${user.id}:${ownerId}`,
         });
-
-        if (global.io) {
-          global.io.to(`user_${ownerId}`).emit("new_notification", ownerNotification);
-        }
       } catch (err) {
         console.error("[rejectResident] notify owner failed:", err.message);
       }

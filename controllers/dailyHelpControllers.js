@@ -3,6 +3,7 @@ const { Op } = require("sequelize");
 const { sendPushNotification } = require("../utils/pushNotification");
 const { getCurrentISTDate } = require("../utils/istTime");
 const { DAILY_HELP_ROLES } = require("../utils/dailyHelpUtils");
+const notificationService = require("../services/notificationService");
 
 /* ====
    GATE PASS VALIDATION FOR DAILY HELP
@@ -78,33 +79,21 @@ const sendMultiFlatNotification = async (visitorLog, flatId, societyId, guardId,
       const settings = await UserSetting.findOne({ where: { user_id: user.id } });
       if (!settings || settings.visitor_entry === true) {
         
-        // In-App Notification
-        const notification = await Notification.create({
+        // In-App Notification via notificationService
+        await notificationService.sendNotification({
+          societyId,
+          receiverUserId: user.id,
+          senderUserId: guardId,
+          receiverRole: "RESIDENT",
           title: titleText,
           message: `${emoji} Your Daily Help "${visitorLog.visitor_name}" ${actionText}.`,
           type: "VISITOR",
-          action_type: "VIEW_VISITOR",
-          action_route: "/resident/visitors",
-          society_id: societyId,
-          user_id: guardId,
-          receiver_role: "RESIDENT",
-          receiver_user_id: user.id
+          actionType: "VIEW_VISITOR",
+          actionRoute: "/resident/visitors",
+          fcmToken: user.fcm_token,
+          sourceEventId: `DAILY_HELP:${visitorLog.id}:${isEntry ? 'ENTRY' : 'EXIT'}:${user.id}`,
+          extraData: { route: "/resident/visitors", visitorId: visitorLog.id.toString() },
         });
-
-        // Socket.io Realtime (if connected)
-        if (global.io) {
-          global.io.to(`user_${user.id}`).emit("new_notification", notification);
-        }
-
-        // Push Notification
-        if (user.fcm_token) {
-          await sendPushNotification(
-            user.fcm_token,
-            titleText,
-            `${emoji} Your Daily Help "${visitorLog.visitor_name}" ${actionText}.`,
-            { route: "/resident/visitors", visitorId: visitorLog.id.toString() }
-          );
-        }
       }
     }
   } catch (error) {

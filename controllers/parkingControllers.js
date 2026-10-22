@@ -12,6 +12,7 @@ const {
 const Vehicle = require("../models/Vehicle");
 const { Op } = require("sequelize");
 const { sendPushNotification } = require("../utils/pushNotification");
+const notificationService = require("../services/notificationService");
 const {
   sanitizeText,
   isEmpty,
@@ -111,7 +112,7 @@ const getPrimaryResidentId = async (userId) => {
 /* ── Get admin user IDs for a society ── */
 const getAdminUserIds = async (societyId) => {
   const admins = await User.findAll({
-    where:      { society_id: societyId, role: "ADMIN" },
+    where:      { society_id: societyId, role: "SOCIETY_ADMIN" },
     attributes: ["id"],
   });
   return admins.map((a) => a.id);
@@ -119,27 +120,15 @@ const getAdminUserIds = async (societyId) => {
 
 /* ── Send notification helper ── */
 const sendNotification = async ({ societyId, userId, title, message, actionRoute }) => {
-  const notification = await Notification.create({
-    society_id:       societyId,
-    receiver_user_id: userId,
+  await notificationService.sendNotification({
+    societyId,
+    receiverUserId: userId,
     title,
     message,
-    type:         "PARKING",
-    action_type:  "VIEW_PARKING",
-    action_route: actionRoute,
-    is_read:      false,
+    type: "PARKING",
+    actionType: "VIEW_PARKING",
+    actionRoute,
   });
-
-  if (global.io) {
-    global.io.to(`user_${userId}`).emit("new_notification", notification);
-  }
-
-  const user = await User.findByPk(userId, { attributes: ["fcm_token"] });
-  if (user?.fcm_token) {
-    sendPushNotification(user.fcm_token, title, message, { route: actionRoute }).catch((err) =>
-      console.log("Push Error:", err)
-    );
-  }
 };
 
 /* ═══════════════════════════════════════════════════
@@ -1281,15 +1270,14 @@ const adminCancelVehicleRequest = async (req, res) => {
     await vehicle.destroy();
 
     /* 3. Notify resident */
-    await Notification.create({
-      society_id:       req.user.society_id,
-      receiver_user_id: residentId,
-      title:            "Vehicle Registration Rejected ❌",
-      message:          `Your vehicle ${vehicle_number?.toUpperCase()} could not be assigned a parking slot and has been removed. Please contact the admin for more info.`,
-      type:             "PARKING",
-      action_type:      "VIEW_PARKING",
-      action_route:     "/resident/parking",
-      is_read:          false,
+    await notificationService.sendNotification({
+      societyId: req.user.society_id,
+      receiverUserId: residentId,
+      title: "Vehicle Registration Rejected ❌",
+      message: `Your vehicle ${vehicle_number?.toUpperCase()} could not be assigned a parking slot and has been removed. Please contact the admin for more info.`,
+      type: "PARKING",
+      actionType: "VIEW_PARKING",
+      actionRoute: "/resident/parking",
     });
 
     global.io?.to(`user_${residentId}`).emit("parking_request_updated", {

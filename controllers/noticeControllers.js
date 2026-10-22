@@ -1,6 +1,5 @@
 const Notice = require("../models/Notice");
 const NoticeAcknowledgement = require("../models/NoticeAcknowledgement");
-const Notification = require("../models/Notification");
 const User = require("../models/User");
 const UserSetting = require("../models/UserSetting");
 const Flat = require("../models/Flat");
@@ -10,6 +9,7 @@ const FlatMembership = require("../models/FlatMembership");
 const AccountantAssignment = require("../models/AccountantAssignment");
 const { sendPushNotification } = require("../utils/pushNotification");
 const { Op } = require("sequelize");
+const notificationService = require("../services/notificationService");
 const {
   getUserAuthorizedFlatIds,
   getFlatAuthorizedUserIds,
@@ -157,36 +157,23 @@ const createNotice = async (req, res) => {
         for (const recipient of recipients) {
           const settings = settingsMap[recipient.id];
           if (!settings || settings.notice_updates === true) {
-            const notification = await Notification.create({
+            await notificationService.sendNotification({
+              societyId: targetSocietyId,
+              receiverUserId: recipient.id,
+              senderUserId: req.user.id,
+              receiverRole: "RESIDENT",
               title: "Flat Notice",
               message: `📢 Notice for your flat: "${title}"`,
               type: "NOTICE",
-              action_type: "VIEW_NOTICE",
-              action_route: "/resident/notices",
-              society_id: targetSocietyId,
-              user_id: req.user.id,
-              receiver_role: "RESIDENT",
-              receiver_user_id: recipient.id,
+              actionType: "VIEW_NOTICE",
+              actionRoute: "/resident/notices",
+              fcmToken: recipient.fcm_token,
+              sourceEventId: `NOTICE:${notice.id}:${recipient.id}`,
+              extraData: {
+                route: "/resident/notices",
+                noticeId: notice.id.toString(),
+              },
             });
-
-            if (global.io) {
-              global.io
-                .to(`user_${recipient.id}`)
-                .emit("new_notification", notification);
-            }
-
-            if (recipient.fcm_token) {
-              sendPushNotification(
-                recipient.fcm_token,
-                "Flat Notice",
-                `📢 Notice for your flat: "${title}"`,
-                {
-                  route: "/resident/notices",
-                  type: "NOTICE",
-                  noticeId: notice.id.toString(),
-                }
-              ).catch((err) => console.error("Push Error:", err));
-            }
           }
         }
       }
@@ -229,36 +216,23 @@ const createNotice = async (req, res) => {
         const settings = settingsMap[resident.id];
 
         if (!settings || settings.notice_updates === true) {
-          const notification = await Notification.create({
+          await notificationService.sendNotification({
+            societyId: targetSocietyId,
+            receiverUserId: resident.id,
+            senderUserId: req.user.id,
+            receiverRole: "RESIDENT",
             title: "Society Notice",
             message: `📢 New notice posted: "${title}"`,
             type: "NOTICE",
-            action_type: "VIEW_NOTICE",
-            action_route: "/resident/notices",
-            society_id: targetSocietyId,
-            user_id: req.user.id,
-            receiver_role: "RESIDENT",
-            receiver_user_id: resident.id,
+            actionType: "VIEW_NOTICE",
+            actionRoute: "/resident/notices",
+            fcmToken: resident.fcm_token,
+            sourceEventId: `NOTICE:${notice.id}:${resident.id}`,
+            extraData: {
+              route: "/resident/notices",
+              noticeId: notice.id.toString(),
+            },
           });
-
-          if (global.io) {
-            global.io
-              .to(`user_${resident.id}`)
-              .emit("new_notification", notification);
-          }
-
-          if (resident.fcm_token) {
-            sendPushNotification(
-              resident.fcm_token,
-              "New Society Notice",
-              `📢 "${title}" has been posted.`,
-              {
-                route: "/resident/notices",
-                type: "NOTICE",
-                noticeId: notice.id.toString(),
-              }
-            ).catch((err) => console.error("Push Error:", err));
-          }
         }
       }
     }

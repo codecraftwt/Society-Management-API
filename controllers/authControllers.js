@@ -2,7 +2,6 @@ const User = require("../models/User");
 const Society = require("../models/Society");
 const Flat = require("../models/Flat");
 const FlatMembership = require("../models/FlatMembership");
-const Notification = require("../models/Notification");
 const HouseHoldMember = require("../models/HouseHoldMember");
 const OtpVerification = require("../models/OtpVerification");
 const AccountantAssignment = require("../models/AccountantAssignment");
@@ -10,6 +9,7 @@ const UserSociety = require("../models/UserSociety");
 const UserSocietyRole = require("../models/UserSocietyRole");
 const UserDocuments = require("../models/UserDocuments");
 const { resolveSocietyAdminContact } = require("../utils/approvalGuard");
+const notificationService = require("../services/notificationService");
 
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -1062,7 +1062,7 @@ exports.registerResident = async (req, res) => {
         existing.approval_status === "REJECTED" &&
         existing.status === "INACTIVE"
       ) {
-        await Notification.destroy({ where: { user_id: existing.id } });
+        await notificationService.deleteUserNotifications(existing.id);
         await existing.destroy();
       } else {
         // Multi-society: check if already member of target society
@@ -1175,19 +1175,17 @@ exports.registerResident = async (req, res) => {
         });
 
         if (admin?.id) {
-          const notification = await Notification.create({
+          await notificationService.sendNotification({
+            societyId,
+            receiverUserId: admin.id,
+            senderUserId: existing.id,
+            receiverRole: "SOCIETY_ADMIN",
             title: "New Resident Request",
             message: `${existing.name} requested to join society`,
             type: "RESIDENT_REQUEST",
-            society_id,
-            user_id: existing.id,
-            receiver_role: "SOCIETY_ADMIN",
-            receiver_user_id: admin.id,
+            actionType: "RESIDENT_REQUEST",
+            sourceEventId: `RESIDENT_REQUEST:${existing.id}:${admin.id}`,
           });
-
-          if (global.io) {
-            global.io.to(`user_${admin.id}`).emit("new_notification", notification);
-          }
         }
 
         return res.status(201).json({
@@ -1312,19 +1310,17 @@ exports.registerResident = async (req, res) => {
     });
 
     if (admin?.id) {
-      const notification = await Notification.create({
+      await notificationService.sendNotification({
+        societyId: newUser.society_id || society_id,
+        receiverUserId: admin.id,
+        senderUserId: newUser.id || null,
+        receiverRole: "SOCIETY_ADMIN",
         title: "New Resident Request",
         message: `${name} requested to join society`,
         type: "RESIDENT_REQUEST",
-        society_id: newUser.society_id || null,
-        user_id: newUser.id || null,
-        receiver_role: "SOCIETY_ADMIN",
-        receiver_user_id: admin.id || null,
+        actionType: "RESIDENT_REQUEST",
+        sourceEventId: `RESIDENT_REQUEST:${newUser.id || name}:${admin.id}`,
       });
-
-      if (global.io) {
-        global.io.to(`user_${admin.id}`).emit("new_notification", notification);
-      }
     }
 
     return res.status(201).json({
