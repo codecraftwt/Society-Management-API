@@ -34,6 +34,15 @@ if (declaredDevDatabaseName) {
 const testDatabaseName = process.env.TEST_DB_NAME || `${declaredDevDatabaseName || "societyWeb"}_test`;
 process.env.DB_NAME = testDatabaseName;
 
+/* Notification persistence must never reach the real Firestore during tests.
+   .env sets NOTIFICATION_STORE=firestore for development, which makes every
+   notice/bill/complaint notification write hit Google's API with a credential
+   the test environment cannot authenticate. Those writes retry for ~45s before
+   failing, which intermittently blows the Jest per-test timeout. Mirror the
+   mailer's "test mode" convention and use the local MySQL store instead.
+   firestore-mock.test.js overrides this explicitly where it needs Firestore. */
+process.env.NOTIFICATION_STORE = "mysql";
+
 if (!global.io) {
     global.io = {
         to: () => ({ emit: () => {} }),

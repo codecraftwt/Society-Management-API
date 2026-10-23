@@ -14,6 +14,7 @@ const {
   getUserAuthorizedFlatIds,
   getFlatAuthorizedUserIds,
   isUserAuthorizedForFlat,
+  getSocietyMemberUserIds,
 } = require("../utils/accessHelpers");
 
 /* ════════════════════════════════════════
@@ -185,25 +186,32 @@ const createNotice = async (req, res) => {
           .emit("notice_created", fullNotice || notice);
       }
 
-      // Fetch all eligible society residents
-      const residents = await User.findAll({
-        where: {
-          society_id: targetSocietyId,
-          role: {
-            [Op.in]: [
-              "RESIDENT",
-              "FAMILY_MEMBER",
-              "COMMITTEE_MEMBER",
-              "SOCIETY_ADMIN",
-            ],
-          },
-          status: "ACTIVE",
-          id: { [Op.ne]: req.user.id }, // never notify the sender
-        },
-        attributes: ["id", "fcm_token"],
-      });
+      // Fetch all eligible society residents.
+      //
+      // Resolved from society membership rather than `users.society_id`,
+      // which only holds a user's PRIMARY society. Multi-society residents
+      // were therefore never notified about society-wide notices.
+      const societyMemberIds = await getSocietyMemberUserIds(targetSocietyId);
+      const residentIds = societyMemberIds.filter((id) => id !== req.user.id);
 
-      const residentIds = residents.map((r) => r.id);
+      const residents =
+        residentIds.length > 0
+          ? await User.findAll({
+              where: {
+                id: { [Op.in]: residentIds },
+                role: {
+                  [Op.in]: [
+                    "RESIDENT",
+                    "FAMILY_MEMBER",
+                    "COMMITTEE_MEMBER",
+                    "SOCIETY_ADMIN",
+                  ],
+                },
+                status: "ACTIVE",
+              },
+              attributes: ["id", "fcm_token"],
+            })
+          : [];
       const allSettings = await UserSetting.findAll({
         where: { user_id: residentIds },
         attributes: ["user_id", "notice_updates"],
@@ -745,9 +753,19 @@ const getNoticeAcknowledgements = async (req, res) => {
       });
     }
 
-    // Find intended recipients
+    // Find intended recipients.
+    //
+    // The audience must be resolved from real society membership, not from
+    // `users.society_id` — that column only stores a user's PRIMARY society,
+    // so a multi-society resident (e.g. someone who owns a flat here but whose
+    // primary society is another one) was silently dropped from the report
+    // even though their acknowledgement had been recorded. The resident-side
+    // audience check (getUserAuthorizedFlatIds) is membership based, so the
+    // admin-side report has to use the same source of truth.
+    const societyMemberIds = await getSocietyMemberUserIds(notice.society_id);
+    const societyMemberIdSet = new Set(societyMemberIds);
+
     const recipientsWhere = {
-      society_id: notice.society_id,
       status: "ACTIVE",
     };
 
@@ -756,8 +774,14 @@ const getNoticeAcknowledgements = async (req, res) => {
         notice.target_flat_id,
         notice.society_id
       );
-      recipientsWhere.id = { [Op.in]: flatAuthorizedUserIds.length ? flatAuthorizedUserIds : [-1] };
+      const audienceIds = flatAuthorizedUserIds.filter((id) =>
+        societyMemberIdSet.has(Number(id))
+      );
+      recipientsWhere.id = { [Op.in]: audienceIds.length ? audienceIds : [-1] };
     } else {
+      recipientsWhere.id = {
+        [Op.in]: societyMemberIds.length ? societyMemberIds : [-1],
+      };
       recipientsWhere.role = {
         [Op.in]: [
           "RESIDENT",
@@ -794,8 +818,26 @@ const getNoticeAcknowledgements = async (req, res) => {
 
     const flatMap = {};
     memberships.forEach((m) => {
-      if (m.Flat?.flat_number) flatMap[m.user_id] = m.Flat.flat_number;
+      if (m.Flat?.flat_number && !flatMap[m.user_id]) {
+        flatMap[m.user_id] = m.Flat.flat_number;
+      }
     });
+
+    // For a flat-targeted notice the target flat is the authoritative unit.
+    if (notice.target_type === "FLAT" && notice.target_flat_id) {
+      const targetFlat = await Flat.findByPk(notice.target_flat_id, {
+        attributes: ["id", "flat_number"],
+      });
+      if (targetFlat?.flat_number) {
+        const targetUserIds = await getFlatAuthorizedUserIds(
+          notice.target_flat_id,
+          notice.society_id
+        );
+        targetUserIds.forEach((uid) => {
+          flatMap[uid] = targetFlat.flat_number;
+        });
+      }
+    }
 
     // Fetch acknowledgements
     const acks =

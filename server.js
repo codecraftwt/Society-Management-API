@@ -6,6 +6,7 @@ const { Server } = require("socket.io");
 const app = require("./app");
 const db = require("./models");
 const sequelize = db.sequelize;
+const Complaint = require("./models/Complaint");
 
 // OTP cleanup job
 const { startOtpCleanup } = require("./controllers/authControllers");
@@ -32,44 +33,110 @@ const io = new Server(server, {
 // Make socket available globally BEFORE any job requires it
 global.io = io;
 
-io.on("connection", (socket) => {
-  console.log("User connected:", socket.id);
+// Every socket must present a valid JWT before it can join any room.
+// Without this the `join` payload was trusted blindly and anyone could
+// subscribe to `user_<victimId>` / `society_<anyId>` and read other
+// people's notifications. See middlewares/socketAuth.js.
+const { authenticate, resolveRoleFor, resolveSocietyFor, normaliseRole } = require("./middlewares/socketAuth");
+io.use(authenticate);
 
-  // Join personal + role + society rooms (safely guarded)
+// Roles that may see every complaint of the society they belong to.
+const STAFF_ROLES = new Set([
+  "SUPER_ADMIN",
+  "SOCIETY_ADMIN",
+  "ADMIN",
+  "COMMITTEE_MEMBER",
+]);
+
+const SOCKET_DEBUG =
+  process.env.DEBUG_SOCKET === "true" ||
+  (process.env.DEBUG_SOCKET !== "false" && process.env.NODE_ENV !== "production");
+
+const socketLog = (...args) => {
+  if (SOCKET_DEBUG) console.log(...args);
+};
+
+io.on("connection", (socket) => {
+  const identity = socket.data.user || {};
+  socketLog(
+    `User connected: ${socket.id} (user_${identity.id}, society_${identity.defaultSocietyId})`
+  );
+
+  // Join personal + role + society rooms.
+  //
+  // The client may *request* a role/society (role switch, society switch) but
+  // never assert one: the requested values are validated against the grants
+  // resolved from the verified handshake in socket.data.user.
   socket.on("join", (data) => {
     try {
-      if (!data || typeof data !== "object") return;
-      const { userId, role, societyId } = data;
+      if (!identity.id) {
+        socket.emit("join_error", { message: "Unauthenticated socket" });
+        return;
+      }
 
-      // Clean up previous society and role rooms to prevent cross-society leakage
+      const payload = data && typeof data === "object" ? data : {};
+      const requestedSocietyId = payload.societyId;
+      const requestedRole = payload.role;
+
+      const society = resolveSocietyFor(identity, requestedSocietyId);
+      if (!society.allowed) {
+        socket.emit("join_error", {
+          message: "Not authorised for the requested society",
+          requestedSocietyId: requestedSocietyId ?? null,
+        });
+        socketLog(
+          `Socket ${socket.id} refused society_${requestedSocietyId} (not a member)`
+        );
+        return;
+      }
+
+      const societyId = society.societyId;
+      const role = resolveRoleFor(identity, societyId, requestedRole);
+
+      const userRoom = `user_${identity.id}`;
+      const roleRoom = role ? `role_${role}` : null;
+      const societyRoom = societyId ? `society_${societyId}` : null;
+
+      // Clean up previous rooms to prevent cross-society / cross-role leakage.
+      // `user_` is included: a socket that changes identity must not keep
+      // receiving the previous user's notifications.
       for (const room of socket.rooms) {
-        if (room.startsWith("society_") && room !== `society_${societyId}`) {
+        if (
+          (room.startsWith("society_") && room !== societyRoom) ||
+          (room.startsWith("role_") && room !== roleRoom) ||
+          (room.startsWith("user_") && room !== userRoom)
+        ) {
           socket.leave(room);
-          console.log(`Socket ${socket.id} left old society room: ${room}`);
-        }
-        if (room.startsWith("role_") && room !== `role_${role}`) {
-          socket.leave(room);
-          console.log(`Socket ${socket.id} left old role room: ${room}`);
+          socketLog(`Socket ${socket.id} left old room: ${room}`);
         }
       }
 
-      if (userId) socket.join(`user_${userId}`);
-      if (role) socket.join(`role_${role}`);
-      if (societyId) socket.join(`society_${societyId}`);
-      console.log(
-        `User ${userId} joined → user_${userId}, role_${role}, society_${societyId}`
+      socket.join(userRoom);
+      if (roleRoom) socket.join(roleRoom);
+      if (societyRoom) socket.join(societyRoom);
+
+      socketLog(
+        `User ${identity.id} joined → ${userRoom}${roleRoom ? `, ${roleRoom}` : ""}${societyRoom ? `, ${societyRoom}` : ""}`
       );
     } catch (err) {
       console.error("Socket join error:", err.message);
     }
   });
 
+  // Joining a society room is already covered by the `join` event above.
+  // This handler is kept for backwards compatibility but only re-joins a
+  // society the authenticated socket is actually scoped to.
   socket.on("join_society", (id) => {
     try {
-      if (id) {
-        socket.join(`society_${id}`);
-        console.log(`Joined society_${id}`);
+      const society = resolveSocietyFor(identity, id);
+      if (!society.allowed || !society.societyId) {
+        socketLog(
+          `Socket ${socket.id} refused join_society:${id} (not authorised)`
+        );
+        return;
       }
+      socket.join(`society_${society.societyId}`);
+      socketLog(`Joined society_${society.societyId}`);
     } catch (err) {
       console.error("Socket join_society error:", err.message);
     }
@@ -77,19 +144,52 @@ io.on("connection", (socket) => {
 
   socket.on("leave_society", (id) => {
     try {
-      if (id) {
-        socket.leave(`society_${id}`);
-        console.log(`Left society_${id}`);
+      const room = `society_${id}`;
+      // A socket can only leave a room it actually joined.
+      if (id && socket.rooms.has(room)) {
+        socket.leave(room);
+        socketLog(`Left ${room}`);
       }
     } catch (err) {
       console.error("Socket leave_society error:", err.message);
     }
   });
 
-  // Complaint rooms
-  socket.on("join_complaint", (complaintId) => {
+  // Complaint rooms.
+  //
+  // A complaint room carries the complaint's chat, so membership has to be
+  // checked: the resident who filed it, or staff of the society it belongs to.
+  socket.on("join_complaint", async (complaintId) => {
     try {
-      if (complaintId) socket.join(`complaint_${complaintId}`);
+      const id = parseInt(complaintId, 10);
+      if (!id) return;
+
+      const complaint = await Complaint.findByPk(id, {
+        attributes: ["id", "society_id", "resident_id"],
+      });
+      if (!complaint) {
+        socket.emit("join_error", { message: "Complaint not found", complaintId: id });
+        return;
+      }
+
+      const isOwner = Number(complaint.resident_id) === Number(identity.id);
+      const society = resolveSocietyFor(identity, complaint.society_id);
+      const isStaff =
+        society.allowed &&
+        (identity.isSuperAdmin ||
+          STAFF_ROLES.has(normaliseRole(resolveRoleFor(identity, complaint.society_id))));
+
+      if (!isOwner && !isStaff) {
+        socket.emit("join_error", {
+          message: "Not authorised for this complaint",
+          complaintId: id,
+        });
+        socketLog(`Socket ${socket.id} refused complaint_${id}`);
+        return;
+      }
+
+      socket.join(`complaint_${complaint.id}`);
+      socketLog(`Socket ${socket.id} joined complaint_${complaint.id}`);
     } catch (err) {
       console.error("Socket join_complaint error:", err.message);
     }
@@ -104,7 +204,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    console.log("User disconnected:", socket.id);
+    socketLog(`User disconnected: ${socket.id} (user_${identity.id})`);
   });
 });
 

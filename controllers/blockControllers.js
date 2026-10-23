@@ -11,7 +11,6 @@ const { Op } = require("sequelize");
 const {
   sanitizeText,
   isEmpty,
-  isValidTitle,
   isPositiveNumber,
 } = require("../utils/validation");
 
@@ -43,11 +42,10 @@ const createBlock = async (req, res) => {
     }
 
     // ✅ VALIDATION
-    if (!isValidTitle(sanitizeText(name))) {
+    if (isEmpty(sanitizeText(name))) {
       await t.rollback();
       return res.status(400).json({
-        message:
-          "Block name must be at least 4 characters and cannot be numbers or symbols only.",
+        message: "Block name is required.",
       });
     }
     if (isEmpty(targetSocietyId)) {

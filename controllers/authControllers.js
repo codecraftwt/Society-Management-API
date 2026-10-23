@@ -48,8 +48,15 @@ async function fetchUserSocietiesList(userId) {
     });
 
     if (userSocieties && userSocieties.length > 0) {
+      const userRecord = await User.findByPk(userId, { attributes: ["id", "society_id", "role", "roles"] });
+      const userRoles = userRecord ? resolveUserRoles(userRecord) : [];
+      const isSocAdmin = userRoles.includes("SOCIETY_ADMIN");
+
       return userSocieties.map((us) => {
         const roles = (us.societyRoles || []).map((r) => r.role);
+        if (isSocAdmin && String(userRecord?.society_id) === String(us.society_id) && !roles.includes("SOCIETY_ADMIN")) {
+          roles.unshift("SOCIETY_ADMIN");
+        }
         return {
           id: us.society_id,
           name: us.society?.name || `Society #${us.society_id}`,
@@ -562,10 +569,34 @@ exports.verifyOtp = async (req, res) => {
     const availableSocieties = await fetchUserSocietiesList(user.id);
     const defaultSociety = availableSocieties.find((s) => s.is_default) || availableSocieties[0];
     const activeSocietyId = defaultSociety ? defaultSociety.id : user.society_id;
-    const activeSocietyRoles = defaultSociety && defaultSociety.roles && defaultSociety.roles.length > 0
+    let activeSocietyRoles = defaultSociety && defaultSociety.roles && defaultSociety.roles.length > 0
       ? defaultSociety.roles
       : resolveUserRoles(user);
-    const initialRole = activeSocietyRoles.includes(user.role) ? user.role : activeSocietyRoles[0];
+
+    const isDirectSocAdmin = (String(user.society_id) === String(activeSocietyId) || !activeSocietyId) &&
+      (user.role === "SOCIETY_ADMIN" || (Array.isArray(user.roles) && user.roles.includes("SOCIETY_ADMIN")));
+    if (isDirectSocAdmin && !activeSocietyRoles.includes("SOCIETY_ADMIN")) {
+      activeSocietyRoles = ["SOCIETY_ADMIN", ...activeSocietyRoles];
+    }
+
+    // Role priority for initialRole:
+    // SUPER_ADMIN > SOCIETY_ADMIN > COMMITTEE_MEMBER > ACCOUNTANT > GUARD > RESIDENT > FAMILY_MEMBER
+    let initialRole;
+    if (activeSocietyRoles.includes("SUPER_ADMIN") || user.role === "SUPER_ADMIN") {
+      initialRole = "SUPER_ADMIN";
+    } else if (activeSocietyRoles.includes("SOCIETY_ADMIN") || isDirectSocAdmin) {
+      initialRole = "SOCIETY_ADMIN";
+    } else if (activeSocietyRoles.includes("COMMITTEE_MEMBER") || user.role === "COMMITTEE_MEMBER") {
+      initialRole = "COMMITTEE_MEMBER";
+    } else if (activeSocietyRoles.includes("ACCOUNTANT") || user.role === "ACCOUNTANT") {
+      initialRole = "ACCOUNTANT";
+    } else if (activeSocietyRoles.includes("GUARD") || user.role === "GUARD") {
+      initialRole = "GUARD";
+    } else if (activeSocietyRoles.includes(user.role)) {
+      initialRole = user.role;
+    } else {
+      initialRole = activeSocietyRoles[0] || "RESIDENT";
+    }
 
     const { token } = issueAccessToken(user, initialRole, activeSocietyId, activeSocietyRoles);
     const roles = activeSocietyRoles;

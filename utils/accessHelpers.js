@@ -1,5 +1,70 @@
-const { Flat, Block, FlatMembership, HouseHoldMember, User } = require("../models");
+const { Flat, Block, FlatMembership, HouseHoldMember, User, UserSociety } = require("../models");
 const { Op } = require("sequelize");
+
+/**
+ * Resolves every ACTIVE user id that belongs to a society.
+ *
+ * `users.society_id` only stores the user's PRIMARY society. Multi-society
+ * residents (a resident who owns a flat in this society but whose primary
+ * society is another one) are therefore invisible to any query that filters on
+ * that column — even though they hold an ACTIVE membership in the society and
+ * are a valid audience for society-scoped content.
+ *
+ * This helper unions both sources:
+ *   - `user_societies` rows with `membership_status = 'ACTIVE'`
+ *   - users whose primary society is this one, unless they have a membership
+ *     row for this society that is not ACTIVE (rejected / suspended / left)
+ *
+ * @param {number} societyId
+ * @returns {Promise<number[]>} Array of unique user IDs
+ */
+const getSocietyMemberUserIds = async (societyId) => {
+  if (!societyId) return [];
+
+  const societyIdNum = Number(societyId);
+  if (Number.isNaN(societyIdNum)) return [];
+
+  const userIds = new Set();
+
+  // Users with an explicit ACTIVE membership in this society.
+  let activeMemberIds = new Set();
+  let inactiveMemberIds = new Set();
+  try {
+    const memberships = await UserSociety.findAll({
+      where: { society_id: societyIdNum },
+      attributes: ["user_id", "membership_status"],
+    });
+    memberships.forEach((m) => {
+      if (!m.user_id) return;
+      if (m.membership_status === "ACTIVE") activeMemberIds.add(Number(m.user_id));
+      else inactiveMemberIds.add(Number(m.user_id));
+    });
+  } catch (err) {
+    console.error("[accessHelpers] Error fetching UserSociety memberships:", err.message);
+  }
+
+  activeMemberIds.forEach((id) => userIds.add(id));
+
+  // Users whose primary society is this one (legacy members that predate the
+  // user_societies table, or members whose primary was never moved).
+  try {
+    const primaryUsers = await User.findAll({
+      where: { society_id: societyIdNum },
+      attributes: ["id"],
+    });
+    primaryUsers.forEach((u) => {
+      if (!u.id) return;
+      const id = Number(u.id);
+      // An explicit non-ACTIVE membership wins over the primary-society flag.
+      if (inactiveMemberIds.has(id) && !activeMemberIds.has(id)) return;
+      userIds.add(id);
+    });
+  } catch (err) {
+    console.error("[accessHelpers] Error fetching primary society users:", err.message);
+  }
+
+  return Array.from(userIds);
+};
 
 /**
  * Resolves all flat IDs that a given user is legitimately authorized to access
@@ -210,6 +275,7 @@ module.exports = {
   getUserAuthorizedFlatIds,
   getFlatAuthorizedUserIds,
   isUserAuthorizedForFlat,
+  getSocietyMemberUserIds,
   findAuthorizedFlat,
   getFlatForUser
 };

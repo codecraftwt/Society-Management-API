@@ -4,7 +4,7 @@ const { Op } = require("sequelize");
 const {
   Block, Flat, VisitorLog, Payment, Complaint, Notice, Bill, Notification,
   Floor, Vehicle, ParkingSlot, Amenity, EmergencyAlert, Document, GuardShift,
-  AccountantAssignment,
+  AccountantAssignment, UserSociety, UserSocietyRole,
 } = require("../models");
 const notificationService = require("../services/notificationService");
 const { readUploadedSocietyLogo, destroySocietyLogo } = require("../utils/societyLogo");
@@ -23,13 +23,11 @@ const createSociety = async (req, res) => {
 const getAllSociety = async (req, res) => {
   try {
     // Attributes are pinned to columns that have existed since the feature shipped.
-    // If the model ever gains a column the table does not have (schema drift), the
-    // unpinned `SELECT *` would blow up with "Unknown column" and take this endpoint
-    // down — so the list is built from an explicit, stable column set instead.
     const SOCIETY_LIST_ATTRS = [
       "id",
       "name",
       "address",
+      "logo_url",
       "latitude",
       "longitude",
       "location_radius",
@@ -41,36 +39,79 @@ const getAllSociety = async (req, res) => {
     try {
       societies = await Society.findAll({
         attributes: SOCIETY_LIST_ATTRS,
-        include: [
-          {
-            model: User,
-            where: { role: "SOCIETY_ADMIN" },
-            required: false,
-            attributes: ["id", "name", "email"],
-          },
-        ],
       });
     } catch (queryErr) {
-      // Last-resort fallback: the dropdown only needs id/name/address, so serve it
-      // without the association rather than returning a 500.
       console.error("getAllSociety: society query failed, falling back to minimal columns:", queryErr.message);
       societies = await Society.findAll({ attributes: ["id", "name", "address"] });
     }
 
+    // 1. Fetch direct admins from User table (checks both role and roles column)
+    const directAdmins = await User.findAll({
+      where: { society_id: { [Op.ne]: null } },
+      attributes: ["id", "name", "email", "role", "roles", "society_id"],
+    });
+
+    // 2. Fetch multi-society admins from UserSociety & UserSocietyRole
+    let membershipAdmins = [];
+    try {
+      if (UserSociety && UserSocietyRole) {
+        membershipAdmins = await UserSociety.findAll({
+          where: { membership_status: "ACTIVE" },
+          include: [
+            {
+              model: UserSocietyRole,
+              as: "societyRoles",
+              where: { role: "SOCIETY_ADMIN" },
+              required: true,
+            },
+            {
+              model: User,
+              as: "user",
+              attributes: ["id", "name", "email", "role", "roles"],
+              required: true,
+            },
+          ],
+        });
+      }
+    } catch (mErr) {
+      console.warn("getAllSociety: membership query warning:", mErr.message);
+    }
+
+    const adminBySocietyId = new Map();
+
+    // Map direct admins first
+    directAdmins.forEach((u) => {
+      const isSocAdmin =
+        u.role === "SOCIETY_ADMIN" ||
+        (Array.isArray(u.roles) && u.roles.includes("SOCIETY_ADMIN"));
+      if (isSocAdmin && !adminBySocietyId.has(u.society_id)) {
+        adminBySocietyId.set(u.society_id, {
+          id: u.id,
+          name: u.name,
+          email: u.email,
+        });
+      }
+    });
+
+    // Map membership admins
+    membershipAdmins.forEach((m) => {
+      if (m.user && !adminBySocietyId.has(m.society_id)) {
+        adminBySocietyId.set(m.society_id, {
+          id: m.user.id,
+          name: m.user.name,
+          email: m.user.email,
+        });
+      }
+    });
+
     const formatted = (Array.isArray(societies) ? societies : []).map((s) => {
-      const admins = Array.isArray(s.Users) ? s.Users : [];
+      const admin = adminBySocietyId.get(s.id) || null;
       return {
         id: s.id,
         name: s.name,
         address: s.address,
-        societyAdmins:
-          admins.length > 0
-            ? {
-                id: admins[0].id,
-                name: admins[0].name,
-                email: admins[0].email,
-              }
-            : null,
+        logo_url: s.logo_url || null,
+        societyAdmins: admin,
       };
     });
 
@@ -91,11 +132,46 @@ const getSocietyDetail = async (req, res) => {
     }
 
     // ── Admins ──
-    const admins = await User.findAll({
-      where: { society_id: id, role: "SOCIETY_ADMIN" },
-      attributes: ["id", "name", "email", "phone", "status", "created_at"],
+    const directAdmins = await User.findAll({
+      where: { society_id: id },
+      attributes: ["id", "name", "email", "phone", "role", "roles", "status", "created_at"],
       order: [["created_at", "ASC"]],
     });
+    const filteredDirectAdmins = directAdmins.filter(
+      (u) => u.role === "SOCIETY_ADMIN" || (Array.isArray(u.roles) && u.roles.includes("SOCIETY_ADMIN"))
+    );
+
+    let membershipAdmins = [];
+    try {
+      if (UserSociety && UserSocietyRole) {
+        membershipAdmins = await UserSociety.findAll({
+          where: { society_id: id, membership_status: "ACTIVE" },
+          include: [
+            {
+              model: UserSocietyRole,
+              as: "societyRoles",
+              where: { role: "SOCIETY_ADMIN" },
+              required: true,
+            },
+            {
+              model: User,
+              as: "user",
+              attributes: ["id", "name", "email", "phone", "role", "roles", "status", "created_at"],
+              required: true,
+            },
+          ],
+        });
+      }
+    } catch (mErr) {
+      console.warn("getSocietyDetail: membership query warning:", mErr.message);
+    }
+
+    const adminMap = new Map();
+    filteredDirectAdmins.forEach((a) => adminMap.set(a.id, a));
+    membershipAdmins.forEach((m) => {
+      if (m.user && !adminMap.has(m.user.id)) adminMap.set(m.user.id, m.user);
+    });
+    const admins = Array.from(adminMap.values());
 
     // ── Structure counts ──
     const blocks = await Block.findAll({
@@ -179,6 +255,7 @@ const getSocietyDetail = async (req, res) => {
         id: society.id,
         name: society.name,
         address: society.address,
+        logo_url: society.logo_url || null,
         created_at: society.created_at,
         opening_balance: Number(society.opening_balance) || 0,
         admins: admins.map((a) => a.toJSON()),
@@ -798,7 +875,10 @@ const resetSocietyTheme = async (req, res) => {
  * Accessible by Society Admin and committee members.
  */
 const getSocietyGeofence = async (req, res) => {
-  const societyId = req.user?.society_id;
+  const isSuperAdmin = req.user?.activeRole === "SUPER_ADMIN" || req.user?.role === "SUPER_ADMIN";
+  const societyId = isSuperAdmin
+    ? (req.query?.society_id || req.user?.society_id)
+    : req.user?.society_id;
   if (!societyId) {
     return res.status(403).json({ success: false, message: "You are not assigned to any society." });
   }

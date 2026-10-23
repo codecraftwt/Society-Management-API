@@ -263,13 +263,6 @@ const getAllFlats = async (req, res) => {
       order: [["flat_number", "ASC"]],
     });
 
-    console.log("Found flats count:", flats.length);
-    if (flats.length > 0) {
-      console.log("Sample flat keys:", Object.keys(flats[0].toJSON()));
-      if (flats[0].Floor) console.log("Sample flat has Floor");
-      if (flats[0].Block) console.log("Sample flat has Block");
-    }
-
     res.status(200).json(flats);
   } catch (err) {
     res.status(500).json({ message: err.message });

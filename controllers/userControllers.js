@@ -116,41 +116,92 @@ const createSocietyAdmin = async (req, res) => {
 
     const name = rawName;
     const email = rawEmail;
-    const society_id = req.params.societyId;
+    const targetSocietyId = Number(req.params.societyId || req.body.society_id);
 
-    const existingUser = await User.findOne({ where: { email } });
-
-    if (existingUser) {
-      const roles = existingUser.roles || [existingUser.role];
-      const updatedRoles = [...new Set([...roles, "SOCIETY_ADMIN", "RESIDENT"])];
-      await Promise.all([
-        existingUser.update({ name, role: "SOCIETY_ADMIN", roles: updatedRoles }),
-        sendEmail({
-          to: email,
-          subject: "Society Admin Account Updated",
-          html: `<h2>Hello ${name}</h2><p>Your Society Admin account has been updated.</p>`,
-        }).catch((err) => console.error("[Mailer] Admin update email failed:", err.message)),
-      ]);
-      return res.status(200).json({ message: "Admin updated and email sent", user: existingUser });
+    if (!targetSocietyId) {
+      return res.status(400).json({ message: "Society ID is required." });
     }
 
-    const hashed = await bcrypt.hash(password, 8);
-    const [admin] = await Promise.all([
-      User.create({
-        name, email, password: hashed,
-        role: "SOCIETY_ADMIN", roles: ["SOCIETY_ADMIN", "RESIDENT"],
-        society_id,
-      }),
+    const existingUser = await User.findOne({ where: { email } });
+    let adminUser;
+
+    if (existingUser) {
+      const roles = Array.isArray(existingUser.roles) ? existingUser.roles : [existingUser.role].filter(Boolean);
+      const updatedRoles = [...new Set(["SOCIETY_ADMIN", ...roles])];
+      await existingUser.update({
+        name,
+        role: "SOCIETY_ADMIN",
+        roles: updatedRoles,
+        society_id: targetSocietyId,
+        approval_status: "APPROVED",
+        status: "ACTIVE",
+        rejection_reason: null,
+        approved_by_user_id: req.user?.id || null,
+        approved_by_name: req.user?.name || "Super Admin",
+        approved_by_role: "SUPER_ADMIN",
+        approved_at: new Date(),
+      });
+      adminUser = existingUser;
+
+      sendEmail({
+        to: email,
+        subject: "Society Admin Account Updated",
+        html: `<h2>Hello ${name}</h2><p>Your Society Admin account has been activated for society #${targetSocietyId}.</p>`,
+      }).catch((err) => console.error("[Mailer] Admin update email failed:", err.message));
+    } else {
+      const hashed = await bcrypt.hash(password, 8);
+      adminUser = await User.create({
+        name,
+        email,
+        password: hashed,
+        role: "SOCIETY_ADMIN",
+        roles: ["SOCIETY_ADMIN"],
+        society_id: targetSocietyId,
+        approval_status: "APPROVED",
+        status: "ACTIVE",
+        approved_by_user_id: req.user?.id || null,
+        approved_by_name: req.user?.name || "Super Admin",
+        approved_by_role: "SUPER_ADMIN",
+        approved_at: new Date(),
+      });
+
       sendEmail({
         to: email,
         subject: "Society Admin Account Created",
         html: `<h2>Welcome ${name}</h2><p><b>Email:</b> ${email}</p><p><b>Password:</b> ${password}</p>`,
-      }).catch((err) => console.error("[Mailer] Admin create email failed:", err.message)),
-    ]);
+      }).catch((err) => console.error("[Mailer] Admin create email failed:", err.message));
+    }
 
-    return res.status(201).json({ message: "Admin created successfully", user: admin });
+    // Ensure UserSociety membership is ACTIVE and is_default = true
+    const [userSoc] = await UserSociety.findOrCreate({
+      where: { user_id: adminUser.id, society_id: targetSocietyId },
+      defaults: {
+        user_id: adminUser.id,
+        society_id: targetSocietyId,
+        membership_status: "ACTIVE",
+        is_default: true,
+      },
+    });
+
+    if (userSoc.membership_status !== "ACTIVE" || !userSoc.is_default) {
+      await userSoc.update({ membership_status: "ACTIVE", is_default: true });
+    }
+
+    // Ensure UserSocietyRole has SOCIETY_ADMIN
+    await UserSocietyRole.findOrCreate({
+      where: { user_society_id: userSoc.id, role: "SOCIETY_ADMIN" },
+      defaults: {
+        user_society_id: userSoc.id,
+        role: "SOCIETY_ADMIN",
+      },
+    });
+
+    return res.status(200).json({
+      message: existingUser ? "Admin updated successfully" : "Admin created successfully",
+      user: adminUser,
+    });
   } catch (err) {
-    console.error(err);
+    console.error("createSocietyAdmin error:", err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -3008,8 +3059,30 @@ const addTenantByOwner = async (req, res) => {
     });
     if (!ownerMembership) return res.status(403).json({ message: "Access denied." });
 
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    if (!normalizedEmail || !name || !phone || !password || !move_in_date || !move_out_date) {
+      return res.status(400).json({ message: "Name, email, phone, password, and lease dates are required." });
+    }
+
+    // If the tenant was created but the follow-up document upload failed,
+    // retrying the form should reuse that tenant instead of hitting the
+    // users.email unique constraint and returning an opaque 500.
+    const existingUser = await User.findOne({ where: { email: normalizedEmail } });
+    if (existingUser) {
+      const existingTenantMembership = await FlatMembership.findOne({
+        where: { flat_id, user_id: existingUser.id, role: "TENANT", is_current: true },
+      });
+      if (existingTenantMembership) {
+        return res.status(200).json({
+          message: "Tenant already exists for this flat. Continue with document upload.",
+          tenant: existingUser,
+        });
+      }
+      return res.status(409).json({ message: "A user with this email already exists." });
+    }
+
     const tenant = await User.create({
-      name, email, phone,
+      name: String(name).trim(), email: normalizedEmail, phone: String(phone).trim(),
       password: await bcrypt.hash(password, 8),
       role: "RESIDENT",
       roles: ["RESIDENT"],
@@ -3309,7 +3382,18 @@ const getPendingResidents = async (req, res) => {
       ],
       order: [["id", "DESC"]],
     });
-    res.json(users);
+
+    // Filter out any user who is a SOCIETY_ADMIN or SUPER_ADMIN
+    const filteredUsers = users.filter((u) => {
+      const roles = Array.isArray(u.roles) ? u.roles : [];
+      return (
+        u.role !== "SOCIETY_ADMIN" &&
+        u.role !== "SUPER_ADMIN" &&
+        !roles.includes("SOCIETY_ADMIN") &&
+        !roles.includes("SUPER_ADMIN")
+      );
+    });
+    res.json(filteredUsers);
   } catch (err) {
     console.error("Error in getPendingResidents:", err);
     res.status(500).json({ message: err.message });

@@ -273,9 +273,15 @@ exports.approveResident = async (req, res) => {
     }
 
     // 1. Activate Account with Approval Audit
+    const isSocietyAdmin =
+      resident.role === "SOCIETY_ADMIN" ||
+      (Array.isArray(resident.roles) && resident.roles.includes("SOCIETY_ADMIN"));
+
     resident.approval_status  = "APPROVED";
     resident.status           = "ACTIVE";
-    resident.role             = "RESIDENT";
+    if (!isSocietyAdmin) {
+      resident.role           = "RESIDENT";
+    }
     resident.rejection_reason = null;
     resident.approved_by_user_id = req.user.id;
     resident.approved_by_name = req.user.name || (callerRole === "COMMITTEE_MEMBER" ? "Committee Member" : "Society Admin");
@@ -769,6 +775,7 @@ exports.getTenantHistory = async (req, res) => {
       else statusLabel = "APPROVED";
 
       const owner = ownerMap[flat?.id] || null;
+      const userDocs = user.UserDocument || user.UserDocuments || null;
 
       results.push({
         id: user.id,
@@ -801,8 +808,10 @@ exports.getTenantHistory = async (req, res) => {
         status_label: statusLabel,
         owner_name: owner?.name || null,
         owner_email: owner?.email || null,
-        UserDocuments: user.UserDocument || user.UserDocuments || null,
-        documents: user.UserDocument || user.UserDocuments || null,
+        UserDocuments: userDocs,
+        documents: userDocs,
+        aadhar_url: userDocs?.aadhar_url || null,
+        pan_url: userDocs?.pan_url || null,
       });
     }
 
@@ -898,6 +907,7 @@ exports.getTenantHistory = async (req, res) => {
       if (!isTenant) continue;
 
       const flat = u.Flat;
+      const userDocs = u.UserDocument || u.UserDocuments || null;
       const bName = flat?.Block?.name || flat?.Floor?.Block?.name || "";
       const fNum = flat?.flat_number || "";
       const flatLabel = bName ? `${fNum} - ${bName}` : fNum;
@@ -938,8 +948,10 @@ exports.getTenantHistory = async (req, res) => {
         status_label: statusLabel,
         owner_name: null,
         owner_email: null,
-        UserDocuments: u.UserDocument || u.UserDocuments || null,
-        documents: u.UserDocument || u.UserDocuments || null,
+        UserDocuments: userDocs,
+        documents: userDocs,
+        aadhar_url: userDocs?.aadhar_url || null,
+        pan_url: userDocs?.pan_url || null,
       });
     }
 

@@ -1,6 +1,7 @@
 const UserDocuments = require("../models/UserDocuments");
 const User = require("../models/User");
 const UserSociety = require("../models/UserSociety");
+const FlatMembership = require("../models/FlatMembership");
 const { Op } = require("sequelize");
 
 const verifyUserAccess = async (req, targetUserId) => {
@@ -8,6 +9,24 @@ const verifyUserAccess = async (req, targetUserId) => {
   if (isSuperAdmin) return true;
 
   if (targetUserId === req.user.id) return true;
+
+  // Owners may upload KYC documents for a tenant they just added to their
+  // own flat. This upload is a document permission check only; no GPS or
+  // society geofence is involved.
+  const isResident = req.user.role === "RESIDENT" || req.user.activeRole === "RESIDENT";
+  if (isResident) {
+    const tenantMembership = await FlatMembership.findOne({
+      where: { user_id: targetUserId, role: "TENANT", is_current: true },
+      attributes: ["flat_id"],
+    });
+    if (!tenantMembership) return false;
+
+    const ownerMembership = await FlatMembership.findOne({
+      where: { flat_id: tenantMembership.flat_id, user_id: req.user.id, role: "OWNER", is_current: true },
+      attributes: ["id"],
+    });
+    return Boolean(ownerMembership);
+  }
 
   const isSocietyAdmin = req.user.role === "SOCIETY_ADMIN" || req.user.activeRole === "SOCIETY_ADMIN";
   const isCommittee = req.user.role === "COMMITTEE_MEMBER" || req.user.activeRole === "COMMITTEE_MEMBER";

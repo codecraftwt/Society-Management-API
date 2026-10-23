@@ -23,6 +23,7 @@ router.get("/resident/unassigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "C
 router.get("/resident/check-email", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), checkResidentEmail);
 router.post("/resident/check-email", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), checkResidentEmail);
 router.post("/societies/:societyId/admin", auth, role("SUPER_ADMIN"), createSocietyAdmin);
+router.post("/society-admin", auth, role("SUPER_ADMIN"), createSocietyAdmin);
 
 // Allow Super Admin to create, view, update, and delete residents
 router.post(

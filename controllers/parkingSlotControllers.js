@@ -39,7 +39,8 @@ const createParkingSlots = async (req, res) => {
       return res.status(400).json({ message: "society_id is required" });
     }
 
-    if (!prefix || !start_number || !count || !vehicle_type) {
+    const cleanPrefix = sanitizeText(prefix);
+    if (!cleanPrefix || !start_number || !count || !vehicle_type) {
       return res.status(400).json({ message: "All fields are required" });
     }
     if (!["CAR", "BIKE"].includes(vehicle_type)) {
@@ -54,7 +55,6 @@ const createParkingSlots = async (req, res) => {
       return res.status(400).json({ message: "count must be a positive integer." });
     }
 
-    const cleanPrefix = sanitizeText(prefix);
     const cleanWing = wing ? sanitizeText(wing) : null;
 
     const slotsToCreate = [];
