@@ -6,6 +6,16 @@ const cloudinary = require("../config/cloudinary");
  * Helper to resolve active society_id from authenticated user or Super Admin header
  */
 const getTargetSocietyId = (req) => {
+  // Society Admins/residents/tenants must always use the society encoded in
+  // their authenticated session. A stale x-society-id header or query value
+  // must never let a regular user read another society's events.
+  // `role` can be the account's base role while `activeRole` is the panel
+  // currently selected by a multi-role user. Only the active panel may widen
+  // event visibility to all societies.
+  const activeRole = String(req.user?.activeRole || req.user?.role || "").toUpperCase();
+  const isSuperAdmin = activeRole === "SUPER_ADMIN";
+  if (!isSuperAdmin) return req.user?.society_id || null;
+
   const saHeader = req.headers["x-society-id"];
   if (saHeader && saHeader !== "ALL") {
     return parseInt(saHeader, 10);
@@ -64,6 +74,11 @@ const getResidentEvents = async (req, res) => {
           as: "media",
           attributes: ["id", "media_type", "url", "thumb_url", "sort_order"],
         },
+        {
+          model: Society,
+          as: "society",
+          attributes: ["id", "name"],
+        },
       ],
       order: [
         ["event_date", "ASC"],
@@ -82,6 +97,8 @@ const getResidentEvents = async (req, res) => {
 
       return {
         id: e.id,
+        society_id: e.society_id,
+        society_name: e.Society?.name || e.society?.name || (e.society_id ? `Society #${e.society_id}` : null),
         title: e.title,
         description: e.description,
         event_date: e.event_date,
@@ -409,6 +426,21 @@ const updateEvent = async (req, res) => {
     if (event_time !== undefined) event.event_time = event_time || null;
     if (location !== undefined) event.location = location ? location.trim() : null;
     if (is_active !== undefined) event.is_active = is_active === "false" || is_active === false ? false : true;
+
+    // Super Admin may move an event between societies while editing. The
+    // target is resolved from the validated society header/body scope above;
+    // regular admins can never change ownership of an event.
+    const activeRole = String(req.user?.activeRole || req.user?.role || "").toUpperCase();
+    if (activeRole === "SUPER_ADMIN") {
+      const requestedSocietyId = req.body?.society_id || req.body?.societyId;
+      if (requestedSocietyId || req.headers["x-society-id"]) {
+        const targetSocietyId = getTargetSocietyId(req);
+        if (!targetSocietyId || !Number.isInteger(Number(targetSocietyId))) {
+          return res.status(400).json({ success: false, message: "A valid target society is required" });
+        }
+        event.society_id = Number(targetSocietyId);
+      }
+    }
 
     await event.save();
 

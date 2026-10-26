@@ -49,7 +49,11 @@ const eventRoutes            = require("./routes/eventRoutes");
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+// Registration can include three compressed, base64-encoded images (profile,
+// Aadhaar and PAN). The default 100kb parser limit rejects valid registrations
+// before authControllers.registerResident can upload them to Cloudinary.
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 app.use("/api/auth",           authRoutes);
 app.use("/api/societies",      societyRoutes);

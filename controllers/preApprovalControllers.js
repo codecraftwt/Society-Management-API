@@ -26,6 +26,7 @@ const FlatMembership = require("../models/FlatMembership");
 const { getCurrentISTDate, getCurrentISTMinutes } = require("../utils/istTime");
 const { getShiftTimings, isTimeInShift } = require("../utils/shiftTiming");
 const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
+const { getActiveTenantForFlat } = require("../utils/flatOccupancy");
 const getTodayIST = () => getCurrentISTDate();
 
 /* ── Generate gate pass ── */
@@ -216,10 +217,13 @@ const notifyOnDutyGuard = async (societyId, title, message, actionRoute) => {
       scansPerDay = Number.isInteger(limit) && limit >= 1 ? limit : 2;
     }
 
-    // ✅ Security: Ensure owners can't pre-approve for rented flats
+    // ✅ Security: Ensure owners can't pre-approve while a tenant is actually
+    // staying in the unit. Derive this from the active membership + resident
+    // history instead of the cached Flat.occupancy_status, which can remain
+    // "RENTED" after a tenant has moved out.
     if (req.user.resident_type === "OWNER") {
-      const flat = await Flat.findByPk(flat_id);
-      if (flat && flat.occupancy_status === "RENTED") {
+      const activeTenant = await getActiveTenantForFlat(flat_id);
+      if (activeTenant) {
         return res.status(403).json({
           message: "Owners cannot pre-approve visitors for units that are currently rented to a tenant.",
         });

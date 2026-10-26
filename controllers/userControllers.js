@@ -40,6 +40,7 @@ const {
   isPositiveNumber,
 } = require("../utils/validation");
 const { ensureAssignable, ensureNotRejected } = require("../utils/approvalGuard");
+const { getOccupancyContextForFlats } = require("../utils/flatOccupancy");
 
 async function sendAccountantWelcomeEmail(toEmail, name, password, societyName) {
   if (!transporter) return;
@@ -2172,21 +2173,23 @@ const getMyFlat = async (req, res) => {
     }
 
     // ===
-    // 4. ENRICH: Add tenant info for each flat
-    //    For each flat, find the active TENANT membership and include their details.
+    // 4. ENRICH: Add tenant info + effective occupancy for each flat.
+    //    A moved-out tenant must not keep the flat marked as rented, otherwise
+    //    owners are permanently blocked from generating gate passes.
     // ===
     if (flatsList.length > 0) {
       const allFlatIds = flatsList.map(f => f.flat_id);
-      const tenantMemberships = await FlatMembership.findAll({
-        where: { flat_id: { [Op.in]: allFlatIds }, role: "TENANT", is_current: true },
-        include: [{ model: User, attributes: ["id", "name", "email", "approval_status"] }],
-      });
+      const occupancy = await getOccupancyContextForFlats(allFlatIds);
 
       for (const flat of flatsList) {
-        const tenantM = tenantMemberships.find(m => m.flat_id === flat.flat_id);
-        flat.tenant = tenantM
+        const ctx = occupancy.get(Number(flat.flat_id));
+        if (!ctx) continue;
+
+        const tenantM = ctx.activeTenant;
+        flat.tenant = tenantM && tenantM.User
           ? { id: tenantM.User.id, name: tenantM.User.name, email: tenantM.User.email, approval_status: tenantM.User.approval_status }
           : null;
+        flat.occupancy_status = ctx.occupancyStatus;
       }
     }
 

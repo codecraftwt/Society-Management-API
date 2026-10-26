@@ -128,6 +128,22 @@ beforeAll(async () => {
         if (!gaCols.has("punch_out_distance")) {
             await sequelize.query("ALTER TABLE guard_attendance ADD COLUMN punch_out_distance DECIMAL(10,2) NULL DEFAULT NULL");
         }
+
+        const [notificationRows] = await sequelize.query(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notifications'"
+        );
+        const notificationCols = new Set(notificationRows.map((r) => r.COLUMN_NAME));
+        const notificationColumns = [
+            ["source_event_id", "VARCHAR(191) NULL DEFAULT NULL"],
+            ["push_status", "VARCHAR(20) NULL DEFAULT NULL"],
+            ["push_attempted_at", "DATETIME NULL DEFAULT NULL"],
+            ["push_error", "VARCHAR(255) NULL DEFAULT NULL"],
+        ];
+        for (const [name, definition] of notificationColumns) {
+            if (!notificationCols.has(name)) {
+                await sequelize.query(`ALTER TABLE notifications ADD COLUMN ${name} ${definition}`);
+            }
+        }
     } catch (err) {
         // Table might not exist yet or query failed
     }

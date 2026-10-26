@@ -29,7 +29,7 @@ exports.getBlocks = async (req, res) => {
 
     const blocks = await Block.findAll({
       where: { society_id: societyId },
-      attributes: ["id", "name"],
+      attributes: ["id", "name", "property_type"],
       order: [["name", "ASC"]],
     });
 

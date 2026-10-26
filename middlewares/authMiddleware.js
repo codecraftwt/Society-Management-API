@@ -28,9 +28,15 @@ module.exports = async (req, res, next) => {
       return res.status(401).json({ message: "Invalid token — user not found" });
     }
 
-    // Check if user is a global SUPER_ADMIN
+    // `user.role`/global roles describe the account, but the token's
+    // activeRole describes the panel currently selected by the user. A user
+    // who switched to Resident or Society Admin must not retain global event
+    // visibility just because the account also has SUPER_ADMIN access.
     const globalRoles = Array.isArray(user.roles) && user.roles.length > 0 ? user.roles : [user.role];
-    const isSuperAdmin = user.role === "SUPER_ADMIN" || globalRoles.includes("SUPER_ADMIN");
+    const tokenActiveRole = String(decoded.activeRole || "").toUpperCase();
+    const isSuperAdmin = tokenActiveRole
+      ? tokenActiveRole === "SUPER_ADMIN"
+      : (user.role === "SUPER_ADMIN" || globalRoles.includes("SUPER_ADMIN"));
 
     if (isSuperAdmin) {
       const headerSocId = req.headers["x-society-id"];

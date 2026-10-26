@@ -6,7 +6,15 @@ const {
   User,
 } = require("../models");
 const { getCurrentISTDate, getCurrentISTDateTime } = require("../utils/istTime");
-const { getShiftTimings, isTimeInShift } = require("../utils/shiftTiming");
+const { getShiftTimings } = require("../utils/shiftTiming");
+const {
+  addDays,
+  getShiftOccurrenceAt,
+} = require("../utils/guardShiftOccurrence");
+const {
+  isGuardAttendanceAutomationEnabled,
+  getGuardAttendanceAutomationConfig,
+} = require("../utils/guardAttendanceAutomation");
 const cloudinary = require("../config/cloudinary");
 const { buildProfilePictureUrl } = require("../utils/profilePicture");
 
@@ -51,6 +59,34 @@ const buildSelfieUrl = (publicId) => {
   const cloudName = process.env.CLOUD_NAME || cloudinary.config().cloud_name || "";
   if (!cloudName) return null;
   return `https://res.cloudinary.com/${cloudName}/image/upload/f_auto,q_auto,w_400,h_400,c_fill/${publicId}`;
+};
+
+const removeUploadedFile = (file) => {
+  if (file?.filename) {
+    cloudinary.uploader.destroy(file.filename, { resource_type: "image" }).catch(() => {});
+  }
+};
+
+const getShiftContext = async (guardId, societyId, timings, at = new Date()) => {
+  const today = getCurrentISTDate();
+  const shifts = await GuardShift.findAll({
+    where: {
+      guard_id: guardId,
+      society_id: societyId,
+      start_date: { [Op.lte]: today },
+      end_date: { [Op.gte]: addDays(today, -1) },
+    },
+    order: [["updatedAt", "DESC"]],
+  });
+
+  const occurrences = shifts
+    .map((shift) => ({
+      shift,
+      occurrence: getShiftOccurrenceAt(shift, timings, at),
+    }))
+    .filter((entry) => entry.occurrence);
+
+  return { shifts, occurrences };
 };
 
 /* ─────────────────────────────────────────────────────────────────
@@ -104,52 +140,49 @@ const punchIn = handle(async (req, res) => {
     });
   }
 
-  // ── 2. Exactly one active shift for today ──
+  // ── 2. Exactly one active shift occurrence ──
   const today = getCurrentISTDate();
   const timings = await getShiftTimings(societyId);
-
-  const todayShifts = await GuardShift.findAll({
-    where: {
-      guard_id: guardId,
-      society_id: societyId,
-      start_date: { [Op.lte]: today },
-      end_date: { [Op.gte]: today },
-    },
-  });
+  const now = new Date();
+  const { shifts: todayShifts, occurrences } = await getShiftContext(
+    guardId,
+    societyId,
+    timings,
+    now
+  );
 
   if (todayShifts.length === 0) {
-    if (req.file?.filename) {
-      cloudinary.uploader.destroy(req.file.filename, { resource_type: "image" }).catch(() => {});
-    }
+    removeUploadedFile(req.file);
     return res.status(403).json({
       message: "No shift is assigned to you for today.",
       code: "NO_SHIFT_TODAY",
     });
   }
 
-  if (todayShifts.length > 1) {
-    if (req.file?.filename) {
-      cloudinary.uploader.destroy(req.file.filename, { resource_type: "image" }).catch(() => {});
-    }
+  if (occurrences.length > 1) {
+    removeUploadedFile(req.file);
     return res.status(409).json({
-      message: "You have more than one shift covering today. Please contact admin to fix overlapping shifts.",
+      message: "You have more than one active shift occurrence. Please contact admin to fix overlapping shifts.",
       code: "MULTIPLE_SHIFTS",
     });
   }
 
-  const myShift = todayShifts[0];
-
   // ── 3. Verify shift window is currently active ──
-  if (!isTimeInShift(timings, myShift.shift_type)) {
-    if (req.file?.filename) {
-      cloudinary.uploader.destroy(req.file.filename, { resource_type: "image" }).catch(() => {});
-    }
-    const t = timings[myShift.shift_type] || {};
+  if (occurrences.length === 0) {
+    removeUploadedFile(req.file);
+    const displayShift =
+      todayShifts.find(
+        (shift) =>
+          String(shift.start_date) <= today && String(shift.end_date) >= today
+      ) || todayShifts[0];
+    const t = timings[displayShift.shift_type] || {};
     return res.status(403).json({
       message: `You are outside your shift window (${t.start || "?"} – ${t.end || "?"}).`,
       code: "OUTSIDE_SHIFT_WINDOW",
     });
   }
+
+  const { shift: myShift, occurrence } = occurrences[0];
 
   // ── 4. Society location must be configured ──
   const society = await Society.findByPk(societyId, {
@@ -220,15 +253,19 @@ const punchIn = handle(async (req, res) => {
   const selfiePublicId = req.file.filename;
   const selfieUrl = buildSelfieUrl(selfiePublicId);
 
-  // ── 8. No existing attendance for same guard + shift + date ──
+  // ── 8. No existing attendance for same guard + shift + occurrence ──
   const existing = await GuardAttendance.findOne({
-    where: { guard_id: guardId, shift_id: myShift.id, attendance_date: today },
+    where: {
+      guard_id: guardId,
+      shift_id: myShift.id,
+      attendance_date: occurrence.occurrence_date,
+    },
   });
 
   if (existing) {
     cloudinary.uploader.destroy(selfiePublicId, { resource_type: "image" }).catch(() => {});
     return res.status(409).json({
-      message: "You have already punched in for this shift today.",
+      message: "You have already punched in for this shift occurrence.",
       code: "ALREADY_PUNCHED_IN",
       attendance: existing,
     });
@@ -239,8 +276,8 @@ const punchIn = handle(async (req, res) => {
     guard_id: guardId,
     shift_id: myShift.id,
     society_id: societyId,
-    attendance_date: today,
-    punch_in: new Date(),
+    attendance_date: occurrence.occurrence_date,
+    punch_in: now,
     punch_in_lat: lat,
     punch_in_lng: lng,
     punch_in_accuracy: !isNaN(accuracy) ? accuracy : null,
@@ -248,6 +285,10 @@ const punchIn = handle(async (req, res) => {
     punch_in_radius: radiusMetres,
     punch_in_selfie_public_id: selfiePublicId,
     punch_in_selfie_url: selfieUrl,
+    punch_out_source: null,
+    ...(isGuardAttendanceAutomationEnabled()
+      ? { scheduled_end_at: occurrence.end }
+      : {}),
     status: "PUNCHED_IN",
   });
 
@@ -286,16 +327,20 @@ const punchOut = handle(async (req, res) => {
     return res.status(403).json({ message: "You are not assigned to any society." });
   }
 
-  const today = getCurrentISTDate();
-
-  // ── 1. Must have an existing PUNCHED_IN record for today ──
+  // ── 1. Must have an existing open PUNCHED_IN record ──
   const attendance = await GuardAttendance.findOne({
-    where: { guard_id: guardId, society_id: societyId, attendance_date: today, status: "PUNCHED_IN" },
+    where: {
+      guard_id: guardId,
+      society_id: societyId,
+      status: "PUNCHED_IN",
+      punch_out: { [Op.is]: null },
+    },
+    order: [["punch_in", "DESC"]],
   });
 
   if (!attendance) {
     return res.status(404).json({
-      message: "No active punch-in found for today. Please punch in first.",
+      message: "No active punch-in found. Please punch in first.",
       code: "NO_ACTIVE_PUNCH_IN",
     });
   }
@@ -351,26 +396,144 @@ const punchOut = handle(async (req, res) => {
 
   // ── 5. Compute worked_minutes ──
   const punchOutTime = new Date();
+  // Manual punch-out remains valid during the post-shift response window.
+  // Once the automation deadline passes, only the system may close it.
+  const punchOutDeadline = attendance.auto_punch_out_due_at || attendance.scheduled_end_at;
+  if (punchOutDeadline && punchOutTime >= new Date(punchOutDeadline)) {
+    return res.status(403).json({
+      message: "The response window has ended and attendance is being closed automatically. Please refresh.",
+      code: "SHIFT_ENDED_AUTO_PUNCH_OUT",
+    });
+  }
   const punchInTime = new Date(attendance.punch_in);
   const workedMinutes = Math.max(0, Math.round((punchOutTime - punchInTime) / 60000));
 
-  // ── 6. Update the row ──
-  await attendance.update({
-    punch_out: punchOutTime,
-    punch_out_lat: lat,
-    punch_out_lng: lng,
-    punch_out_accuracy: !isNaN(accuracy) ? accuracy : null,
-    punch_out_distance: Math.round(distanceMetres * 100) / 100,
-    ...(selfiePublicId ? { punch_out_selfie_public_id: selfiePublicId, punch_out_selfie_url: selfieUrl } : {}),
-    worked_minutes: workedMinutes,
-    status: "PUNCHED_OUT",
-  });
+  // ── 6. Conditionally update the row ──
+  const [affected] = await GuardAttendance.update(
+    {
+      punch_out: punchOutTime,
+      punch_out_lat: lat,
+      punch_out_lng: lng,
+      punch_out_accuracy: !isNaN(accuracy) ? accuracy : null,
+      punch_out_distance: Math.round(distanceMetres * 100) / 100,
+      ...(selfiePublicId
+        ? { punch_out_selfie_public_id: selfiePublicId, punch_out_selfie_url: selfieUrl }
+        : {}),
+      worked_minutes: workedMinutes,
+      punch_out_source: "GUARD",
+      status: "PUNCHED_OUT",
+    },
+    {
+      where: {
+        id: attendance.id,
+        guard_id: guardId,
+        society_id: societyId,
+        status: "PUNCHED_IN",
+        punch_out: { [Op.is]: null },
+      },
+    }
+  );
+
+  if (!affected) {
+    if (selfiePublicId) {
+      cloudinary.uploader.destroy(selfiePublicId, { resource_type: "image" }).catch(() => {});
+    }
+    return res.status(409).json({
+      message: "This attendance record was already closed. Please refresh.",
+      code: "ATTENDANCE_ALREADY_CLOSED",
+    });
+  }
+
+  await attendance.reload();
 
   return res.status(200).json({
     success: true,
     message: "Punch-out recorded successfully.",
     attendance: attendance.toJSON(),
     worked_minutes: workedMinutes,
+    server_now: getCurrentISTDateTime(),
+    timezone: "Asia/Kolkata",
+  });
+});
+
+/* ─────────────────────────────────────────────────────────────────
+   ACKNOWLEDGE SHIFT END (ONE 10-MINUTE HOLD)
+   ───────────────────────────────────────────────────────────────── */
+
+const acknowledgeShiftEnd = handle(async (req, res) => {
+  const guardId = req.user.id;
+  let societyId = req.user.society_id;
+  const { id } = req.params;
+  const { holdMinutes } = getGuardAttendanceAutomationConfig();
+
+  if (!societyId) {
+    const guard = await User.findByPk(guardId, { attributes: ["society_id"] });
+    societyId = guard?.society_id ?? null;
+  }
+
+  if (!societyId) {
+    return res.status(403).json({ message: "You are not assigned to any society." });
+  }
+
+  const now = new Date();
+  const newDueAt = new Date(now.getTime() + holdMinutes * 60 * 1000);
+
+  const [affected] = await GuardAttendance.update(
+    {
+      acknowledged_at: now,
+      auto_punch_out_due_at: newDueAt,
+    },
+    {
+      where: {
+        id,
+        guard_id: guardId,
+        society_id: societyId,
+        status: "PUNCHED_IN",
+        punch_out: { [Op.is]: null },
+        shift_end_notified_at: { [Op.ne]: null },
+        acknowledged_at: { [Op.is]: null },
+        auto_punch_out_due_at: { [Op.gt]: now },
+      },
+    }
+  );
+
+  if (!affected) {
+    const attendance = await GuardAttendance.findOne({
+      where: { id, guard_id: guardId, society_id: societyId },
+    });
+
+    if (!attendance) {
+      return res.status(404).json({ message: "Attendance record not found.", code: "NOT_FOUND" });
+    }
+    if (attendance.status === "PUNCHED_OUT" || attendance.punch_out) {
+      return res.status(409).json({
+        message: "This attendance record is already closed.",
+        code: "ATTENDANCE_ALREADY_CLOSED",
+      });
+    }
+    if (attendance.acknowledged_at) {
+      return res.status(409).json({
+        message: "You have already used the hold for this shift.",
+        code: "ALREADY_ACKNOWLEDGED",
+      });
+    }
+    if (!attendance.shift_end_notified_at || !attendance.auto_punch_out_due_at) {
+      return res.status(409).json({
+        message: "The shift-end notification has not been sent yet.",
+        code: "NOT_NOTIFIED",
+      });
+    }
+    return res.status(409).json({
+      message: "The response window has already passed.",
+      code: "DEADLINE_PASSED",
+    });
+  }
+
+  const attendance = await GuardAttendance.findByPk(id);
+  return res.status(200).json({
+    success: true,
+    message: "Hold confirmed. You have 10 more minutes to punch out.",
+    attendance: attendance.toJSON(),
     server_now: getCurrentISTDateTime(),
     timezone: "Asia/Kolkata",
   });
@@ -385,15 +548,25 @@ const getTodayAttendance = handle(async (req, res) => {
   const societyId = req.user.society_id;
   const today = getCurrentISTDate();
 
-  const [attendance, society] = await Promise.all([
-    GuardAttendance.findOne({
-      where: { guard_id: guardId, society_id: societyId, attendance_date: today },
+  const [records, society] = await Promise.all([
+    GuardAttendance.findAll({
+      where: {
+        guard_id: guardId,
+        society_id: societyId,
+        attendance_date: { [Op.in]: [addDays(today, -1), today] },
+      },
       include: [{ model: GuardShift, as: "shift", attributes: ["shift_type", "start_date", "end_date"] }],
+      order: [["punch_in", "DESC"]],
     }),
     societyId
       ? Society.findByPk(societyId, { attributes: ["latitude", "longitude", "location_radius"] })
       : null,
   ]);
+
+  const attendance =
+    records.find((record) => record.status === "PUNCHED_IN" && !record.punch_out) ||
+    records.find((record) => String(record.attendance_date) === today) ||
+    null;
 
   return res.status(200).json({
     success: true,
@@ -541,6 +714,7 @@ const manualCorrection = handle(async (req, res) => {
   if (punch_in) updates.punch_in = new Date(punch_in);
   if (punch_out) {
     updates.punch_out = new Date(punch_out);
+    updates.punch_out_source = "ADMIN";
     updates.status = "PUNCHED_OUT";
     const pIn = new Date(punch_in || attendance.punch_in);
     const pOut = new Date(punch_out);
@@ -561,6 +735,7 @@ const manualCorrection = handle(async (req, res) => {
 module.exports = {
   punchIn,
   punchOut,
+  acknowledgeShiftEnd,
   getTodayAttendance,
   listAttendance,
   getTodaySummary,

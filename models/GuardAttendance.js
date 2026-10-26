@@ -108,6 +108,54 @@ const GuardAttendance = sequelize.define(
       defaultValue: null,
     },
 
+    scheduled_end_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      defaultValue: null,
+    },
+
+    auto_punch_out_due_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      defaultValue: null,
+    },
+
+    shift_end_notified_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      defaultValue: null,
+    },
+
+    acknowledged_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      defaultValue: null,
+    },
+
+    is_auto_punch_out: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
+
+    auto_punch_out_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      defaultValue: null,
+    },
+
+    auto_punch_out_reason: {
+      type: DataTypes.STRING(50),
+      allowNull: true,
+      defaultValue: null,
+    },
+
+    punch_out_source: {
+      type: DataTypes.STRING(20),
+      allowNull: true,
+      defaultValue: null,
+    },
+
     punch_out_lat: {
       type: DataTypes.DECIMAL(10, 7),
       allowNull: true,
@@ -191,6 +239,18 @@ const GuardAttendance = sequelize.define(
       {
         name: "idx_ga_society_date",
         fields: ["society_id", "attendance_date"],
+      },
+      {
+        name: "idx_ga_status_due",
+        fields: ["status", "auto_punch_out_due_at"],
+      },
+      {
+        name: "idx_ga_status_date",
+        fields: ["status", "attendance_date"],
+      },
+      {
+        name: "idx_ga_shift_end_notice",
+        fields: ["shift_end_notified_at", "scheduled_end_at"],
       },
     ],
   }

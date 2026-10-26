@@ -96,6 +96,25 @@ const getActiveShiftGuard = async (society_id) => {
   return active ? active.guard_id : null;
 };
 
+// A society may have more than one guard assigned to the same shift window.
+// Checking the first active guard globally can incorrectly reject another
+// guard who is also on duty, so status mutations must verify the caller's own
+// assignment.
+const isGuardOnActiveShift = async (guardId, society_id) => {
+  const today = getTodayIST();
+  const timings = await getShiftTimings(society_id);
+  const minutes = getCurrentISTMinutes();
+  const shifts = await GuardShift.findAll({
+    where: {
+      guard_id: guardId,
+      society_id,
+      start_date: { [Op.lte]: today },
+      end_date: { [Op.gte]: today },
+    },
+  });
+  return shifts.some((shift) => isTimeInShift(timings, shift.shift_type, minutes));
+};
+
 /* helper — every association a parcel needs to be rendered with.
    Shared by the single-row fetch and the list query so the admin, guard and
    resident payloads stay identical. */
@@ -139,6 +158,9 @@ const createParcel = async (req, res) => {
   try {
     const { flat_id, courier_name } = req.body;
     const society_id = req.user.society_id;
+    // Notification service uses camelCase while parcel/database fields use
+    // snake_case. Keep one scoped value for both paths.
+    const societyId = society_id;
     const activeRole = req.user.activeRole ?? req.user.role;
 
     let finalFlatId = flat_id;
@@ -231,8 +253,9 @@ const createParcel = async (req, res) => {
     /* ── GUARD creates direct AT_GATE parcel ── */
     if (activeRole === "GUARD") {
       const activeGuardId = await getActiveShiftGuard(society_id);
+      const onActiveShift = await isGuardOnActiveShift(req.user.id, society_id);
 
-      if (activeGuardId !== req.user.id) {
+      if (!onActiveShift) {
         return res.status(403).json({
           message:
             "You are not on an active shift right now. Please check your shift schedule.",
@@ -447,9 +470,9 @@ const updateParcelStatus = async (req, res) => {
 
     /* ── guard shift check ── */
     if (activeRole === "GUARD") {
-      const activeGuardId = await getActiveShiftGuard(parcel.society_id);
+      const onActiveShift = await isGuardOnActiveShift(req.user.id, parcel.society_id);
 
-      if (activeGuardId !== req.user.id) {
+      if (!onActiveShift) {
         return res.status(403).json({
           message:
             "You are not on an active shift right now. Please contact your admin.",

@@ -8,6 +8,7 @@ const uploadGuardSelfie = require("../middlewares/uploadGuardSelfie");
 const {
   punchIn,
   punchOut,
+  acknowledgeShiftEnd,
   getTodayAttendance,
   listAttendance,
   getTodaySummary,
@@ -33,7 +34,9 @@ router.post(
   punchOut
 );
 
-// Guard views own today's record
+router.post("/:id/acknowledge", auth, role("GUARD"), acknowledgeShiftEnd);
+
+// Guard views own current record (includes an open overnight occurrence)
 router.get("/today", auth, role("GUARD"), getTodayAttendance);
 
 /* ── Admin / Committee views ── */

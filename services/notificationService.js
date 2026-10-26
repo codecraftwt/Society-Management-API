@@ -147,8 +147,7 @@ const sendNotification = async ({
       return normalizeNotification(createdRecord);
     }
   } else {
-    // MySQL store
-    const row = await Notification.create({
+    const defaults = {
       title,
       message,
       type,
@@ -159,7 +158,24 @@ const sendNotification = async ({
       receiver_role: receiverRole,
       user_id: senderUserId,
       is_read: false,
-    });
+      source_event_id: sourceEventId || null,
+    };
+
+    const [row, created] = sourceEventId
+      ? await Notification.findOrCreate({
+          where: {
+            source_event_id: sourceEventId,
+            receiver_user_id: receiverUserId,
+            type,
+          },
+          defaults,
+        })
+      : [await Notification.create(defaults), true];
+
+    if (!created) {
+      return normalizeNotification(row.toJSON());
+    }
+
     createdRecord = row.toJSON();
     recordId = row.id;
   }
@@ -187,6 +203,8 @@ const sendNotification = async ({
   }
 
   // 4. FCM Push Delivery
+  let pushResult = { status: "SKIPPED", error: "No FCM token" };
+  let pushAttemptedAt = null;
   try {
     let token = fcmToken;
     if (!token) {
@@ -204,12 +222,31 @@ const sendNotification = async ({
         action_route: actionRoute ? String(actionRoute) : "",
         route: actionRoute ? String(actionRoute) : "",
       };
-      sendPushNotification(token, title, message, pushData).catch((pushErr) => {
-        console.warn("[NotificationService] FCM push delivery failed:", pushErr.message);
-      });
+      pushAttemptedAt = new Date();
+      pushResult = await sendPushNotification(token, title, message, pushData);
+      if (pushResult.status === "FAILED") {
+        console.warn("[NotificationService] FCM push delivery failed:", pushResult.error);
+      }
     }
   } catch (fcmErr) {
+    pushResult = { status: "FAILED", error: fcmErr.message };
     console.error("[NotificationService] Push lookup error:", fcmErr.message);
+  }
+
+  if (store === "mysql" && recordId) {
+    try {
+      await Notification.update(
+        {
+          push_status: pushResult.status,
+          push_attempted_at: pushAttemptedAt,
+          push_error: pushResult.error ? String(pushResult.error).slice(0, 500) : null,
+        },
+        { where: { id: recordId } }
+      );
+      normalized.push_status = pushResult.status;
+    } catch (pushUpdateErr) {
+      console.warn("[NotificationService] Push status update failed:", pushUpdateErr.message);
+    }
   }
 
   return normalized;
@@ -289,47 +326,10 @@ const sendBulkNotifications = async (notifications = []) => {
       }
     }
   } else {
-    // MySQL bulk create
-    const validItems = notifications.filter((n) => n.receiverUserId);
-    const rowsToCreate = validItems.map((n) => ({
-      title: n.title,
-      message: n.message,
-      type: n.type || "GENERAL",
-      action_type: n.actionType || null,
-      action_route: n.actionRoute || null,
-      society_id: n.societyId,
-      receiver_user_id: n.receiverUserId,
-      receiver_role: n.receiverRole || null,
-      user_id: n.senderUserId || null,
-      is_read: false,
-    }));
-
-    const createdRows = await Notification.bulkCreate(rowsToCreate);
-
-    for (let i = 0; i < createdRows.length; i++) {
-      const row = createdRows[i];
-      const item = validItems[i];
-      const normalized = normalizeNotification(row.toJSON());
-      results.push(normalized);
-
-      const dedupeKey = item.sourceEventId || `${item.type}:${row.id}:${item.receiverUserId}`;
-      if (!isDuplicateTransport(dedupeKey)) {
-        if (global.io) {
-          global.io.to(`user_${item.receiverUserId}`).emit("new_notification", {
-            ...normalized,
-            ...(item.extraData || {}),
-            id: String(row.id),
-          });
-        }
-        if (item.fcmToken) {
-          sendPushNotification(item.fcmToken, item.title, item.message, {
-            ...(item.extraData || {}),
-            notification_id: String(row.id),
-            id: String(row.id),
-            route: item.actionRoute || "",
-          }).catch(() => null);
-        }
-      }
+    for (const item of notifications) {
+      if (!item.receiverUserId) continue;
+      const result = await sendNotification(item);
+      if (result) results.push(result);
     }
   }
 

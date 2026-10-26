@@ -18,8 +18,10 @@ router.get("/", authMiddleware, getResidentEvents);
 // Admin event list
 router.get("/admin", authMiddleware, checkPermission("events", "view"), getAdminEvents);
 
-// Event detail
-router.get("/:id", authMiddleware, checkPermission("events", "view"), getEventById);
+// Event detail is part of the resident event-reading flow, just like the
+// resident list above. The controller still enforces society scope; create,
+// edit, delete, and the admin list remain permission-protected below.
+router.get("/:id", authMiddleware, getEventById);
 
 // Create event
 router.post("/", authMiddleware, checkPermission("events", "create"), uploadEventMedia, createEvent);

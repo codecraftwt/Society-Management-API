@@ -289,8 +289,7 @@ sequelize
       if (db.CleaningStaffPass) await db.CleaningStaffPass.sync({ alter: true });
       if (db.CleaningStaffAttendance) await db.CleaningStaffAttendance.sync({ alter: true });
       if (db.Parcel) await db.Parcel.sync({ alter: true });
-      if (db.GuardAttendance) await db.GuardAttendance.sync({ alter: true });
-      console.log("[DB Migration] cleaning_staff, parcel & guard_attendance tables synced successfully");
+      console.log("[DB Migration] cleaning_staff & parcel tables synced successfully");
     } catch (err) {
       console.log("[DB Migration] Note syncing tables:", err.message);
     }
@@ -848,6 +847,7 @@ sequelize
       // (emails + in-app notification + socket + FCM push)
       require("./jobs/leaseReminderCron");
       console.log("[Jobs] Lease reminder cron registered.");
+      require("./jobs/guardAttendanceAutomation").startGuardAttendanceAutomationJob();
     });
   })
   .catch((err) => console.error("DB Sync Error:", err));

@@ -4,16 +4,17 @@ const User = require("../models/User");
 const { Op } = require("sequelize");
 const {
   getCurrentISTDate,
-  getCurrentISTMinutes,
   getCurrentISTDateTime,
 } = require("../utils/istTime");
 const {
   SHIFT_TYPES,
   getShiftTimings,
-  getCurrentShiftTypeFromTimings,
-  isTimeInShift,
   validateTimingsConfig,
 } = require("../utils/shiftTiming");
+const {
+  addDays,
+  getShiftOccurrenceAt,
+} = require("../utils/guardShiftOccurrence");
 
 /* ── Date overlap check: true if [aStart..aEnd] overlaps [bStart..bEnd] ── */
 const datesOverlap = (aStart, aEnd, bStart, bEnd) =>
@@ -160,24 +161,40 @@ const getMyShift = async (req, res) => {
     }
 
     const timings = societyId ? await getShiftTimings(societyId) : {};
-    const minutes = getCurrentISTMinutes();
+    const now = new Date();
+    const activeOccurrences = shifts
+      .map((shift) => ({ shift, occurrence: getShiftOccurrenceAt(shift, timings, now) }))
+      .filter((entry) => entry.occurrence);
 
-    let shift = shifts[0];
-    for (const s of shifts) {
-      if (s.shift_type && isTimeInShift(timings, s.shift_type, minutes)) {
-        shift = s;
-        break;
-      }
+    if (activeOccurrences.length > 1) {
+      return res.status(409).json({
+        message: "More than one shift occurrence is active. Please contact admin to fix overlapping shifts.",
+        code: "MULTIPLE_ACTIVE_SHIFTS",
+      });
     }
 
+    const selected =
+      activeOccurrences[0] ||
+      shifts
+        .filter((shift) => String(shift.start_date) <= today && String(shift.end_date) >= today)
+        .map((shift) => ({ shift, occurrence: null }))[0] ||
+      null;
+
+    if (!selected) {
+      return res.json(null);
+    }
+
+    const { shift, occurrence } = selected;
     const t = timings[shift.shift_type] || {};
-    const startTime = t.start || "00:00";
-    const endTime = t.end || "00:00";
+    const startTime = occurrence?.start_time || t.start || "00:00";
+    const endTime = occurrence?.end_time || t.end || "00:00";
+    const attendanceDate = occurrence?.occurrence_date || today;
 
     const { GuardAttendance } = require("../models");
     const attendanceWhere = {
       guard_id: guardId,
-      attendance_date: today,
+      shift_id: shift.id,
+      attendance_date: attendanceDate,
     };
     if (societyId) {
       attendanceWhere.society_id = societyId;
@@ -189,10 +206,13 @@ const getMyShift = async (req, res) => {
 
     return res.json({
       ...shift.toJSON(),
-      isOnDuty: isTimeInShift(timings, shift.shift_type, minutes),
+      isOnDuty: Boolean(occurrence),
       start_time: startTime,
       end_time: endTime,
       window: `${startTime} - ${endTime}`,
+      occurrence_date: attendanceDate,
+      occurrence_start_at: occurrence?.start || null,
+      occurrence_end_at: occurrence?.end || null,
       attendance: attendance ? attendance.toJSON() : null,
       server_now: getCurrentISTDateTime(),
       timezone: "Asia/Kolkata",

@@ -9,6 +9,7 @@ const Block = require("../models/Block");
 const { ensureAssignable } = require("../utils/approvalGuard");
 const Floor = require("../models/Floor");
 const User = require("../models/User");
+const { isLeaseCurrent } = require("../utils/flatOccupancy");
 
 /* ─────────────────────────────────────────
    HELPERS
@@ -19,7 +20,7 @@ async function recalcOccupancyStatus(flatId) {
   });
 
   const tenantStaying = active.some(
-    (m) => m.role === "TENANT" && m.is_staying
+    (m) => m.role === "TENANT" && m.is_staying && isLeaseCurrent(m.move_out_date)
   );
   const ownerStaying = active.some(
     (m) => m.role === "OWNER" && m.is_staying
@@ -38,9 +39,9 @@ const FLAT_INCLUDE = [
     model: Floor,
     required: false,
     attributes: ["id", "floor_number"],
-    include: [{ model: Block, required: false, attributes: ["id", "name"] }],
+    include: [{ model: Block, required: false, attributes: ["id", "name", "society_id"] }],
   },
-  { model: Block, required: false, attributes: ["id", "name"] },
+  { model: Block, required: false, attributes: ["id", "name", "society_id"] },
 ];
 
 /* ─────────────────────────────────────────

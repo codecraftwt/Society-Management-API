@@ -38,10 +38,12 @@ if (!admin.apps.length) {
 const isPushEnabled = () => admin.apps.length > 0;
 
 const sendPushNotification = async (fcmToken, title, body, data = {}) => {
-  if (!fcmToken) return;
+  if (!fcmToken) {
+    return { status: "SKIPPED", error: "No FCM token" };
+  }
   if (!isPushEnabled()) {
-    console.warn(`⚠️  Push skipped (no service account): "${title}"`);
-    return;
+    console.warn(`??  Push skipped (no service account): "${title}"`);
+    return { status: "SKIPPED", error: "Push notifications disabled" };
   }
 
   const stringifiedData = {};
@@ -113,9 +115,10 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
 
   try {
     const response = await admin.messaging().send(message);
-    console.log("✅ Push Notification Sent:", response);
+    console.log("? Push Notification Sent:", response);
+    return { status: "SENT", error: null };
   } catch (error) {
-    console.error("❌ Push Notification Error:", error.message);
+    console.error("? Push Notification Error:", error.message);
     const isInvalidToken =
       error.code === 'messaging/registration-token-not-registered' ||
       error.code === 'messaging/invalid-registration-token' ||
@@ -126,6 +129,7 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
         await User.update({ fcm_token: null }, { where: { fcm_token: fcmToken } });
       } catch (dbError) {}
     }
+    return { status: "FAILED", error: String(error.message || error.code || "Push failed") };
   }
 };
 

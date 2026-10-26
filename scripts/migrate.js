@@ -12,6 +12,20 @@ const fs = require("fs");
 const path = require("path");
 
 const MIGRATIONS_DIR = path.resolve(__dirname, "../migrations");
+const MIGRATION_LOCK_NAME = "society_migrations_runner";
+
+async function acquireMigrationLock(conn) {
+  const [[row]] = await conn.query("SELECT GET_LOCK(?, 0) AS acquired", [MIGRATION_LOCK_NAME]);
+  if (Number(row?.acquired) !== 1) {
+    throw new Error("Another migration process is already running. Try again after it finishes.");
+  }
+}
+
+async function releaseMigrationLock(conn) {
+  try {
+    await conn.query("SELECT RELEASE_LOCK(?)", [MIGRATION_LOCK_NAME]);
+  } catch (_) {}
+}
 
 async function getConnection() {
   return await mysql.createConnection({
@@ -64,6 +78,7 @@ async function run() {
   const conn = await getConnection();
 
   try {
+    await acquireMigrationLock(conn);
     await ensureMigrationTable(conn);
     const appliedMap = await getAppliedMigrations(conn);
 
@@ -114,6 +129,7 @@ async function run() {
 
     console.log("\n[Migrate] Migration process finished successfully.");
   } finally {
+    await releaseMigrationLock(conn);
     await conn.end();
   }
 }

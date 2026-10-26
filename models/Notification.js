@@ -22,10 +22,37 @@ const Notification = sequelize.define("Notification", {
 
   receiver_role: DataTypes.STRING,
 
-  receiver_user_id: DataTypes.INTEGER
+  receiver_user_id: DataTypes.INTEGER,
+
+  source_event_id: {
+    type: DataTypes.STRING(191),
+    allowNull: true,
+    defaultValue: null
+  },
+
+  push_status: {
+    type: DataTypes.STRING(20),
+    allowNull: true,
+    defaultValue: null
+  },
+
+  push_attempted_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    defaultValue: null
+  },
+
+  push_error: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+    defaultValue: null
+  }
 
 }, {
-  tableName: "notifications"
+  tableName: "notifications",
+  // Notification schema changes are owned by migrations/003_guard_attendance_automation.js.
+  // Keeping this index here makes sequelize.sync() try to create it before the
+  // migration has added source_event_id, which prevents the API from starting.
 });
 
 module.exports = Notification;
