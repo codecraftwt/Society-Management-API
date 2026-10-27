@@ -97,12 +97,11 @@ const addMinutes = (timeStr, minutes) => {
   return date.toTimeString().split(" ")[0];
 };
 
-const getUserFlatId = async (userId) => {
-  const primaryFlat = await Flat.findOne({ where: { resident_id: userId } });
-  if (primaryFlat) return primaryFlat.id;
-  const familyMember = await HouseHoldMember.findOne({ where: { user_id: userId } });
-  if (familyMember) return familyMember.flat_id;
-  return null;
+const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
+
+const getUserFlatId = async (userId, societyId = null) => {
+  const ids = await getUserAuthorizedFlatIds(userId, societyId);
+  return ids.length > 0 ? ids[0] : null;
 };
 
 const paymentExpiresAt = () => {
@@ -145,8 +144,12 @@ const notifyResident = async (userId, title, msg, societyId) => {
 ═════════════════════════════════════════ */
 exports.getAllAmenities = async (req, res) => {
   try {
+    const requestedSocietyId = req.query.societyId || req.query.society_id;
+    const societyId = req.user?.activeRole === "SUPER_ADMIN"
+      ? (requestedSocietyId && requestedSocietyId !== "ALL" ? Number(requestedSocietyId) : null)
+      : req.user.society_id;
     const amenities = await Amenity.findAll({
-      where: { society_id: req.user.society_id },
+      where: societyId ? { society_id: societyId } : {},
       attributes: [
         "id", "name", "icon", "type", "booking_type",
         "rate_per_hour", "opening_time", "closing_time",
@@ -361,7 +364,7 @@ exports.createBooking = async (req, res) => {
       }));
     }
 
-    const flatId = await getUserFlatId(userId);
+    const flatId = await getUserFlatId(userId, societyId);
 
     const adminUser = await User.findOne({
       where: { society_id: societyId, role: "SOCIETY_ADMIN" },
@@ -702,8 +705,15 @@ exports.repayBooking = async (req, res) => {
 exports.getMyBookings = async (req, res) => {
   try {
     const userId = req.user.id;
-    const flatId = await getUserFlatId(userId);
-    const baseWhere = flatId ? { flat_id: flatId } : { user_id: userId };
+    const societyId = req.user.society_id;
+    const userFlatIds = await getUserAuthorizedFlatIds(userId, societyId);
+    const baseWhere = {
+      society_id: societyId,
+      [Op.or]: [
+        { user_id: userId },
+        ...(userFlatIds.length > 0 ? [{ flat_id: { [Op.in]: userFlatIds } }] : [])
+      ]
+    };
 
     const page   = Math.max(1, parseInt(req.query.page)  || 1);
     const limit  = Math.min(100, parseInt(req.query.limit) || 10);

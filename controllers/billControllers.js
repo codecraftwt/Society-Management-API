@@ -1,5 +1,5 @@
 const { User, Block, HouseHoldMember, Society, FlatMembership } = require("../models");
-const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
+const { getUserOwnedFlatIds } = require("../utils/accessHelpers");
 
 const Bill = require("../models/Bill");
 const Flat = require("../models/Flat");
@@ -441,7 +441,7 @@ const getResidentBills = async (req, res) => {
     // Resolve only the flats this user holds in the ACTIVE society, so bills
     // from their other societies never leak into this panel.
     const activeSocietyId = parseInt(req.user?.society_id, 10);
-    const myFlatIds = await getUserAuthorizedFlatIds(
+    const myFlatIds = await getUserOwnedFlatIds(
       userId,
       Number.isInteger(activeSocietyId) && activeSocietyId > 0 ? activeSocietyId : null
     );

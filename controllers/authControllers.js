@@ -1,5 +1,6 @@
 const User = require("../models/User");
 const Society = require("../models/Society");
+const Block = require("../models/Block");
 const Flat = require("../models/Flat");
 const FlatMembership = require("../models/FlatMembership");
 const HouseHoldMember = require("../models/HouseHoldMember");
@@ -52,22 +53,30 @@ async function fetchUserSocietiesList(userId) {
       const userRoles = userRecord ? resolveUserRoles(userRecord) : [];
       const isSocAdmin = userRoles.includes("SOCIETY_ADMIN");
 
-      return userSocieties.map((us) => {
-        const roles = (us.societyRoles || []).map((r) => r.role);
+      const list = [];
+      for (const us of userSocieties) {
+        let roles = (us.societyRoles || []).map((r) => r.role);
         if (isSocAdmin && String(userRecord?.society_id) === String(us.society_id) && !roles.includes("SOCIETY_ADMIN")) {
           roles.unshift("SOCIETY_ADMIN");
         }
-        return {
+        if (roles.includes("SOCIETY_ADMIN") && roles.includes("RESIDENT")) {
+          const isResident = await isUserResidentOfSociety(userRecord, us.society_id);
+          if (!isResident) {
+            roles = roles.filter((r) => r !== "RESIDENT");
+          }
+        }
+        list.push({
           id: us.society_id,
           name: us.society?.name || `Society #${us.society_id}`,
           address: us.society?.address || null,
           logo_url: us.society?.logo_url || null,
-          roles: roles.length > 0 ? roles : (us.resident_type ? [us.resident_type] : ["RESIDENT"]),
+          roles: roles.length > 0 ? roles : (isSocAdmin ? ["SOCIETY_ADMIN"] : (us.resident_type ? [us.resident_type] : ["RESIDENT"])),
           resident_type: us.resident_type || null,
           is_default: Boolean(us.is_default),
           membership_status: us.membership_status,
-        };
-      });
+        });
+      }
+      return list;
     }
 
     // Fallback if no user_societies row yet:
@@ -75,7 +84,13 @@ async function fetchUserSocietiesList(userId) {
       include: [{ model: Society, attributes: ["id", "name", "address", "logo_url"] }],
     });
     if (user && user.society_id) {
-      const roles = resolveUserRoles(user);
+      let roles = resolveUserRoles(user);
+      if (roles.includes("SOCIETY_ADMIN") && roles.includes("RESIDENT")) {
+        const isResident = await isUserResidentOfSociety(user, user.society_id);
+        if (!isResident) {
+          roles = roles.filter((r) => r !== "RESIDENT");
+        }
+      }
       return [
         {
           id: user.society_id,
@@ -96,16 +111,46 @@ async function fetchUserSocietiesList(userId) {
   }
 }
 
-async function isUserResidentOfSociety(user) {
-  if (!user) return false;
-  if (user.resident_type && ["OWNER", "TENANT"].includes(String(user.resident_type).toUpperCase())) {
-    return true;
-  }
+async function isUserResidentOfSociety(user, societyId = null) {
+  if (!user || !user.id) return false;
+  const targetSocId = societyId || user.society_id;
   try {
-    const membership = await FlatMembership.findOne({
-      where: { user_id: user.id, is_current: true },
+    const blockInclude = targetSocId
+      ? [{ model: Block, where: { society_id: targetSocId }, required: true }]
+      : [{ model: Block, required: true }];
+
+    // 1. Check direct flat assignment (Flat.resident_id)
+    const directFlat = await Flat.findOne({
+      where: { resident_id: user.id },
+      include: blockInclude,
     });
-    return Boolean(membership);
+    if (directFlat) return true;
+
+    // 2. Check active flat membership (not moved out)
+    const membership = await FlatMembership.findOne({
+      where: {
+        user_id: user.id,
+        is_current: true,
+        move_out_date: null,
+      },
+      include: [{
+        model: Flat,
+        required: true,
+        include: blockInclude,
+      }],
+    });
+    if (membership) return true;
+
+    // 3. Check household member
+    const household = await HouseHoldMember.findOne({
+      where: { user_id: user.id },
+      include: [{
+        model: Flat,
+        required: true,
+        include: blockInclude,
+      }],
+    });
+    return Boolean(household);
   } catch (err) {
     return false;
   }
@@ -157,10 +202,16 @@ async function getAvailablePanels(user) {
   if (roles.includes("FAMILY_MEMBER")) panels.push("FAMILY_MEMBER");
   if (roles.includes("GUARD")) panels.push("GUARD");
 
+  // An admin/committee account can become a resident after a flat is
+  // assigned, even when the legacy users.roles array was never updated.
+  if ((roles.includes("SOCIETY_ADMIN") || roles.includes("COMMITTEE_MEMBER")) && !panels.includes("RESIDENT")) {
+    if (await isUserResidentOfSociety(user, user.society_id)) panels.push("RESIDENT");
+  }
+
   // If user has SOCIETY_ADMIN or COMMITTEE_MEMBER, check if they are genuinely a resident of the society.
   // If not, do NOT give them the RESIDENT panel!
   if ((panels.includes("SOCIETY_ADMIN") || panels.includes("COMMITTEE_MEMBER")) && panels.includes("RESIDENT")) {
-    const isResident = await isUserResidentOfSociety(user);
+    const isResident = await isUserResidentOfSociety(user, user.society_id);
     if (!isResident) {
       const idx = panels.indexOf("RESIDENT");
       if (idx !== -1) panels.splice(idx, 1);
@@ -730,6 +781,8 @@ exports.sendRegistrationOtp = async (req, res) => {
         if (isMember || String(existing.society_id) === String(society_id)) {
           return res.status(400).json({ message: "You are already registered in this society." });
         }
+      } else {
+        return res.status(400).json({ message: "An account with this email already exists. Please login." });
       }
     }
 
@@ -855,7 +908,7 @@ exports.switchRole = async (req, res) => {
     const scopedUser = {
       ...user.toJSON(),
       society_id: targetSocietyId,
-      role,
+      role: user.role,
       roles: societyRoles,
       resident_type: membership?.resident_type || user.resident_type,
     };

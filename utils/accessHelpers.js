@@ -155,6 +155,35 @@ const getUserAuthorizedFlatIds = async (userId, societyId = null) => {
   return candidateIds;
 };
 
+/** Resolve only active flats where the user is the owner (not tenant/family). */
+const getUserOwnedFlatIds = async (userId, societyId = null) => {
+  if (!userId) return [];
+  const ownedIds = new Set();
+  const today = new Date().toISOString().split("T")[0];
+
+  const memberships = await FlatMembership.findAll({
+    where: {
+      user_id: userId,
+      role: "OWNER",
+      is_current: true,
+      [Op.or]: [{ move_out_date: null }, { move_out_date: { [Op.gte]: today } }],
+    },
+    attributes: ["flat_id"],
+  });
+  memberships.forEach((m) => m.flat_id && ownedIds.add(Number(m.flat_id)));
+
+  const directFlats = await Flat.findAll({ where: { resident_id: userId }, attributes: ["id"] });
+  directFlats.forEach((f) => f.id && ownedIds.add(Number(f.id)));
+
+  if (!societyId || ownedIds.size === 0) return Array.from(ownedIds);
+  const verified = await Flat.findAll({
+    where: { id: { [Op.in]: Array.from(ownedIds) } },
+    attributes: ["id"],
+    include: [{ model: Block, where: { society_id: Number(societyId) }, attributes: [], required: true }],
+  });
+  return verified.map((f) => Number(f.id));
+};
+
 /**
  * Resolves all active User IDs associated with a specific Flat (Owner, Current Tenant, Household Members).
  * 
@@ -273,6 +302,7 @@ const getFlatForUser = async (userId) => {
 
 module.exports = {
   getUserAuthorizedFlatIds,
+  getUserOwnedFlatIds,
   getFlatAuthorizedUserIds,
   isUserAuthorizedForFlat,
   getSocietyMemberUserIds,

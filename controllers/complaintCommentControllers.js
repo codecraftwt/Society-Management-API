@@ -42,7 +42,7 @@ const uploadRawBuffer = (buffer, filename) => {
 const getComments = async (req, res) => {
   try {
     const { id } = req.params;
-    const activeRole = req.user.activeRole || req.user.role;
+    const activeRole = String(req.user.activeRole || req.user.role || "").toUpperCase();
     const isSuperAdmin = activeRole === "SUPER_ADMIN";
 
     const where = { id };
@@ -54,7 +54,7 @@ const getComments = async (req, res) => {
     if (!complaint) return res.status(404).json({ message: "Complaint not found" });
 
     // Enforce authorization for residents/family members
-    if (!isSuperAdmin && (req.user.role === "RESIDENT" || req.user.role === "FAMILY_MEMBER")) {
+    if (!isSuperAdmin && (activeRole === "RESIDENT" || activeRole === "FAMILY_MEMBER")) {
       const authorizedFlatIds = await getUserAuthorizedFlatIds(req.user.id, req.user.society_id);
       const isCreator = complaint.resident_id === req.user.id;
       const isFlatAuthorized = complaint.flat_id && authorizedFlatIds.includes(Number(complaint.flat_id));
@@ -84,7 +84,7 @@ const postComment = async (req, res) => {
     const { message } = req.body;
     const file        = req.file;
 
-    const activeRole = req.user.activeRole || req.user.role;
+    const activeRole = String(req.user.activeRole || req.user.role || "").toUpperCase();
     const isSuperAdmin = activeRole === "SUPER_ADMIN";
 
     if (!message?.trim() && !file) {
@@ -99,7 +99,7 @@ const postComment = async (req, res) => {
     const complaint = await Complaint.findOne({ where });
     if (!complaint) return res.status(404).json({ message: "Complaint not found" });
 
-    if (!isSuperAdmin && (req.user.role === "RESIDENT" || req.user.role === "FAMILY_MEMBER")) {
+    if (!isSuperAdmin && (activeRole === "RESIDENT" || activeRole === "FAMILY_MEMBER")) {
       const authorizedFlatIds = await getUserAuthorizedFlatIds(req.user.id, req.user.society_id);
       const isCreator = complaint.resident_id === req.user.id;
       const isFlatAuthorized = complaint.flat_id && authorizedFlatIds.includes(Number(complaint.flat_id));
@@ -165,7 +165,7 @@ const postComment = async (req, res) => {
 const deleteComment = async (req, res) => {
   try {
     const { id, commentId } = req.params;
-    const activeRole = req.user.activeRole || req.user.role;
+    const activeRole = String(req.user.activeRole || req.user.role || "").toUpperCase();
     const isSuperAdmin = activeRole === "SUPER_ADMIN";
 
     const where = { id };
@@ -206,7 +206,7 @@ const deleteComment = async (req, res) => {
 const clearComments = async (req, res) => {
   try {
     const { id } = req.params;
-    const activeRole = req.user.activeRole || req.user.role;
+    const activeRole = String(req.user.activeRole || req.user.role || "").toUpperCase();
     const isSuperAdmin = activeRole === "SUPER_ADMIN";
 
     const where = { id };
@@ -240,7 +240,7 @@ const clearComments = async (req, res) => {
 const markComplaintRead = async (req, res) => {
   try {
     const { id } = req.params;
-    const activeRole = req.user.activeRole || req.user.role;
+    const activeRole = String(req.user.activeRole || req.user.role || "").toUpperCase();
     const isSuperAdmin = activeRole === "SUPER_ADMIN";
 
     const where = { id };
@@ -251,7 +251,7 @@ const markComplaintRead = async (req, res) => {
     const complaint = await Complaint.findOne({ where });
     if (!complaint) return res.status(404).json({ message: "Complaint not found" });
 
-    if (!isSuperAdmin && (req.user.role === "RESIDENT" || req.user.role === "FAMILY_MEMBER")) {
+    if (!isSuperAdmin && (activeRole === "RESIDENT" || activeRole === "FAMILY_MEMBER")) {
       const authorizedFlatIds = await getUserAuthorizedFlatIds(req.user.id, req.user.society_id);
       const isCreator = complaint.resident_id === req.user.id;
       const isFlatAuthorized = complaint.flat_id && authorizedFlatIds.includes(Number(complaint.flat_id));

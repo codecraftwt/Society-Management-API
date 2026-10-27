@@ -98,6 +98,19 @@ const addVisitor = async (req, res) => {
       return res.status(400).json({ message: "Please provide a valid 10-digit Indian mobile number." });
     }
 
+    /* ── Verify flat belongs to guard's society ── */
+    const targetFlat = await Flat.findOne({
+      where: { id: flat_id },
+      include: [{
+        model: Block,
+        where: { society_id: req.user.society_id },
+        required: true,
+      }],
+    });
+    if (!targetFlat) {
+      return res.status(404).json({ message: "Selected flat not found in your society." });
+    }
+
     /* ── Shift guard ── */
     const activeShift = await getActiveShiftForGuard(
       req.user.id,
@@ -116,19 +129,35 @@ const addVisitor = async (req, res) => {
       include: [{ model: User, attributes: ["id", "fcm_token"] }],
     });
 
-    if (!activeMembers.length) {
+    let targetUserId = null;
+    let targetFcmToken = null;
+
+    if (activeMembers.length > 0) {
+      const targetMember =
+        activeMembers.find((m) => m.role === "TENANT" && m.is_staying) ||
+        activeMembers.find((m) => m.role === "OWNER") ||
+        activeMembers[0];
+
+      if (targetMember) {
+        targetUserId = targetMember.user_id;
+        targetFcmToken = targetMember.User?.fcm_token;
+      }
+    }
+
+    if (!targetUserId) {
+      // Fallback: check if the flat has an assigned resident directly on flat.resident_id
+      const flat = await Flat.findByPk(flat_id, {
+        include: [{ model: User, attributes: ["id", "fcm_token"] }],
+      });
+      if (flat?.resident_id && flat.User) {
+        targetUserId = flat.resident_id;
+        targetFcmToken = flat.User.fcm_token;
+      }
+    }
+
+    if (!targetUserId) {
       return res.status(404).json({ message: "No active residents found for this flat." });
     }
-
-    let targetMember =
-      activeMembers.find((m) => m.role === "TENANT" && m.is_staying) ||
-      activeMembers.find((m) => m.role === "OWNER");
-
-    if (!targetMember) {
-      return res.status(404).json({ message: "Could not determine primary contact for this flat." });
-    }
-
-    const targetUserId = targetMember.user_id;
 
     /* ── Create VisitorLog ── */
     const newVisitor = await VisitorLog.create({
@@ -184,9 +213,9 @@ const addVisitor = async (req, res) => {
     }
 
     /* ── Push notification ── */
-    if (targetMember.User?.fcm_token) {
+    if (targetFcmToken) {
       sendPushNotification(
-        targetMember.User.fcm_token,
+        targetFcmToken,
         "New Visitor",
         `${visitor_name} is at the gate for ${purpose || "GUEST"}.`,
         { type: "GATE_APPROVAL", visitorId: newVisitor.id }
@@ -465,9 +494,26 @@ const getSocietyBlocksForGuard = async (req, res) => {
   try {
     const blocks = await Block.findAll({
       where:      { society_id: req.user.society_id },
-      attributes: ["id", "name"],
+      attributes: ["id", "name", "property_type"],
+      include: [
+        { model: Floor, attributes: ["id"], required: false },
+        { model: Flat, attributes: ["id"], required: false },
+      ],
+      order: [["name", "ASC"]],
     });
-    res.json(blocks);
+
+    const formatted = blocks.map((b) => {
+      const isRow = ["ROW_HOUSE", "RowHouse", "Row Houses"].includes(b.property_type);
+      return {
+        id: b.id,
+        name: b.name,
+        property_type: b.property_type || (isRow ? "ROW_HOUSE" : "APARTMENT"),
+        total_floors: isRow ? 0 : (b.Floors?.length || 0),
+        total_flats: b.Flats?.length || 0,
+      };
+    });
+
+    res.json(formatted);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

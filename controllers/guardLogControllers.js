@@ -77,6 +77,9 @@ const deleteLog = async (req, res) => {
     if (log.guard_id !== req.user.id && req.user.role !== "ADMIN" && req.user.role !== "SOCIETY_ADMIN") {
       return res.status(403).json({ message: "Not authorized to delete this log" });
     }
+    if (req.user.role !== "SUPER_ADMIN" && log.society_id !== req.user.society_id) {
+      return res.status(403).json({ message: "Not authorized to delete logs from another society" });
+    }
 
     await log.destroy();
     res.json({ message: "Log entry deleted successfully", id: parseInt(id) });

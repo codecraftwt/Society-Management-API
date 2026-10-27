@@ -60,14 +60,20 @@ const checkPermission = (module, action) => {
         let grantedActions = null;
 
         if (societyId) {
-          const dbPermission = await RolePermission.findOne({
+          // Use the latest active override for this module.  Permission management
+          // reads the effective value from all active rows, while findOne could
+          // select an older/stale duplicate and reject an otherwise granted user.
+          const dbPermissions = await RolePermission.findAll({
             where: {
               society_id: societyId,
               role: checkRole,
               module,
               is_active: true,
             },
+            order: [["updated_at", "DESC"], ["id", "DESC"]],
+            limit: 1,
           });
+          const dbPermission = dbPermissions[0];
 
           if (dbPermission) {
             if (Array.isArray(dbPermission.actions)) {

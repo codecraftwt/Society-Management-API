@@ -4,21 +4,19 @@ const { Op } = require("sequelize");
 const { literal } = require("sequelize");
 const notificationService = require("../services/notificationService");
 
+const { getUserAuthorizedFlatIds, isUserAuthorizedForFlat } = require("../utils/accessHelpers");
+
 /* ── helpers ── */
-const getFlatIdForUser = async (userId) => {
-  const flat = await Flat.findOne({ where: { resident_id: userId } });
-  if (flat) return flat.id;
-  const member = await HouseHoldMember.findOne({ where: { user_id: userId } });
-  return member ? member.flat_id : null;
+const getFlatIdForUser = async (userId, societyId = null) => {
+  const authorizedIds = await getUserAuthorizedFlatIds(userId, societyId);
+  return authorizedIds.length > 0 ? authorizedIds[0] : null;
 };
 
-const getPrimaryResidentId = async (userId) => {
-  const flat = await Flat.findOne({ where: { resident_id: userId } });
-  if (flat) return flat.resident_id;
-  const member = await HouseHoldMember.findOne({ where: { user_id: userId } });
-  if (member) {
-    const f = await Flat.findByPk(member.flat_id);
-    if (f) return f.resident_id;
+const getPrimaryResidentId = async (userId, societyId = null) => {
+  const flatId = await getFlatIdForUser(userId, societyId);
+  if (flatId) {
+    const f = await Flat.findByPk(flatId);
+    if (f && f.resident_id) return f.resident_id;
   }
   return userId;
 };
@@ -304,12 +302,19 @@ const addVehicle = async (req, res) => {
       });
     }
 
-    const primaryResidentId = await getPrimaryResidentId(req.user.id);
-    const resolvedFlatId    = flat_id || (await getFlatIdForUser(req.user.id));
+    const primaryResidentId = await getPrimaryResidentId(req.user.id, req.user.society_id);
+    const resolvedFlatId    = flat_id || (await getFlatIdForUser(req.user.id, req.user.society_id));
 
     if (!resolvedFlatId) {
       return res.status(400).json({
-        message: "No flat found for this user. Contact admin.",
+        message: "No flat found for this user in the active society. Contact admin.",
+      });
+    }
+
+    const isAuthorized = await isUserAuthorizedForFlat(req.user.id, resolvedFlatId, req.user.society_id);
+    if (!isAuthorized) {
+      return res.status(403).json({
+        message: "You are not authorized for the selected flat in this society.",
       });
     }
 
@@ -636,12 +641,19 @@ const updateVehicle = async (req, res) => {
       });
     }
 
-    const primaryResidentId = await getPrimaryResidentId(req.user.id);
-    const resolvedFlatId    = flat_id || (await getFlatIdForUser(req.user.id));
+    const primaryResidentId = await getPrimaryResidentId(req.user.id, req.user.society_id);
+    const resolvedFlatId    = flat_id || (await getFlatIdForUser(req.user.id, req.user.society_id));
 
     if (!resolvedFlatId) {
       return res.status(400).json({
-        message: "No flat found for this user. Contact admin.",
+        message: "No flat found for this user in the active society. Contact admin.",
+      });
+    }
+
+    const isAuthorized = await isUserAuthorizedForFlat(req.user.id, resolvedFlatId, req.user.society_id);
+    if (!isAuthorized) {
+      return res.status(403).json({
+        message: "You are not authorized for the selected flat in this society.",
       });
     }
 
@@ -954,13 +966,8 @@ const updateVehicle = async (req, res) => {
 ══════════════════════════════════════════════════ */
 const getMyVehicles = async (req, res) => {
   try {
-    const primaryResidentId = await getPrimaryResidentId(req.user.id);
-    const userFlats = await Flat.findAll({ where: { resident_id: req.user.id } });
-    const memberFlats = await HouseHoldMember.findAll({ where: { user_id: req.user.id } });
-    const allFlatIds = [...new Set([
-      ...userFlats.map((f) => f.id),
-      ...memberFlats.map((m) => m.flat_id),
-    ])];
+    const primaryResidentId = await getPrimaryResidentId(req.user.id, req.user.society_id);
+    const authorizedFlatIds = await getUserAuthorizedFlatIds(req.user.id, req.user.society_id);
 
     const whereConditions = [
       { resident_id: req.user.id },
@@ -968,8 +975,8 @@ const getMyVehicles = async (req, res) => {
     if (primaryResidentId && primaryResidentId !== req.user.id) {
       whereConditions.push({ resident_id: primaryResidentId });
     }
-    if (allFlatIds.length > 0) {
-      whereConditions.push({ flat_id: { [Op.in]: allFlatIds } });
+    if (authorizedFlatIds.length > 0) {
+      whereConditions.push({ flat_id: { [Op.in]: authorizedFlatIds } });
     }
 
     const vehicles = await Vehicle.findAll({
@@ -980,10 +987,15 @@ const getMyVehicles = async (req, res) => {
       order: [["createdAt", "ASC"]],
     });
 
+    // Guard: exclude any vehicle row whose flat_id is not in the active society's authorized flats
+    const scopedVehicles = vehicles.filter((v) =>
+      !v.flat_id || authorizedFlatIds.includes(Number(v.flat_id))
+    );
+
     const { ParkingRequest } = require("../models");
 
     const enriched = await Promise.all(
-      vehicles.map(async (v) => {
+      scopedVehicles.map(async (v) => {
         let slotInfo = null;
 
         // If no slot is linked directly on the vehicle row, check if an approved request exists

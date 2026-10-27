@@ -780,6 +780,7 @@ exports.getTenantHistory = async (req, res) => {
       results.push({
         id: user.id,
         tenant_id: user.id,
+        membership_id: m.id,
         tenant_name: user.name,
         tenant_email: user.email,
         tenant_phone: user.phone,
@@ -921,6 +922,7 @@ exports.getTenantHistory = async (req, res) => {
       results.push({
         id: u.id,
         tenant_id: u.id,
+        membership_id: null,
         tenant_name: u.name,
         tenant_email: u.email,
         tenant_phone: u.phone,

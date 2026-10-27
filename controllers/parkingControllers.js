@@ -10,6 +10,7 @@ const {
 } = require("../models");
 
 const Vehicle = require("../models/Vehicle");
+const sequelize = require("../config/db");
 const { Op } = require("sequelize");
 const { sendPushNotification } = require("../utils/pushNotification");
 const notificationService = require("../services/notificationService");
@@ -67,34 +68,23 @@ const getOnDutyGuardIds = async (societyId) => {
 };
 
 /* ── User → flat helpers ── */
-const getAllFlatIdsForUser = async (userId) => {
+const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
+
+const getAllFlatIdsForUser = async (userId, societyId = null) => {
   const primaryId = await getPrimaryResidentId(userId);
-  const userIds = [userId, primaryId].filter(Boolean);
-
-  const flatIds = new Set();
-  const directFlats = await Flat.findAll({
-    where: { resident_id: { [Op.in]: userIds } },
-    attributes: ["id"],
-  });
-  directFlats.forEach((f) => flatIds.add(f.id));
-
-  const memberships = await HouseHoldMember.findAll({
-    where: { user_id: { [Op.in]: userIds } },
-    attributes: ["flat_id"],
-  });
-  memberships.forEach((m) => flatIds.add(m.flat_id));
-
-  return Array.from(flatIds);
+  const pIds = await getUserAuthorizedFlatIds(primaryId, societyId);
+  const uIds = await getUserAuthorizedFlatIds(userId, societyId);
+  return Array.from(new Set([...pIds, ...uIds]));
 };
 
 const getFlatIdForUser = async (userId) => {
-  const allIds = await getAllFlatIdsForUser(userId);
+  const allIds = await getAllFlatIdsForUser(userId, req?.user?.society_id);
   return allIds.length > 0 ? allIds[0] : null;
 };
 
 const isFlatOfUser = async (userId, flatId) => {
   if (!flatId) return false;
-  const allFlatIds = await getAllFlatIdsForUser(userId);
+  const allFlatIds = await getAllFlatIdsForUser(userId, societyId);
   return allFlatIds.includes(Number(flatId));
 };
 
@@ -228,6 +218,18 @@ const lookupResidentVehicle = async (req, res) => {
     if (!flat) return res.status(404).json({ message: "Resident flat not found" });
 
     const resident = await User.findByPk(vehicle.resident_id, { attributes: ["id", "name"] });
+    const assignedSlot = vehicle.parking_slot_id
+      ? await ParkingSlot.findOne({
+          where: {
+            id: vehicle.parking_slot_id,
+            society_id: vehicle.society_id,
+            vehicle_type: vehicle.vehicle_type,
+            status: "ASSIGNED",
+            [Op.or]: [{ flat_id: vehicle.flat_id }, { resident_id: vehicle.resident_id }],
+          },
+          attributes: ["id", "slot_number", "status", "flat_id", "resident_id", "vehicle_type"],
+        })
+      : null;
 
     res.json({
       vehicle_id:     vehicle.id,
@@ -238,6 +240,9 @@ const lookupResidentVehicle = async (req, res) => {
       resident_name:  resident?.name || "Unknown",
       flat_id:        vehicle.flat_id,
       flat_number:    flat.flat_number,
+      assigned_slot_id: assignedSlot?.id || null,
+      assigned_spot: assignedSlot?.slot_number || null,
+      has_valid_assignment: Boolean(assignedSlot),
     });
   } catch (err) {
     console.error("LOOKUP VEHICLE ERROR:", err);
@@ -750,7 +755,7 @@ const getParkingRequests = async (req, res) => {
 
     if (isResident) {
       const primaryId = await getPrimaryResidentId(id);
-      const flatIds   = await getAllFlatIdsForUser(id);
+      const flatIds   = await getAllFlatIdsForUser(id, society_id);
 
       const residentIdList = [id, primaryId].filter(Boolean);
       const residentScope = [
@@ -809,7 +814,7 @@ const getParkingRequests = async (req, res) => {
     const baseWhere = { society_id };
     if (isResident) {
       const primaryId = await getPrimaryResidentId(id);
-      const flatIds   = await getAllFlatIdsForUser(id);
+      const flatIds   = await getAllFlatIdsForUser(id, society_id);
       const residentIdList = [id, primaryId].filter(Boolean);
       const residentScope = [{ resident_id: { [Op.in]: residentIdList } }];
       if (flatIds.length > 0) residentScope.push({ flat_id: { [Op.in]: flatIds } });
@@ -862,7 +867,7 @@ const getParkingRequestById = async (req, res) => {
 
     if (isResident) {
       const primaryId = await getPrimaryResidentId(id);
-      const flatIds   = await getAllFlatIdsForUser(id);
+      const flatIds   = await getAllFlatIdsForUser(id, society_id);
       const residentIdList = [id, primaryId].filter(Boolean);
       const residentScope = [{ resident_id: { [Op.in]: residentIdList } }];
       if (flatIds.length > 0) residentScope.push({ flat_id: { [Op.in]: flatIds } });
@@ -1292,18 +1297,152 @@ const adminCancelVehicleRequest = async (req, res) => {
     return res.status(500).json({ message: "Server Error" });
   }
 };
+/* Strict resident-entry flow. The legacy handler above is retained for
+   compatibility, but routes use this transaction-safe implementation. */
+const createResidentParkingSafe = async (req, res) => {
+  const transaction = await sequelize.transaction();
+  try {
+    const { vehicle_number, vehicle_type, resident_id, flat_id, assigned_spot } = req.body || {};
+    if (!vehicle_number || !vehicle_type || !resident_id || !flat_id || !assigned_spot) {
+      await transaction.rollback();
+      return res.status(400).json({ message: "Missing required fields" });
+    }
+
+    const plate = String(vehicle_number).trim().toUpperCase();
+    const type = String(vehicle_type).trim().toUpperCase();
+    const vehicle = await Vehicle.findOne({
+      where: { vehicle_number: plate, society_id: req.user.society_id },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    if (!vehicle) {
+      await transaction.rollback();
+      return res.status(404).json({ message: "Vehicle not found" });
+    }
+    if (vehicle.vehicle_type !== type || Number(vehicle.resident_id) !== Number(resident_id) || Number(vehicle.flat_id) !== Number(flat_id)) {
+      await transaction.rollback();
+      return res.status(403).json({ message: "Vehicle, resident, and flat do not match." });
+    }
+
+    const currentSlot = vehicle.parking_slot_id
+      ? await ParkingSlot.findOne({
+          where: {
+            id: vehicle.parking_slot_id, society_id: vehicle.society_id,
+            vehicle_type: type, status: "ASSIGNED",
+            [Op.or]: [{ flat_id: vehicle.flat_id }, { resident_id: vehicle.resident_id }],
+          }, transaction, lock: transaction.LOCK.UPDATE,
+        })
+      : null;
+    if (currentSlot) {
+      await transaction.rollback();
+      return res.status(200).json({ message: "Vehicle already has a valid parking slot.", already_assigned: true, assigned_spot: currentSlot.slot_number, slot: currentSlot });
+    }
+
+    const slot = await ParkingSlot.findOne({
+      where: { slot_number: String(assigned_spot).trim(), society_id: vehicle.society_id, vehicle_type: type, status: "AVAILABLE" },
+      transaction, lock: transaction.LOCK.UPDATE,
+    });
+    if (!slot) {
+      await transaction.rollback();
+      return res.status(409).json({ message: "Selected parking slot is unavailable or already allocated." });
+    }
+
+    const existingApproved = await ParkingRequest.findOne({
+      where: {
+        society_id: vehicle.society_id, parking_type: "RESIDENT", status: "APPROVED",
+        [Op.or]: [{ vehicle_id: vehicle.id }, { vehicle_number: plate }],
+      }, transaction, lock: transaction.LOCK.UPDATE,
+    });
+    if (existingApproved) {
+      await transaction.rollback();
+      return res.status(409).json({ message: "This vehicle already has an approved parking assignment." });
+    }
+
+    await vehicle.update({ parking_slot_id: slot.id }, { transaction });
+    await slot.update({ status: "ASSIGNED", flat_id: vehicle.flat_id, resident_id: vehicle.resident_id, parking_type: "EXTRA" }, { transaction });
+
+    const pending = await ParkingRequest.findOne({
+      where: { society_id: vehicle.society_id, vehicle_id: vehicle.id, parking_type: "RESIDENT", status: "PENDING" },
+      transaction, lock: transaction.LOCK.UPDATE,
+    });
+    let entry;
+    if (pending) {
+      await pending.update({ status: "APPROVED", assigned_spot: slot.slot_number }, { transaction });
+      entry = pending;
+    } else {
+      const resident = await User.findByPk(vehicle.resident_id, { attributes: ["name"], transaction });
+      entry = await ParkingRequest.create({
+        society_id: vehicle.society_id, resident_id: vehicle.resident_id, flat_id: vehicle.flat_id,
+        guest_name: resident?.name || "Resident", vehicle_number: plate, vehicle_type: type,
+        expected_arrival: new Date(), duration_hours: 24, status: "APPROVED",
+        assigned_spot: slot.slot_number, parking_type: "RESIDENT", vehicle_id: vehicle.id,
+      }, { transaction });
+    }
+    await transaction.commit();
+
+    await sendNotification({ societyId: vehicle.society_id, userId: vehicle.resident_id, title: "Vehicle Parked 🚗", message: `Your vehicle ${plate} has been parked in spot ${slot.slot_number}.`, actionRoute: "/resident/parking" });
+    global.io?.to(`user_${vehicle.resident_id}`).emit("parking_request_new", entry);
+    return res.status(201).json({ message: "Resident parking entry created successfully", entry });
+  } catch (err) {
+    if (!transaction.finished) await transaction.rollback();
+    console.error("CREATE RESIDENT PARKING ERROR:", err);
+    return res.status(500).json({ message: "Server Error" });
+  }
+};
+
+const adminAssignResidentSlotSafe = async (req, res) => {
+  const transaction = await sequelize.transaction();
+  try {
+    const { assigned_spot } = req.body || {};
+    const request = await ParkingRequest.findByPk(req.params.id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!request) { await transaction.rollback(); return res.status(404).json({ message: "Request not found" }); }
+    if (request.society_id !== req.user.society_id && req.user.activeRole !== "SUPER_ADMIN" && req.user.role !== "SUPER_ADMIN") {
+      await transaction.rollback(); return res.status(403).json({ message: "Not authorized" });
+    }
+    if (request.status !== "PENDING" || request.parking_type !== "RESIDENT") {
+      await transaction.rollback(); return res.status(400).json({ message: "Only pending resident requests can be assigned" });
+    }
+    const vehicleWhere = { vehicle_number: request.vehicle_number, society_id: request.society_id };
+    if (request.vehicle_id) vehicleWhere.id = request.vehicle_id;
+    const vehicle = await Vehicle.findOne({
+      where: vehicleWhere,
+      transaction, lock: transaction.LOCK.UPDATE,
+    });
+    if (!vehicle || Number(vehicle.resident_id) !== Number(request.resident_id) || Number(vehicle.flat_id) !== Number(request.flat_id)) {
+      await transaction.rollback(); return res.status(409).json({ message: "Request vehicle ownership does not match its resident and flat." });
+    }
+    const existingSlot = vehicle.parking_slot_id ? await ParkingSlot.findOne({ where: { id: vehicle.parking_slot_id, status: "ASSIGNED", society_id: request.society_id }, transaction, lock: transaction.LOCK.UPDATE }) : null;
+    if (existingSlot) { await transaction.rollback(); return res.status(409).json({ message: `Vehicle already has slot ${existingSlot.slot_number}.` }); }
+    const slot = await ParkingSlot.findOne({ where: { slot_number: assigned_spot, society_id: request.society_id, vehicle_type: request.vehicle_type, status: "AVAILABLE" }, transaction, lock: transaction.LOCK.UPDATE });
+    if (!slot) { await transaction.rollback(); return res.status(409).json({ message: "Slot not available or vehicle type mismatch" }); }
+    const duplicate = await ParkingRequest.findOne({ where: { society_id: request.society_id, parking_type: "RESIDENT", status: "APPROVED", [Op.or]: [{ vehicle_id: vehicle.id }, { vehicle_number: request.vehicle_number }] }, transaction, lock: transaction.LOCK.UPDATE });
+    if (duplicate) { await transaction.rollback(); return res.status(409).json({ message: "This vehicle already has an approved parking assignment." }); }
+    await slot.update({ status: "ASSIGNED", flat_id: request.flat_id, resident_id: request.resident_id, parking_type: "EXTRA" }, { transaction });
+    await vehicle.update({ parking_slot_id: slot.id }, { transaction });
+    await request.update({ status: "APPROVED", assigned_spot: slot.slot_number }, { transaction });
+    await transaction.commit();
+    await sendNotification({ societyId: request.society_id, userId: request.resident_id, title: "Extra Parking Slot Assigned 🅿️", message: `Your vehicle ${request.vehicle_number} has been assigned extra parking slot ${slot.slot_number}.`, actionRoute: "/resident/parking" });
+    global.io?.to(`user_${request.resident_id}`).emit("parking_request_updated", request);
+    return res.json({ message: "Slot assigned successfully", request, slot });
+  } catch (err) {
+    if (!transaction.finished) await transaction.rollback();
+    console.error("ADMIN ASSIGN RESIDENT SLOT ERROR:", err);
+    return res.status(500).json({ message: "Server Error" });
+  }
+};
+
 // Add to module.exports:
 module.exports = {
   requestParking,
   lookupResidentVehicle,
-  createResidentParking,
+  createResidentParking: createResidentParkingSafe,
   assignParkingSlot,
   rejectParkingRequest,
   markExit,
   getParkingRequests,
   getParkingRequestById,
   requestResidentSlot,
-  adminAssignResidentSlot,
+  adminAssignResidentSlot: adminAssignResidentSlotSafe,
   adminRejectResidentSlot,       // ← add
   getUnassignedResidentVehicles, 
   adminCancelVehicleRequest,// ← add

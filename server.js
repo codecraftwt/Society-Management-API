@@ -46,6 +46,7 @@ const STAFF_ROLES = new Set([
   "SOCIETY_ADMIN",
   "ADMIN",
   "COMMITTEE_MEMBER",
+  "ACCOUNTANT",
 ]);
 
 const SOCKET_DEBUG =

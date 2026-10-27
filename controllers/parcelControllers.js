@@ -24,28 +24,15 @@ const notificationService = require("../services/notificationService");
  * Returns ALL flat IDs the user is associated with (as primary resident OR household member).
  * Used to validate that an owner-supplied flat_id actually belongs to them.
  */
-const getAllFlatIdsForUser = async (userId) => {
-  const ownedFlats = await Flat.findAll({ where: { resident_id: userId } });
-  const memberRows = await HouseHoldMember.findAll({ where: { user_id: userId } });
+const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
 
-  const ids = new Set();
-  ownedFlats.forEach((f) => ids.add(f.id));
-  memberRows.forEach((m) => ids.add(m.flat_id));
-  return [...ids];
+const getAllFlatIdsForUser = async (userId, societyId = null) => {
+  return await getUserAuthorizedFlatIds(userId, societyId);
 };
 
-/**
- * Returns the single flat_id for a user — kept for backwards-compat
- * (tenants / family members who only ever have one flat).
- */
-const getFlatIdForUser = async (userId) => {
-  const flat = await Flat.findOne({ where: { resident_id: userId } });
-  if (flat) return flat.id;
-
-  const member = await HouseHoldMember.findOne({ where: { user_id: userId } });
-  if (member) return member.flat_id;
-
-  return null;
+const getFlatIdForUser = async (userId, societyId = null) => {
+  const ids = await getUserAuthorizedFlatIds(userId, societyId);
+  return ids.length > 0 ? ids[0] : null;
 };
 
 /**
@@ -181,7 +168,7 @@ const createParcel = async (req, res) => {
          * Owner supplied a specific flat_id (multi-flat owner scenario).
          * Validate it actually belongs to this user before trusting it.
          */
-        const userFlatIds = await getAllFlatIdsForUser(req.user.id);
+        const userFlatIds = await getAllFlatIdsForUser(req.user.id, req.user.society_id);
 
         const flatIdNum = parseInt(flat_id, 10);
         if (!userFlatIds.includes(flatIdNum) && !userFlatIds.includes(flat_id)) {
@@ -196,7 +183,7 @@ const createParcel = async (req, res) => {
          * No flat_id supplied — fall back to the single-flat lookup
          * (tenants and single-unit residents always hit this path).
          */
-        const myFlatId = await getFlatIdForUser(req.user.id);
+        const myFlatId = await getFlatIdForUser(req.user.id, req.user.society_id);
         if (!myFlatId) {
           return res.status(400).json({ message: "No flat assigned to your account." });
         }
@@ -361,7 +348,7 @@ const getParcels = async (req, res) => {
     }
 
     if (activeRole === 'RESIDENT' || activeRole === 'FAMILY_MEMBER') {
-      const userFlatIds = await getAllFlatIdsForUser(id);
+      const userFlatIds = await getAllFlatIdsForUser(id, society_id);
       if (!userFlatIds.length) {
         return res.json({
           data: [],
@@ -492,7 +479,7 @@ const updateParcelStatus = async (req, res) => {
       }
 
       // Extra safety: confirm the parcel belongs to one of the user's flats
-      const userFlatIds = await getAllFlatIdsForUser(req.user.id);
+      const userFlatIds = await getAllFlatIdsForUser(req.user.id, req.user.society_id);
       if (!userFlatIds.includes(parcel.flat_id)) {
         return res.status(403).json({ message: "This parcel does not belong to your unit." });
       }
@@ -636,7 +623,7 @@ const getParcelById = async (req, res) => {
     }
 
     if (activeRole === 'RESIDENT' || activeRole === 'FAMILY_MEMBER') {
-      const userFlatIds = await getAllFlatIdsForUser(req.user.id);
+      const userFlatIds = await getAllFlatIdsForUser(req.user.id, req.user.society_id);
       if (!userFlatIds.includes(parcel.flat_id)) {
         return res.status(403).json({ success: false, message: "Forbidden" });
       }

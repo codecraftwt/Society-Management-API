@@ -125,19 +125,18 @@ exports.getSocietyDailyHelps = async (req, res) => {
         include: [{ model: Block, where: { society_id: req.user.society_id }, attributes: ["name"] }]
       });
     } else {
-      const primaryFlats = await Flat.findAll({ where: { resident_id: req.user.id }, attributes: ["id"] });
-      const memberRows = await HouseHoldMember.findAll({ where: { user_id: req.user.id }, attributes: ["flat_id"] });
-      const ownIds = [
-        ...new Set([
-          ...primaryFlats.map((f) => f.id),
-          ...memberRows.map((m) => m.flat_id).filter(Boolean),
-        ]),
-      ];
+      const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
+      const ownIds = await getUserAuthorizedFlatIds(req.user.id, req.user.society_id);
 
       flats = ownIds.length
         ? await Flat.findAll({
             where: { id: { [Op.in]: ownIds } },
-            include: [{ model: Block, attributes: ["name"] }]
+            include: [{
+              model: Block,
+              where: { society_id: req.user.society_id },
+              required: true,
+              attributes: ["name"]
+            }]
           })
         : [];
     }
@@ -158,13 +157,20 @@ exports.getSocietyDailyHelps = async (req, res) => {
     }) : [];
     console.log(`[DB] Found ${helpers.length} valid helpers in HouseHoldMember table.`);
 
+    const normalizePhone = (p) => {
+      if (!p) return "";
+      const digits = String(p).replace(/\D/g, "");
+      return digits.length >= 10 ? digits.slice(-10) : digits;
+    };
+
     // 3. Group by Phone Number
     const groupedHelpers = {};
     for (const h of helpers) {
-      const phone = h.phone || `NO_PHONE_${h.name}`; 
+      const normPhone = normalizePhone(h.phone);
+      const groupKey = normPhone || `NO_PHONE_${(h.name || "").trim().toLowerCase()}`;
       
-      if (!groupedHelpers[phone]) {
-        groupedHelpers[phone] = {
+      if (!groupedHelpers[groupKey]) {
+        groupedHelpers[groupKey] = {
           name: h.name,
           phone: h.phone,
           roles: new Set(),
@@ -173,13 +179,18 @@ exports.getSocietyDailyHelps = async (req, res) => {
         };
       }
       
-      groupedHelpers[phone].roles.add(h.work || h.relation || 'Helper');
+      groupedHelpers[groupKey].roles.add(h.work || h.relation || 'Helper');
       
       // Match flat ID back to get Block Name & Flat Number
       const flatData = flats.find(f => f.id === h.flat_id);
       if (flatData && flatData.Block) {
-        groupedHelpers[phone].flatDetails.push(`${flatData.Block.name}-${flatData.flat_number}`);
-        groupedHelpers[phone].flatIds.push(h.flat_id);
+        const flatLabel = `${flatData.Block.name}-${flatData.flat_number}`;
+        if (!groupedHelpers[groupKey].flatDetails.includes(flatLabel)) {
+          groupedHelpers[groupKey].flatDetails.push(flatLabel);
+        }
+        if (!groupedHelpers[groupKey].flatIds.includes(flatData.id)) {
+          groupedHelpers[groupKey].flatIds.push(flatData.id);
+        }
       }
     }
     console.log(`[LOGIC] Grouped helpers into ${Object.keys(groupedHelpers).length} unique profiles based on phone.`);
@@ -200,7 +211,7 @@ exports.getSocietyDailyHelps = async (req, res) => {
       }
 
       result.push({
-        id: `HH_${helper.phone || helper.name}`,
+        id: `HH_${key}`,
         type: "HOUSEHOLD_MEMBER",
         name: helper.name,
         phone: helper.phone,
@@ -227,6 +238,12 @@ exports.getSocietyDailyHelps = async (req, res) => {
       const today = getCurrentISTDate();
 
       for (const cs of cleaningStaffList) {
+        const csNormPhone = normalizePhone(cs.phone);
+        const existingHelper = result.find(r => {
+          const rNorm = normalizePhone(r.phone);
+          return (rNorm && csNormPhone && rNorm === csNormPhone) || (cs.id && r.cleaningStaffId === cs.id);
+        });
+
         const attendance = await CleaningStaffAttendance.findOne({
           where: {
             cleaning_staff_id: cs.id,
@@ -239,18 +256,34 @@ exports.getSocietyDailyHelps = async (req, res) => {
           csStatus = "INSIDE";
         }
 
-        result.push({
-          id: `CS_${cs.id}`,
-          cleaningStaffId: cs.id,
-          type: "CLEANING_STAFF",
-          name: cs.name,
-          phone: cs.phone,
-          roles: cs.designation || "Cleaning Staff",
-          flats: societyName,
-          flatIds: [],
-          status: csStatus,
-          avatar: cs.profile_picture || null,
-        });
+        if (existingHelper) {
+          existingHelper.cleaningStaffId = cs.id;
+          if (cs.designation && !existingHelper.roles.includes(cs.designation)) {
+            existingHelper.roles = `${existingHelper.roles}, ${cs.designation}`;
+          }
+          if (societyName && !existingHelper.flats.includes(societyName)) {
+            existingHelper.flats = existingHelper.flats ? `${existingHelper.flats}, ${societyName}` : societyName;
+          }
+          if (csStatus === "INSIDE") {
+            existingHelper.status = "INSIDE";
+          }
+          if (cs.profile_picture && !existingHelper.avatar) {
+            existingHelper.avatar = cs.profile_picture;
+          }
+        } else {
+          result.push({
+            id: `CS_${cs.id}`,
+            cleaningStaffId: cs.id,
+            type: "CLEANING_STAFF",
+            name: cs.name,
+            phone: cs.phone,
+            roles: cs.designation || "Cleaning Staff",
+            flats: societyName,
+            flatIds: [],
+            status: csStatus,
+            avatar: cs.profile_picture || null,
+          });
+        }
       }
     }
 
@@ -285,10 +318,26 @@ exports.markDailyHelpEntry = async (req, res) => {
       return res.status(400).json({ success: false, message: gateCheck.message });
     }
 
+    // A helper can be linked to the same flat through more than one household
+    // row. Collapse duplicates before creating logs so one check-in never
+    // produces two active visits for the same phone + flat.
+    const uniqueFlatIds = [...new Set(flatIds.map((id) => Number(id)).filter(Boolean))];
+
     const createdLogs = [];
 
     // Loop and create an entry for EACH flat they work in
-    for (const flatId of flatIds) {
+    for (const flatId of uniqueFlatIds) {
+      const alreadyInside = await VisitorLog.findOne({
+        where: {
+          society_id: req.user.society_id,
+          flat_id: flatId,
+          mobile: phone,
+          exit_time: null,
+        },
+        attributes: ["id"],
+      });
+      if (alreadyInside) continue;
+
       const visitor = await VisitorLog.create({
         visitor_name: name,
         purpose: 'SERVICE', // Or 'DAILY_HELP' based on your ENUM
@@ -304,9 +353,17 @@ exports.markDailyHelpEntry = async (req, res) => {
       await sendMultiFlatNotification(visitor, flatId, req.user.society_id, req.user.id, true);
     }
 
+    if (createdLogs.length === 0) {
+      return res.json({
+        success: true,
+        message: "This helper is already checked in to the selected flat(s).",
+        data: [],
+      });
+    }
+
     res.status(201).json({ 
       success: true, 
-      message: `Checked in to ${flatIds.length} flat(s) successfully.`,
+      message: `Checked in to ${createdLogs.length} flat(s) successfully.`,
       data: createdLogs
     });
 

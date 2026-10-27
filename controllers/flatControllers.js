@@ -27,12 +27,12 @@ const FLAT_LOCATION_INCLUDE = [
     model: Floor,
     required: false,
     attributes: ["id", "floor_number"],
-    include: [{ model: Block, required: false, attributes: ["id", "name"] }],
+    include: [{ model: Block, required: false, attributes: ["id", "name", "property_type"] }],
   },
   {
     model: Block,
     required: false,
-    attributes: ["id", "name"],
+    attributes: ["id", "name", "property_type"],
   },
 ];
 
@@ -182,6 +182,9 @@ const assignFlatToResident = async (req, res) => {
       if (userSociety.membership_status !== "ACTIVE") {
         await userSociety.update({ membership_status: "ACTIVE" });
       }
+      if (userSociety.resident_type !== "OWNER") {
+        await userSociety.update({ resident_type: "OWNER" });
+      }
       await UserSocietyRole.findOrCreate({
         where: { user_society_id: userSociety.id, role: "RESIDENT" },
         defaults: { user_society_id: userSociety.id, role: "RESIDENT" },
@@ -189,6 +192,17 @@ const assignFlatToResident = async (req, res) => {
     }
 
     const userUpdate = {};
+    // This endpoint assigns an owner; keep the user/session source of truth
+    // aligned with the OWNER flat membership created below.
+    userUpdate.resident_type = "OWNER";
+    let ownerRoles = Array.isArray(resident.roles) ? [...resident.roles] : [];
+    if (typeof resident.roles === "string") {
+      try { ownerRoles = JSON.parse(resident.roles) || []; } catch { ownerRoles = []; }
+    }
+    if (!ownerRoles.includes("RESIDENT")) {
+      ownerRoles.push("RESIDENT");
+      userUpdate.roles = ownerRoles;
+    }
     if (!resident.society_id && effectiveSocietyId) {
       userUpdate.society_id = effectiveSocietyId;
     }
@@ -437,6 +451,9 @@ const assignResident = async (req, res) => {
       if (userSociety.membership_status !== "ACTIVE") {
         await userSociety.update({ membership_status: "ACTIVE" });
       }
+      if (resident_type === "OWNER" && userSociety.resident_type !== "OWNER") {
+        await userSociety.update({ resident_type: "OWNER" });
+      }
 
       await UserSocietyRole.findOrCreate({
         where: {
@@ -611,7 +628,8 @@ const getAssignedFlats = async (req, res) => {
     const limit      = parseInt(req.query.limit) || 10;
     const offset     = (page - 1) * limit;
     const search     = req.query.search      || "";
-    const filterType = req.query.filter_type || "";
+    const filterType = String(req.query.filter_type || "").toUpperCase();
+    const hasTypeFilter = filterType === "OWNER" || filterType === "TENANT";
 
     const blocks = await Block.findAll({
       where: { society_id: req.user.society_id },
@@ -625,37 +643,72 @@ const getAssignedFlats = async (req, res) => {
       ...(search && { flat_number: { [Op.like]: `%${search}%` } }),
     };
 
-    const userWhere = { status: "ACTIVE" };
-    if (filterType === "OWNER" || filterType === "TENANT") {
-      userWhere.resident_type = filterType;
-    }
-
-    const { count, rows } = await Flat.findAndCountAll({
+    const queryOptions = {
       where: flatWhere,
       attributes: ["id", "flat_number", "flat_type", "floor_id", "block_id", "area_sqft"],
       include: [
         {
           model:      User,
           attributes: ["id", "name", "phone", "resident_type"],
-          where:      userWhere,
+          where:      { status: "ACTIVE" },
           required:   true,
         },
         {
           model:    Floor,
           required: false,
           attributes: ["id", "floor_number"],
-          include: [{ model: Block, required: false, attributes: ["id", "name"] }],
+          include: [{ model: Block, required: false, attributes: ["id", "name", "property_type"] }],
         },
         {
           model:    Block,
           required: false,
-          attributes: ["id", "name"],
+          attributes: ["id", "name", "property_type"],
         },
       ],
-      limit,
-      offset,
       order: [["flat_number", "ASC"]],
-    });
+    };
+
+    // Legacy/direct assignments can store residents without users.resident_type.
+    // Resolve the effective type from the current membership (OWNER/TENANT), or
+    // fall back to OWNER because the flat is directly assigned to this user.
+    const attachEffectiveResidentType = async (rows) => {
+      const userIds = [...new Set(rows.map((r) => r.User?.id).filter(Boolean))];
+      if (userIds.length === 0) return;
+      const memberships = await FlatMembership.findAll({
+        where: { user_id: { [Op.in]: userIds }, is_current: true },
+        attributes: ["user_id", "flat_id", "role"],
+      });
+      const roleByUserFlat = new Map();
+      for (const m of memberships) {
+        const role = String(m.role || "").toUpperCase();
+        if (role !== "OWNER" && role !== "TENANT") continue;
+        const key = `${m.user_id}:${m.flat_id}`;
+        if (!roleByUserFlat.has(key) || role === "OWNER") roleByUserFlat.set(key, role);
+      }
+      for (const row of rows) {
+        if (!row.User || row.User.resident_type) continue;
+        const role = roleByUserFlat.get(`${row.User.id}:${row.id}`) || "OWNER";
+        row.User.setDataValue("resident_type", role);
+      }
+    };
+
+    let rows;
+    let count;
+
+    if (hasTypeFilter) {
+      // The filter must run on the effective type, which is not a column on
+      // users for legacy rows. Fetch, enrich and filter before paginating.
+      const allRows = await Flat.findAll(queryOptions);
+      await attachEffectiveResidentType(allRows);
+      const matched = allRows.filter((r) => r.User?.resident_type === filterType);
+      count = matched.length;
+      rows = matched.slice(offset, offset + limit);
+    } else {
+      const result = await Flat.findAndCountAll({ ...queryOptions, limit, offset });
+      count = result.count;
+      rows = result.rows;
+      await attachEffectiveResidentType(rows);
+    }
 
     res.json({
       data: rows,
@@ -713,10 +766,14 @@ const getNeighbours = async (req, res) => {
     });
     const blockIds = blocks.map((b) => b.id);
 
-    const myFlat = await Flat.findOne({ where: { resident_id: req.user.id } });
+    const myFlats = await Flat.findAll({
+      where: { resident_id: req.user.id, block_id: { [Op.in]: blockIds } },
+      attributes: ["id"],
+    });
+    const myFlatIds = myFlats.map((f) => f.id);
 
     const where = { resident_id: { [Op.ne]: null }, block_id: { [Op.in]: blockIds } };
-    if (myFlat) where.id = { [Op.ne]: myFlat.id };
+    if (myFlatIds.length > 0) where.id = { [Op.notIn]: myFlatIds };
 
     const neighbours = await Flat.findAll({
       where,
@@ -779,6 +836,13 @@ const getFlatsByBlockAndFloor = async (req, res) => {
       return res.status(400).json({ message: "floorId must be a valid number" });
     }
 
+    const isSuperAdmin = req.user?.role === "SUPER_ADMIN" || req.user?.activeRole === "SUPER_ADMIN";
+    if (!isSuperAdmin && req.user?.society_id) {
+      const allowedBlock = await Block.findOne({ where: { id: blockId, society_id: req.user.society_id } });
+      if (!allowedBlock) {
+        return res.status(403).json({ message: "Block does not belong to your society." });
+      }
+    }
     const where = { block_id: blockId };
     if (floorId) {
       where.floor_id = floorId;
@@ -786,11 +850,34 @@ const getFlatsByBlockAndFloor = async (req, res) => {
 
     const flats = await Flat.findAll({
       where,
-      attributes: ["id", "flat_number", "flat_type", "resident_id", "floor_id", "block_id", "area_sqft"],
+      attributes: ["id", "flat_number", "flat_type", "resident_id", "floor_id", "block_id", "occupancy_status", "area_sqft"],
+      include: [
+        {
+          model: User,
+          attributes: ["id", "name", "phone"],
+          required: false,
+        },
+        {
+          model: Floor,
+          attributes: ["id", "floor_number"],
+          required: false,
+        },
+        {
+          model: Block,
+          attributes: ["id", "name", "property_type"],
+          required: false,
+        },
+      ],
       order: [["flat_number", "ASC"]],
     });
 
-    res.json(flats);
+    const enriched = flats.map((f) => {
+      const data = f.toJSON();
+      data.status = (data.resident_id || data.occupancy_status !== "VACANT") ? "Occupied" : "Vacant";
+      return data;
+    });
+
+    res.json(enriched);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: err.message });

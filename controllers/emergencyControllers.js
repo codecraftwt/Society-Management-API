@@ -28,23 +28,11 @@ const getOnShiftGuardId = async (societyId) => {
   return active ? active.guard_id : null;
 };
 
-const getFlatIdForUser = async (userId) => {
-  const flat = await Flat.findOne({ where: { resident_id: userId } });
-  if (flat) return flat.id;
+const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
 
-  const currentMembership = await FlatMembership.findOne({ where: { user_id: userId, is_current: true } });
-  if (currentMembership) return currentMembership.flat_id;
-
-  const anyMembership = await FlatMembership.findOne({ where: { user_id: userId } });
-  if (anyMembership) return anyMembership.flat_id;
-
-  const member = await HouseHoldMember.findOne({ where: { user_id: userId } });
-  if (member) return member.flat_id;
-
-  const user = await User.findByPk(userId);
-  if (user && user.flat_id) return user.flat_id;
-
-  return null;
+const getFlatIdForUser = async (userId, societyId = null) => {
+  const ids = await getUserAuthorizedFlatIds(userId, societyId);
+  return ids.length > 0 ? ids[0] : null;
 };
 
 const getPrimaryResidentId = async (userId) => {
@@ -122,7 +110,7 @@ const createEmergency = async (req, res) => {
     else if (senderKind === "ADMIN") {
       payload.admin_id = user.id;
       payload.source = "ADMIN";
-      const flatId = req.body.flat_id || await getFlatIdForUser(user.id);
+      const flatId = req.body.flat_id || await getFlatIdForUser(user.id, user.society_id);
       if (flatId) payload.flat_id = flatId;
     }
 
@@ -130,7 +118,7 @@ const createEmergency = async (req, res) => {
     else if (senderKind === "COMMITTEE") {
       payload.admin_id = user.id;
       payload.source = "COMMITTEE";
-      const flatId = req.body.flat_id || await getFlatIdForUser(user.id);
+      const flatId = req.body.flat_id || await getFlatIdForUser(user.id, user.society_id);
       if (flatId) payload.flat_id = flatId;
     }
 
@@ -138,7 +126,7 @@ const createEmergency = async (req, res) => {
     else if (senderKind === "RESIDENT") {
       const flatId = req.body.flat_id
         ? parseInt(req.body.flat_id, 10)
-        : await getFlatIdForUser(user.id);
+        : await getFlatIdForUser(user.id, user.society_id);
 
       if (!flatId) {
         return res.status(400).json({
@@ -167,7 +155,7 @@ const createEmergency = async (req, res) => {
     else if (senderKind === "FAMILY_MEMBER") {
       const flatId = req.body.flat_id
         ? parseInt(req.body.flat_id, 10)
-        : await getFlatIdForUser(user.id);
+        : await getFlatIdForUser(user.id, user.society_id);
 
       const primaryId = await getPrimaryResidentId(user.id);
 

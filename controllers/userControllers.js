@@ -1448,10 +1448,61 @@ const getResidents = async (req, res) => {
       ],
     }) : [];
 
+    // Query past memberships and resident history for paginated residents
+    const pastMemberships = paginatedIds.length > 0 ? await FlatMembership.findAll({
+      where: { user_id: { [Op.in]: paginatedIds }, is_current: false },
+      include: [{
+        model: Flat,
+        attributes: ["id", "flat_number", "flat_type", "floor_id", "occupancy_status"],
+        include: [
+          {
+            model: Floor,
+            attributes: ["id", "floor_number"],
+            required: false,
+            include: [{ model: Block, attributes: ["id", "name", "society_id"], required: false }],
+          },
+          {
+            model: Block,
+            attributes: ["id", "name", "society_id"],
+            required: false,
+          },
+        ],
+      }],
+      order: [["move_out_date", "DESC"], ["updatedAt", "DESC"]],
+    }) : [];
+
+    const pastResidentHistories = paginatedIds.length > 0 ? await ResidentHistory.findAll({
+      where: { user_id: { [Op.in]: paginatedIds } },
+      include: [{
+        model: Flat,
+        attributes: ["id", "flat_number", "flat_type", "floor_id", "occupancy_status"],
+        include: [
+          {
+            model: Floor,
+            attributes: ["id", "floor_number"],
+            required: false,
+            include: [{ model: Block, attributes: ["id", "name", "society_id"], required: false }],
+          },
+          {
+            model: Block,
+            attributes: ["id", "name", "society_id"],
+            required: false,
+          },
+        ],
+      }],
+      order: [["move_out_date", "DESC"], ["created_at", "DESC"]],
+    }) : [];
+
+    const pastSocIds = [
+      ...pastMemberships.map((m) => m.society_id || m.Flat?.Floor?.Block?.society_id || m.Flat?.Block?.society_id),
+      ...pastResidentHistories.map((h) => h.Flat?.Floor?.Block?.society_id || h.Flat?.Block?.society_id),
+    ].filter(Boolean);
+
     const primarySocIds = paginated.map((u) => u.society_id).filter(Boolean);
     const allSocIds = [...new Set([
       ...primarySocIds,
       ...userSocieties.map((us) => us.society_id),
+      ...pastSocIds,
     ])];
     const allSocieties = allSocIds.length > 0 ? await Society.findAll({
       where: { id: { [Op.in]: allSocIds } },
@@ -1470,6 +1521,7 @@ const getResidents = async (req, res) => {
         return {
           id:           flat.id,
           flat_id:      flat.id,
+          role:         m.role || null,
           flat_number:  flat.flat_number,
           flat_type:    flat.flat_type,
           floor_id:     flat.floor_id,
@@ -1497,6 +1549,7 @@ const getResidents = async (req, res) => {
           userFlats.push({
             id:           flat.id,
             flat_id:      flat.id,
+            role:         "OWNER",
             flat_number:  flat.flat_number,
             flat_type:    flat.flat_type,
             floor_id:     flat.floor_id,
@@ -1558,7 +1611,7 @@ const getResidents = async (req, res) => {
             flat_type: f.flat_type,
             floor_number: f.floor_number,
             block_name: f.block_name,
-            role: user.resident_type || "OWNER",
+            role: f.role || user.resident_type || "OWNER",
           });
         }
       });
@@ -1589,6 +1642,26 @@ const getResidents = async (req, res) => {
         if (thisSoc) scopedPrimarySoc = thisSoc;
       }
 
+      // Legacy/direct residents can have a null users.resident_type even
+      // though their active membership (or direct flat assignment) proves the
+      // role. Derive an effective type so list badges and filters agree with
+      // the detail view instead of silently dropping the Owner/Tenant chip.
+      const resolveResidentType = (flatsForType = []) => {
+        if (user.resident_type) return user.resident_type;
+        const flatIdSet = new Set(flatsForType.map((f) => f.id).filter(Boolean));
+        const roles = new Set(
+          allMemberships
+            .filter((m) => m.user_id === user.id && (flatIdSet.size === 0 || flatIdSet.has(m.flat_id)))
+            .map((m) => String(m.role || "").toUpperCase())
+            .filter((role) => role === "OWNER" || role === "TENANT")
+        );
+        if (roles.has("OWNER")) return "OWNER";
+        if (roles.has("TENANT")) return "TENANT";
+        if (flatsForType.length > 0) return "OWNER";
+        return null;
+      };
+      const effectiveResidentType = resolveResidentType(scopedFlats.length > 0 ? scopedFlats : userFlats);
+
       // Determine society-scoped or overall approval status
       const targetSocRecord = targetSocietyNum ? userSocMap.get(targetSocietyNum) : null;
       let effectiveApprovalStatus = user.approval_status;
@@ -1613,6 +1686,57 @@ const getResidents = async (req, res) => {
         ? (targetSocRecord ? targetSocRecord.membership_status === "PENDING" : user.approval_status === "PENDING")
         : (userSocietiesList.some((s) => s.membership_status === "PENDING") || user.approval_status === "PENDING");
 
+      // Past history & vacated calculation
+      const userPastMemberships = pastMemberships.filter((m) => m.user_id === user.id && m.Flat);
+      const userPastHistories = pastResidentHistories.filter((h) => h.user_id === user.id && h.Flat);
+
+      const historyMap = new Map();
+      userPastMemberships.forEach((m) => {
+        const flat = m.Flat;
+        const bSocId = m.society_id || flat.Floor?.Block?.society_id || flat.Block?.society_id || user.society_id;
+        const key = `${flat.id}_${m.role || "RESIDENT"}_${m.move_out_date || ""}`;
+        historyMap.set(key, {
+          id:           flat.id,
+          flat_id:      flat.id,
+          flat_number:  flat.flat_number,
+          flat_type:    flat.flat_type,
+          floor_number: flat.Floor?.floor_number ?? null,
+          block_name:   flat.Floor?.Block?.name || flat.Block?.name || null,
+          society_id:   bSocId || null,
+          society_name: societyMap[bSocId]?.name || null,
+          role:         m.role || user.resident_type || "RESIDENT",
+          move_in_date: m.move_in_date || null,
+          move_out_date: m.move_out_date || null,
+          status:       "VACATED",
+        });
+      });
+
+      userPastHistories.forEach((h) => {
+        const flat = h.Flat;
+        const bSocId = flat.Floor?.Block?.society_id || flat.Block?.society_id || user.society_id;
+        const key = `${flat.id}_${h.move_out_date || ""}`;
+        if (!historyMap.has(key)) {
+          historyMap.set(key, {
+            id:           flat.id,
+            flat_id:      flat.id,
+            flat_number:  flat.flat_number,
+            flat_type:    flat.flat_type,
+            floor_number: flat.Floor?.floor_number ?? null,
+            block_name:   flat.Floor?.Block?.name || flat.Block?.name || null,
+            society_id:   bSocId || null,
+            society_name: societyMap[bSocId]?.name || null,
+            role:         user.resident_type || "RESIDENT",
+            move_in_date: h.move_in_date || null,
+            move_out_date: h.move_out_date || null,
+            status:       "VACATED",
+          });
+        }
+      });
+
+      const occupancyHistory = Array.from(historyMap.values());
+      const isVacated = userFlats.length === 0 && occupancyHistory.length > 0;
+      const previousFlat = isVacated ? occupancyHistory[0] : null;
+
       return {
         id:                user.id,
         name:              user.name,
@@ -1627,7 +1751,11 @@ const getResidents = async (req, res) => {
         approval_status:   effectiveApprovalStatus,
         has_pending_approval: hasPendingMembership,
         roles:             scopedRoles,
-        resident_type:     user.resident_type || null,
+        resident_type:     effectiveResidentType,
+        is_vacated:        isVacated,
+        occupancy_status:  isVacated ? "VACATED" : (scopedFlats.length > 0 ? "OCCUPIED" : "UNASSIGNED"),
+        previous_flat:     previousFlat,
+        occupancy_history: occupancyHistory,
         vehicle_count:     user.vehicle_count  ?? 0,
         occupant_count:    user.occupant_count ?? 1,
         emergency_contact: user.emergency_contact || null,
@@ -1636,7 +1764,7 @@ const getResidents = async (req, res) => {
         societies:         scopedSocieties,
         society_name:      scopedPrimarySoc?.name || (scopedSocieties.map((s) => s.name).join(", ") || null),
         flats:             scopedFlats,
-        flat_id:      scopedFlats[0]?.id           || null,
+        flat_id:      scopedFlats[0]?.id           || (isVacated ? previousFlat?.flat_id : null),
         flat_number:  scopedFlats[0]?.flat_number   || null,
         flat_type:    scopedFlats[0]?.flat_type     || null,
         floor_number: scopedFlats[0]?.floor_number  || null,
@@ -3056,6 +3184,10 @@ const addTenantByOwner = async (req, res) => {
       vehicle_count, occupant_count,
       move_in_date, move_out_date,
     } = req.body;
+
+    if (!flat_id) {
+      return res.status(400).json({ message: "flat_id is required." });
+    }
 
     const ownerMembership = await FlatMembership.findOne({
       where: { flat_id, user_id: req.user.id, role: "OWNER", is_current: true },

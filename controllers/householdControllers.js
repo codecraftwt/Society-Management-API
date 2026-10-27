@@ -58,16 +58,12 @@ exports.addHouseholdMember = async (req, res) => {
     let targetFlatId = req.flatId;
 
     if (flat_id !== undefined && flat_id !== null && flat_id !== "") {
-      const ownedFlatIds = [
-        ...(await Flat.findAll({ where: { resident_id: req.user.id }, attributes: ["id"] })).map((f) => f.id),
-        ...(await HouseHoldMember.findAll({ where: { user_id: req.user.id }, attributes: ["flat_id"] }))
-          .map((m) => m.flat_id)
-          .filter(Boolean),
-      ];
+      const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
+      const ownedFlatIds = await getUserAuthorizedFlatIds(req.user.id, req.user.society_id);
 
       if (!ownedFlatIds.map(String).includes(String(flat_id))) {
         return res.status(403).json({
-          message: "You can only add members to your own flats",
+          message: "You can only add members to your own flats in this society",
         });
       }
 

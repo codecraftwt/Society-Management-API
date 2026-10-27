@@ -1,5 +1,5 @@
 
-const { Amenity, AmenityBooking, User, Flat, Notification } = require("../models");
+const { Amenity, AmenityBooking, User, Flat, Notification, Block, Payment } = require("../models");
 const { Op }                   = require("sequelize");
 const { sendPushNotification } = require("../utils/pushNotification");
 const { groupAmenityBookings } = require("../utils/groupAmenityBookings");
@@ -179,7 +179,11 @@ exports.disableAmenity = async (req, res) => {
 exports.getAllBookings = async (req, res) => {
   try {
     const { date, amenityId, status } = req.query;
-    const where = { society_id: req.user.society_id };
+    const requestedSocietyId = req.query.societyId || req.query.society_id;
+    const societyId = req.user?.activeRole === "SUPER_ADMIN"
+      ? (requestedSocietyId && requestedSocietyId !== "ALL" ? Number(requestedSocietyId) : null)
+      : req.user.society_id;
+    const where = societyId ? { society_id: societyId } : {};
 
     /* Range-aware date filter: match bookings whose [from_date, to_date] overlaps the queried date */
     if (date) {
@@ -194,9 +198,38 @@ exports.getAllBookings = async (req, res) => {
     const bookings = await AmenityBooking.findAll({
       where,
       include: [
-        { model: Amenity, attributes: ["name", "type"] },
-        { model: User,    attributes: ["name", "email", "phone"] },
-        { model: Flat,    attributes: ["flat_number"] },
+        {
+          model: Amenity,
+          attributes: [
+            "id", "name", "icon", "type", "booking_type",
+            "rate_per_hour", "slot_duration", "capacity",
+            "opening_time", "closing_time", "requires_approval",
+          ],
+        },
+        {
+          model: User,
+          attributes: ["id", "name", "email", "phone", "resident_type", "role", "profile_picture"],
+          include: [
+            {
+              model: Flat,
+              attributes: ["id", "flat_number", "flat_type", "occupancy_status"],
+              include: [{ model: Block, attributes: ["id", "name", "property_type"] }],
+              required: false,
+            },
+          ],
+          required: false,
+        },
+        {
+          model: Flat,
+          attributes: ["id", "flat_number", "flat_type", "occupancy_status"],
+          include: [{ model: Block, attributes: ["id", "name", "property_type"] }],
+          required: false,
+        },
+        {
+          model: Payment,
+          as: "payment",
+          required: false,
+        },
       ],
       order: [["from_date", "DESC"], ["start_time", "ASC"]],
     });
@@ -232,9 +265,38 @@ exports.getPendingBookings = async (req, res) => {
     const bookings = await AmenityBooking.findAll({
       where: { society_id: req.user.society_id, status: "PENDING" },
       include: [
-        { model: Amenity, attributes: ["name"] },
-        { model: User,    attributes: ["name", "phone"] },
-        { model: Flat,    attributes: ["flat_number"] },
+        {
+          model: Amenity,
+          attributes: [
+            "id", "name", "icon", "type", "booking_type",
+            "rate_per_hour", "slot_duration", "capacity",
+            "opening_time", "closing_time", "requires_approval",
+          ],
+        },
+        {
+          model: User,
+          attributes: ["id", "name", "email", "phone", "resident_type", "role", "profile_picture"],
+          include: [
+            {
+              model: Flat,
+              attributes: ["id", "flat_number", "flat_type", "occupancy_status"],
+              include: [{ model: Block, attributes: ["id", "name", "property_type"] }],
+              required: false,
+            },
+          ],
+          required: false,
+        },
+        {
+          model: Flat,
+          attributes: ["id", "flat_number", "flat_type", "occupancy_status"],
+          include: [{ model: Block, attributes: ["id", "name", "property_type"] }],
+          required: false,
+        },
+        {
+          model: Payment,
+          as: "payment",
+          required: false,
+        },
       ],
       order: [["from_date", "ASC"]],
     });

@@ -404,18 +404,21 @@ const updateStatus = async (req, res) => {
 
     let targetFlatId = flat_id;
 
-    // If the user is a TENANT, auto-fetch their assigned flat
+    // If the user is a TENANT, auto-fetch their assigned flat strictly in this society
     if (user.resident_type === "TENANT" || !targetFlatId) {
       const membership = await FlatMembership.findOne({
-        where: { user_id: user.id, is_current: true }
+        where: { user_id: user.id, is_current: true, society_id: user.society_id }
       });
       
       if (!membership) {
-        return res.status(400).json({ message: "No active flat assigned to this user." });
+        return res.status(400).json({ message: "No active flat assigned to this user in this society." });
       }
       targetFlatId = membership.flat_id;
     } else if (user.resident_type === "OWNER") {
-      // ✅ Security: Ensure owners can't raise complaints for rented flats
+      const isAuth = await isUserAuthorizedForFlat(user.id, targetFlatId, user.society_id);
+      if (!isAuth) {
+        return res.status(403).json({ message: "You are not authorized for the selected flat in this society." });
+      }
       const flat = await Flat.findByPk(targetFlatId);
       if (flat && flat.occupancy_status === "RENTED") {
         return res.status(400).json({ message: "Owners cannot raise complaints for units that are currently rented to a tenant." });

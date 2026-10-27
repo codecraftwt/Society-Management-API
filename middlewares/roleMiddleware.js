@@ -25,10 +25,16 @@ module.exports = (...allowedRoles) => {
     }
     if (userRoles.has("SOCIETY_ADMIN")) {
       userRoles.add("COMMITTEE_MEMBER");
+    }
+    if ((userRoles.has("COMMITTEE_MEMBER") || userRoles.has("COMMITTEE")) && !userRoles.has("SOCIETY_ADMIN")) {
       userRoles.add("RESIDENT");
     }
-    if (userRoles.has("COMMITTEE_MEMBER") || userRoles.has("COMMITTEE")) {
-      userRoles.add("RESIDENT");
+    if (userRoles.has("SOCIETY_ADMIN")) {
+      if (req.user.is_society_resident === true || req.user.can_switch_to_resident === true) {
+        userRoles.add("RESIDENT");
+      } else {
+        userRoles.delete("RESIDENT");
+      }
     }
 
     // Dynamic RBAC: If route permits administrative roles (SOCIETY_ADMIN or COMMITTEE_MEMBER), also allow ACCOUNTANT through

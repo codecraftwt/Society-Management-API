@@ -174,6 +174,11 @@ const notifyOnDutyGuard = async (societyId, title, message, actionRoute) => {
     if (isEmpty(flat_id)) {
       return res.status(400).json({ message: "Flat is required." });
     }
+    const { isUserAuthorizedForFlat } = require("../utils/accessHelpers");
+    const isFlatAuth = await isUserAuthorizedForFlat(req.user.id, flat_id, req.user.society_id);
+    if (!isFlatAuth) {
+      return res.status(403).json({ message: "You are not authorized for this flat in your active society." });
+    }
     if (!isValidPersonName(cleanName) && !isValidTitle(cleanName)) {
       return res.status(400).json({
         message: "Visitor name is required and must be at least 2 characters.",
