@@ -541,12 +541,19 @@ const createExpense = async (req, res) => {
       transaction: t,
     });
 
+    const formattedAmt = `₹${Number(amt).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const cleanReason = (expense.reason || "").toString().trim();
+    const auditReason = cleanReason
+      ? `Paid ${formattedAmt} to ${expense.pay_to} for ${cleanReason}`
+      : `Paid ${formattedAmt} to ${expense.pay_to}`;
+
     await auditLog({
       societyId,
       action: "EXPENSE_CREATE",
       entityType: "Expense",
       entityId: expense.id,
       newValue: expense.toJSON(),
+      reason: auditReason,
       actor: req.user,
       transaction: t,
     });
@@ -608,6 +615,18 @@ const updateExpense = async (req, res) => {
       await debit.update({ amount: updates.amount, description: `Expense: ${expense.reason} (paid to ${expense.pay_to})` }, { transaction: t });
     }
 
+    const formattedAmt = `₹${Number(expense.amount).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const cleanReason = (expense.reason || "").toString().trim();
+    let auditReason;
+    if (oldValue.amount !== undefined && Number(oldValue.amount) !== Number(expense.amount)) {
+      const oldAmt = `₹${Number(oldValue.amount).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      auditReason = `Updated payment for ${expense.pay_to}: ${oldAmt} to ${formattedAmt}${cleanReason ? ` (${cleanReason})` : ""}`;
+    } else {
+      auditReason = cleanReason
+        ? `Updated payment for ${expense.pay_to} (${cleanReason} - ${formattedAmt})`
+        : `Updated payment details for ${expense.pay_to}`;
+    }
+
     await auditLog({
       societyId,
       action: "EXPENSE_UPDATE",
@@ -615,6 +634,7 @@ const updateExpense = async (req, res) => {
       entityId: expense.id,
       oldValue,
       newValue: expense.toJSON(),
+      reason: auditReason,
       actor: req.user,
       transaction: t,
     });
@@ -661,6 +681,15 @@ const voidExpense = async (req, res) => {
       });
     }
 
+    const formattedAmt = `₹${Number(expense.amount).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const userReason = (req.body?.reason || "").toString().trim();
+    const cleanReason = (expense.reason || "").toString().trim();
+    const auditReason = userReason
+      ? `Cancelled payment to ${expense.pay_to}: ${userReason}`
+      : (cleanReason
+          ? `Cancelled payment of ${formattedAmt} to ${expense.pay_to} (${cleanReason})`
+          : `Cancelled payment of ${formattedAmt} to ${expense.pay_to}`);
+
     await auditLog({
       societyId,
       action: "EXPENSE_VOID",
@@ -668,7 +697,7 @@ const voidExpense = async (req, res) => {
       entityId: expense.id,
       oldValue: { status: "POSTED" },
       newValue: { status: "VOID" },
-      reason: req.body?.reason || null,
+      reason: auditReason,
       actor: req.user,
       transaction: t,
     });

@@ -102,14 +102,15 @@ const createParkingSlots = async (req, res) => {
 ═══════════════════════════════════════════ */
 const getParkingSlots = async (req, res) => {
   try {
-    const page         = Math.max(1,   parseInt(req.query.page)   || 1);
-    const limit        = Math.min(100, parseInt(req.query.limit)  || 20);
+    const page         = Math.max(1,    parseInt(req.query.page)   || 1);
+    const limit        = Math.min(1000, parseInt(req.query.limit)  || 20);
     const offset       = (page - 1) * limit;
     const search       = req.query.search?.trim() || "";
     const vehicleType  = req.query.vehicle_type  || "ALL";
     const statusFilter = req.query.status        || "ALL";
     const parkingType  = req.query.parking_type || "ALL";
     const wingFilter   = req.query.wing;
+    const flatIdFilter = req.query.flat_id ? parseInt(req.query.flat_id, 10) : null;
 
     const targetSocietyId = resolveTargetSocietyId(req);
 
@@ -120,6 +121,7 @@ const getParkingSlots = async (req, res) => {
     if (statusFilter !== "ALL") where.status = statusFilter;
     if (parkingType !== "ALL") where.parking_type = parkingType;
     if (wingFilter && wingFilter !== "ALL") where.wing = wingFilter;
+    if (flatIdFilter && !isNaN(flatIdFilter)) where.flat_id = flatIdFilter;
 
     if (search) {
       const cleanSearch = search.replace(/[\s\-_]+/g, "");
@@ -769,7 +771,7 @@ const getMyAllocatedSlots = async (req, res) => {
               attributes: ["id", "floor_number"],
               include: [{ model: Block, required: false, attributes: ["id", "name"] }],
             },
-            { model: Block, required: true, where: { society_id: societyId }, attributes: ["id", "name"] },
+            { model: Block, required: false, attributes: ["id", "name"] },
           ],
         },
       ],
@@ -781,12 +783,37 @@ const getMyAllocatedSlots = async (req, res) => {
       ],
     });
 
+    // Fallback: If slots are assigned to flat/resident but don't have direct Vehicle.parking_slot_id, resolve from flat/resident
+    const missingSlotFlats = slots.filter((s) => !s.Vehicle && (s.flat_id || s.resident_id));
+    let fallbackVehiclesMap = {};
+    if (missingSlotFlats.length > 0) {
+      const extraVehicles = await Vehicle.findAll({
+        where: {
+          society_id: societyId,
+          [Op.or]: [
+            { flat_id: { [Op.in]: missingSlotFlats.map((s) => s.flat_id).filter(Boolean) } },
+            { resident_id: userId },
+            { resident_id: primaryResidentId },
+          ],
+        },
+        attributes: ["id", "vehicle_number", "vehicle_name", "vehicle_type", "flat_id", "resident_id"],
+      });
+      extraVehicles.forEach((v) => {
+        if (v.flat_id && !fallbackVehiclesMap[`flat_${v.flat_id}`]) {
+          fallbackVehiclesMap[`flat_${v.flat_id}`] = v;
+        }
+        if (v.resident_id && !fallbackVehiclesMap[`res_${v.resident_id}`]) {
+          fallbackVehiclesMap[`res_${v.resident_id}`] = v;
+        }
+      });
+    }
+
     /* 3️⃣ Shape response — trust parking_type from DB directly,
           no workaround needed once adminAssignResidentSlot sets
           parking_type = "EXTRA" correctly on the slot row        */
     const enrichedSlots = slots.map((slot) => {
       const s       = slot.toJSON();
-      const vehicle = s.Vehicle || null;
+      const vehicle = s.Vehicle || (s.flat_id ? fallbackVehiclesMap[`flat_${s.flat_id}`] : null) || (s.resident_id ? fallbackVehiclesMap[`res_${s.resident_id}`] : null);
       const flat    = s.Flat    || null;
 
       return {
@@ -797,7 +824,7 @@ const getMyAllocatedSlots = async (req, res) => {
         parking_type:   s.parking_type,  // ← trust DB directly
         status:         s.status,
         flat_id:        s.flat_id,
-        is_occupied:    !!vehicle,
+        is_occupied:    !!vehicle || s.status === "ASSIGNED" || s.status === "OCCUPIED",
         flat: flat ? {
           id:           flat.id,
           flat_number:  flat.flat_number,

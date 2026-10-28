@@ -128,6 +128,51 @@ async function auditLog({
   actor,
   transaction,
 }) {
+  let resolvedReason = reason && typeof reason === "string" ? reason.trim() : null;
+
+  if (!resolvedReason) {
+    const oldV = oldValue || {};
+    const newV = newValue || {};
+    const rawAmt = newV.amount ?? oldV.amount ?? newV.opening_balance ?? oldV.opening_balance;
+    const formattedAmt =
+      rawAmt !== undefined && rawAmt !== null && !isNaN(Number(rawAmt))
+        ? `₹${Number(rawAmt).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        : "";
+    const payee = newV.pay_to || oldV.pay_to || "";
+
+    const purpose = (newV.reason || oldV.reason || "").toString().trim();
+
+    if (action === "EXPENSE_CREATE") {
+      resolvedReason = purpose
+        ? `Paid ${formattedAmt || "amount"} to ${payee || "vendor"} for ${purpose}`
+        : `Paid ${formattedAmt || "amount"} to ${payee || "vendor"}`;
+    } else if (action === "EXPENSE_VOID") {
+      resolvedReason = purpose
+        ? `Cancelled payment of ${formattedAmt || "amount"} to ${payee || "vendor"} (${purpose})`
+        : `Cancelled payment of ${formattedAmt || "amount"} to ${payee || "vendor"}`;
+    } else if (action === "EXPENSE_UPDATE") {
+      const oldRawAmt = oldV.amount;
+      const oldAmt = oldRawAmt !== undefined && oldRawAmt !== null && !isNaN(Number(oldRawAmt))
+        ? `₹${Number(oldRawAmt).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        : "";
+      if (oldAmt && formattedAmt && oldAmt !== formattedAmt) {
+        resolvedReason = `Updated payment for ${payee || "vendor"}: ${oldAmt} to ${formattedAmt}${purpose ? ` (${purpose})` : ""}`;
+      } else {
+        resolvedReason = purpose
+          ? `Updated payment for ${payee || "vendor"} (${purpose} - ${formattedAmt || "amount"})`
+          : `Updated payment details for ${payee || "vendor"}`;
+      }
+    } else if (action === "OPENING_BALANCE_SET") {
+      resolvedReason = `Opening balance set to ${formattedAmt || "amount"}`;
+    } else if (action === "OPENING_BALANCE_ADJUST") {
+      resolvedReason = `Opening balance changed to ${formattedAmt || "amount"}`;
+    } else if (action === "PAYMENT_REVERSED") {
+      resolvedReason = `Payment of ${formattedAmt || "amount"} reversed`;
+    } else if (action === "MANUAL_ADJUSTMENT") {
+      resolvedReason = "Manual balance adjustment";
+    }
+  }
+
   return FinancialAuditLog.create(
     {
       society_id: societyId,
@@ -136,7 +181,7 @@ async function auditLog({
       entity_id: entityId,
       old_value: oldValue,
       new_value: newValue,
-      reason,
+      reason: resolvedReason,
       performed_by: actor?.id ?? null,
       performed_by_role: resolveActorRole(actor),
       performed_at: new Date(),

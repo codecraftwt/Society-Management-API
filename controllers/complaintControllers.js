@@ -11,7 +11,10 @@ const { sendPushNotification } = require("../utils/pushNotification");
 const { Op } = require("sequelize");
 const notificationService = require("../services/notificationService");
 const FlatMembership = require("../models/FlatMembership");
-const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
+const {
+  getUserAuthorizedFlatIds,
+  isUserAuthorizedForFlat,
+} = require("../utils/accessHelpers");
 
 
 
