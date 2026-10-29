@@ -150,7 +150,22 @@ async function isUserResidentOfSociety(user, societyId = null) {
         include: blockInclude,
       }],
     });
-    return Boolean(household);
+    if (household) return true;
+
+    // 4. Check active accountant assignment marked as society resident
+    if (targetSocId) {
+      const assignment = await AccountantAssignment.findOne({
+        where: {
+          user_id: user.id,
+          society_id: targetSocId,
+          status: "ACTIVE",
+          is_society_resident: true,
+        },
+      });
+      if (assignment) return true;
+    }
+
+    return false;
   } catch (err) {
     return false;
   }
@@ -225,8 +240,16 @@ async function getAvailablePanels(user) {
     if (assignment || user.role === "ACCOUNTANT") {
       if (!panels.includes("ACCOUNTANT")) panels.push("ACCOUNTANT");
 
+      // An accountant can also be a resident when their active assignment
+      // identifies them as society-resident. Include the Resident panel so
+      // the client can obtain a valid Resident-scoped token instead of
+      // repeatedly receiving a 403 Access Restricted response.
+      const isResident = (assignment?.is_society_resident === true) || await isUserResidentOfSociety(user, user.society_id);
+      if (isResident && !panels.includes("RESIDENT")) {
+        panels.push("RESIDENT");
+      }
+
       if (isOutsiderAccountant(user)) {
-        const isResident = assignment ? Boolean(assignment.is_society_resident) : false;
         if (!isResident) {
           const idx = panels.indexOf("RESIDENT");
           if (idx !== -1) panels.splice(idx, 1);
@@ -392,9 +415,12 @@ async function sendOtpEmail(toEmail, otp, userName) {
     JWT HELPER
     ===== */
 function issueAccessToken(user, activeRole, targetSocietyId, customRoles) {
-  const roles = customRoles && customRoles.length > 0 ? customRoles : resolveUserRoles(user);
+  let roles = customRoles && customRoles.length > 0 ? [...customRoles] : resolveUserRoles(user);
+  if (activeRole && !roles.includes(activeRole)) {
+    roles.push(activeRole);
+  }
 
-  const resolvedActiveRole = roles.includes(activeRole) ? activeRole : roles[0];
+  const resolvedActiveRole = activeRole || roles[0];
 
   const payload = {
     id: user.id,
@@ -927,6 +953,9 @@ exports.switchRole = async (req, res) => {
       });
     }
 
+    if (!societyRoles.includes(role)) {
+      societyRoles.push(role);
+    }
     const { token } = issueAccessToken(user, role, targetSocietyId, societyRoles);
     const residencyFlags = await getResidencyFlags(scopedUser, availablePanels);
     const dynamicPermissions = await fetchEffectivePermissions(targetSocietyId, role);

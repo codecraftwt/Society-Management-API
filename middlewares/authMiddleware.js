@@ -2,6 +2,7 @@ const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const UserSociety = require("../models/UserSociety");
 const UserSocietyRole = require("../models/UserSocietyRole");
+const { isUserResidentOfSociety } = require("../utils/accessHelpers");
 
 module.exports = async (req, res, next) => {
   try {
@@ -88,6 +89,15 @@ module.exports = async (req, res, next) => {
       }
     }
 
+    // Check if the user is a resident of this target society
+    const isResident = targetSocietyId
+      ? await isUserResidentOfSociety(user, targetSocietyId)
+      : false;
+
+    if (isResident && !roles.includes("RESIDENT")) {
+      roles = [...roles, "RESIDENT"];
+    }
+
     const reqActiveRole = req.headers["x-active-role"] || req.query.role;
     let activeRole = decoded.activeRole;
 
@@ -95,10 +105,11 @@ module.exports = async (req, res, next) => {
       reqActiveRole &&
       (roles.includes(reqActiveRole.toUpperCase()) ||
         ((reqActiveRole.toUpperCase() === "COMMITTEE_MEMBER" || reqActiveRole.toUpperCase() === "COMMITTEE") &&
-          (user.is_committee_member || user.is_committee || roles.includes("COMMITTEE_MEMBER"))))
+          (user.is_committee_member || user.is_committee || roles.includes("COMMITTEE_MEMBER"))) ||
+        (reqActiveRole.toUpperCase() === "RESIDENT" && isResident))
     ) {
       activeRole = reqActiveRole.toUpperCase() === "COMMITTEE" ? "COMMITTEE_MEMBER" : reqActiveRole.toUpperCase();
-    } else if (!activeRole || !roles.includes(activeRole)) {
+    } else if (!activeRole || (!roles.includes(activeRole) && !(activeRole === "RESIDENT" && isResident))) {
       activeRole = roles[0];
     }
 
@@ -107,6 +118,8 @@ module.exports = async (req, res, next) => {
       society_id: targetSocietyId,
       roles,
       activeRole,
+      is_society_resident: isResident,
+      can_switch_to_resident: isResident,
       ...(membership
         ? {
             resident_type: membership.resident_type ?? user.resident_type,

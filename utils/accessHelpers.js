@@ -1,4 +1,4 @@
-const { Flat, Block, FlatMembership, HouseHoldMember, User, UserSociety } = require("../models");
+const { Flat, Block, FlatMembership, HouseHoldMember, User, UserSociety, AccountantAssignment } = require("../models");
 const { Op } = require("sequelize");
 
 /**
@@ -297,7 +297,37 @@ const getFlatForUser = async (userId) => {
     });
   }
 
-  return null;
+};
+
+/**
+ * Checks whether a user is genuinely a resident of a given society.
+ * True if they have an active flat (owner, tenant, household member) or
+ * an accountant assignment marked as society resident.
+ */
+const isUserResidentOfSociety = async (user, societyId = null) => {
+  if (!user || !user.id) return false;
+  const targetSocId = societyId || user.society_id;
+  try {
+    const flatIds = await getUserAuthorizedFlatIds(user.id, targetSocId);
+    if (flatIds && flatIds.length > 0) return true;
+
+    if (AccountantAssignment && targetSocId) {
+      const assignment = await AccountantAssignment.findOne({
+        where: {
+          user_id: user.id,
+          society_id: Number(targetSocId),
+          status: "ACTIVE",
+          is_society_resident: true,
+        },
+      });
+      if (assignment) return true;
+    }
+
+    return false;
+  } catch (err) {
+    console.error("[accessHelpers] isUserResidentOfSociety error:", err.message);
+    return false;
+  }
 };
 
 module.exports = {
@@ -307,5 +337,6 @@ module.exports = {
   isUserAuthorizedForFlat,
   getSocietyMemberUserIds,
   findAuthorizedFlat,
-  getFlatForUser
+  getFlatForUser,
+  isUserResidentOfSociety,
 };

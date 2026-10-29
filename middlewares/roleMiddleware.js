@@ -26,15 +26,18 @@ module.exports = (...allowedRoles) => {
     if (userRoles.has("SOCIETY_ADMIN")) {
       userRoles.add("COMMITTEE_MEMBER");
     }
-    if ((userRoles.has("COMMITTEE_MEMBER") || userRoles.has("COMMITTEE")) && !userRoles.has("SOCIETY_ADMIN")) {
+
+    // Residency access: If the user is a verified resident of the society, grant RESIDENT role
+    // regardless of whether they are a Society Admin, Committee Member, or Accountant.
+    if (req.user.is_society_resident === true || req.user.can_switch_to_resident === true) {
       userRoles.add("RESIDENT");
-    }
-    if (userRoles.has("SOCIETY_ADMIN")) {
-      if (req.user.is_society_resident === true || req.user.can_switch_to_resident === true) {
-        userRoles.add("RESIDENT");
-      } else {
+    } else if (req.user.is_society_resident === false) {
+      // Confirmed outsider: only remove RESIDENT if user is an outsider admin/accountant
+      if (userRoles.has("SOCIETY_ADMIN") || userRoles.has("ACCOUNTANT")) {
         userRoles.delete("RESIDENT");
       }
+    } else if ((userRoles.has("COMMITTEE_MEMBER") || userRoles.has("COMMITTEE")) && !userRoles.has("SOCIETY_ADMIN")) {
+      userRoles.add("RESIDENT");
     }
 
     // Dynamic RBAC: If route permits administrative roles (SOCIETY_ADMIN or COMMITTEE_MEMBER), also allow ACCOUNTANT through
