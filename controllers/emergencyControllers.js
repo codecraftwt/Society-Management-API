@@ -239,17 +239,16 @@ const createEmergency = async (req, res) => {
       other_reason: payload.other_reason || "",
     };
 
-    // Gather ALL active users in the society to notify (excluding sender)
+    // Gather ALL active users in the society to notify (including sender so mobile devices are notified)
     const targetUsers = await User.findAll({
       where: {
         society_id: payload.society_id,
         status: "ACTIVE",
-        id: { [Op.ne]: user.id }
       },
       attributes: ['id', 'name', 'role', 'roles', 'fcm_token']
     });
 
-    for (const targetUser of targetUsers) {
+    await Promise.allSettled(targetUsers.map(async (targetUser) => {
       const uRoles = Array.isArray(targetUser.roles) ? targetUser.roles : [targetUser.role];
       const isGuard = targetUser.role === "GUARD" || uRoles.includes("GUARD");
       const isCommitteeOrAdmin =
@@ -312,13 +311,38 @@ const createEmergency = async (req, res) => {
       } catch (err) {
         console.error("Failed to notify user " + targetUser.id + ":", err.message);
       }
-    }
+    }));
 
     // Broadcast general socket emergency event to society room
     if (global.io && payload.society_id) {
       global.io.to(`society_${payload.society_id}`).emit("emergency_alert", {
         ...emergencyPushData,
+        id: emergency.id,
         alertId: String(emergency.id),
+        society_id: payload.society_id,
+        societyId: payload.society_id,
+        status: emergency.status || "ACTIVE",
+        type: payload.type || "OTHER",
+        alert_type: payload.type || "OTHER",
+        message: payload.message || alertBody,
+        other_reason: payload.other_reason || "",
+        source: payload.source || (payload.guard_id ? "GUARD" : "RESIDENT"),
+        created_at: emergency.created_at || emergency.createdAt || new Date().toISOString(),
+        createdAt: emergency.created_at || emergency.createdAt || new Date().toISOString(),
+        flat_id: payload.flat_id || null,
+        resident_id: payload.resident_id || null,
+        guard_id: payload.guard_id || null,
+        admin_id: payload.admin_id || null,
+        Flat: senderFlatNumber ? {
+          id: payload.flat_id,
+          flat_number: senderFlatNumber,
+          Block: senderBlockName ? { name: senderBlockName } : null,
+        } : null,
+        Resident: user ? {
+          id: user.id,
+          name: user.name,
+          phone: user.phone || null,
+        } : null,
       });
     }
 
@@ -759,12 +783,24 @@ const resolveEmergency = async (req, res) => {
       if (global.io) {
         global.io
           .to(`society_${alert.society_id}`)
-          .emit("emergency_resolved", { id: alert.id, alertId: String(alert.id), status: "RESOLVED" });
+          .emit("emergency_resolved", {
+            id: alert.id,
+            alertId: String(alert.id),
+            society_id: alert.society_id,
+            societyId: alert.society_id,
+            status: "RESOLVED",
+          });
       }
     } else if (global.io) {
       global.io
         .to(`society_${alert.society_id}`)
-        .emit("emergency_resolved", { id: alert.id, status: "RESOLVED" });
+        .emit("emergency_resolved", {
+          id: alert.id,
+          alertId: String(alert.id),
+          society_id: alert.society_id,
+          societyId: alert.society_id,
+          status: "RESOLVED",
+        });
     }
 
     res.json({ success: true, message: "Emergency resolved successfully", alert });
@@ -800,6 +836,37 @@ const updateEmergency = async (req, res) => {
 
     await alert.save();
 
+    if (global.io) {
+      if (alert.status === "RESOLVED") {
+        global.io
+          .to(`society_${alert.society_id}`)
+          .emit("emergency_resolved", {
+            id: alert.id,
+            alertId: String(alert.id),
+            society_id: alert.society_id,
+            societyId: alert.society_id,
+            status: "RESOLVED",
+          });
+      } else {
+        global.io
+          .to(`society_${alert.society_id}`)
+          .emit("emergency_alert", {
+            id: alert.id,
+            alertId: String(alert.id),
+            society_id: alert.society_id,
+            societyId: alert.society_id,
+            status: alert.status,
+            type: alert.type,
+            alert_type: alert.type,
+            message: alert.message,
+            other_reason: alert.other_reason,
+            source: alert.source,
+            created_at: alert.created_at,
+            createdAt: alert.created_at,
+          });
+      }
+    }
+
     res.json({ success: true, message: "Emergency alert updated successfully", alert });
   } catch (err) {
     console.error("updateEmergency error:", err);
@@ -818,8 +885,22 @@ const deleteEmergency = async (req, res) => {
       return res.status(403).json({ message: "Unauthorized to delete this emergency" });
     }
 
+    const societyId = alert.society_id;
     await EmergencyAcknowledgement.destroy({ where: { emergency_alert_id: id } });
     await alert.destroy();
+
+    if (global.io) {
+      global.io
+        .to(`society_${societyId}`)
+        .emit("emergency_resolved", {
+          id: alert.id,
+          alertId: String(alert.id),
+          society_id: societyId,
+          societyId: societyId,
+          status: "RESOLVED",
+          deleted: true,
+        });
+    }
 
     res.json({ success: true, message: "Emergency alert deleted successfully" });
   } catch (err) {

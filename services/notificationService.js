@@ -173,7 +173,14 @@ const sendNotification = async ({
       : [await Notification.create(defaults), true];
 
     if (!created) {
-      return normalizeNotification(row.toJSON());
+      // A notification row can exist even when its FCM transport failed (for
+      // example because Firebase was temporarily unavailable). Do not treat
+      // persistence as proof of delivery; allow the caller to retry unless
+      // this recipient already has a confirmed successful push.
+      if (row.push_status === "SENT") {
+        return normalizeNotification(row.toJSON());
+      }
+      transportDedupeMap.delete(sourceEventId || `${type}:${row.id}:${receiverUserId}`);
     }
 
     createdRecord = row.toJSON();

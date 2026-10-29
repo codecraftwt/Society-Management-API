@@ -135,10 +135,14 @@ const runGuardAttendanceAutomation = async () => {
         if (shouldAutoClose(attendance, now)) {
           const [updatedCount] = await GuardAttendance.update(
             {
+              // Auto punch-out sets punch_out to the scheduled shift end time,
+              // while auto_punch_out_at records the actual execution timestamp.
               punch_out: attendance.scheduled_end_at,
               worked_minutes: Math.max(
                 0,
-                Math.round((new Date(attendance.scheduled_end_at).getTime() - new Date(attendance.punch_in).getTime()) / 60000)
+                Math.round(
+                  (new Date(attendance.scheduled_end_at).getTime() - new Date(attendance.punch_in).getTime()) / 60000
+                )
               ),
               status: "PUNCHED_OUT",
               is_auto_punch_out: true,

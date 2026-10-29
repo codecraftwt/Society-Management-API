@@ -172,8 +172,15 @@ function resolveSocietyFor(identity, requestedSocietyId) {
     return { allowed: true, societyId: requested };
   }
 
-  const membership = identity.memberships?.find((m) => m.societyId === requested);
-  if (!membership) return { allowed: false, societyId: null };
+  const membership = identity.memberships?.find(
+    (m) => Number(m.societyId) === requested
+  );
+  if (!membership) {
+    if (identity.defaultSocietyId != null && Number(identity.defaultSocietyId) === requested) {
+      return { allowed: true, societyId: requested };
+    }
+    return { allowed: false, societyId: null };
+  }
   if (membership.status && membership.status !== "ACTIVE") {
     return { allowed: false, societyId: null };
   }

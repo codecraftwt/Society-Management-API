@@ -66,6 +66,17 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
     type === 'MEDICAL' ||
     type === 'SECURITY' ||
     type === 'GATE_PANIC' ||
+    type === 'LIFT_STUCK' ||
+    type === 'ANIMAL' ||
+    type === 'OTHER' ||
+    type === 'THEFT' ||
+    type === 'ACCIDENT' ||
+    type === 'EARTHQUAKE' ||
+    type === 'FLOOD' ||
+    type === 'GAS_LEAK' ||
+    Boolean(stringifiedData.alertId) ||
+    Boolean(stringifiedData.alert_id) ||
+    Boolean(stringifiedData.alert_type) ||
     actionType === 'VIEW_EMERGENCY');
 
   const channelId = isEmergency ? 'emergency_channel_v3' : 'default_channel_id';
@@ -113,11 +124,19 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
     },
   };
 
-  try {
-    const response = await admin.messaging().send(message);
-    console.log("? Push Notification Sent:", response);
-    return { status: "SENT", error: null };
-  } catch (error) {
+  let lastError = null;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        const response = await admin.messaging().send(message);
+        console.log("? Push Notification Sent:", response);
+        return { status: "SENT", error: null };
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+
+    const error = lastError || new Error("Push failed");
     console.error("? Push Notification Error:", error.message);
     const isInvalidToken =
       error.code === 'messaging/registration-token-not-registered' ||
@@ -129,8 +148,7 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
         await User.update({ fcm_token: null }, { where: { fcm_token: fcmToken } });
       } catch (dbError) {}
     }
-    return { status: "FAILED", error: String(error.message || error.code || "Push failed") };
-  }
+  return { status: "FAILED", error: String(error.message || error.code || "Push failed") };
 };
 
 module.exports = { sendPushNotification, isPushEnabled };
