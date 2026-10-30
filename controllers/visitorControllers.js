@@ -371,6 +371,30 @@ const getSocietyVisitors = async (req, res) => {
       offset,
     });
 
+    const parkingRequests = await ParkingRequest.findAll({
+      where: {
+        ...(activeSocId ? { society_id: activeSocId } : {}),
+        parking_type: "VISITOR",
+        flat_id: { [Op.in]: rows.map((row) => row.flat_id).filter(Boolean) },
+        vehicle_number: { [Op.in]: rows.map((row) => row.vehicle_number).filter(Boolean) },
+      },
+      attributes: ["flat_id", "vehicle_number", "assigned_spot", "status"],
+      order: [["createdAt", "DESC"]],
+    });
+    const parkingByVisitor = {};
+    parkingRequests.forEach((request) => {
+      const key = `${request.flat_id}|${String(request.vehicle_number || "").toUpperCase()}`;
+      if (!parkingByVisitor[key]) parkingByVisitor[key] = request.toJSON();
+    });
+    rows.forEach((row) => {
+      const key = `${row.flat_id}|${String(row.vehicle_number || "").toUpperCase()}`;
+      const parking = parkingByVisitor[key];
+      row.setDataValue("parking", parking ? {
+        slot_number: parking.assigned_spot,
+        status: parking.status,
+      } : null);
+    });
+
     res.json({
       data:       rows,
       counts:     { ALL: allCount, IN: inCount, OUT: outCount },

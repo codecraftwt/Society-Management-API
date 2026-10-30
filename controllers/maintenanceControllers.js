@@ -815,8 +815,6 @@ const listBills = async (req, res) => {
       }
     }
 
-    const hasRateFilter = Boolean(selectedType || selectedRateId || flat_type);
-
     const bills = await Bill.findAll({
       where,
       attributes: [
@@ -838,7 +836,10 @@ const listBills = async (req, res) => {
           model: MaintenanceRate,
           as: "rate",
           attributes: ["id", "name", "maintenance_type", "flat_type", "amount", "rate_per_sqft"],
-          required: hasRateFilter,
+          // Every maintenance bill must belong to a maintenance rate in the
+          // logged-in society. Making this join required prevents legacy or
+          // cross-society bills from appearing in the generated-bills tab.
+          required: true,
           where: rateWhere,
         },
         {

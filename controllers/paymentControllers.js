@@ -156,14 +156,14 @@ const verifyDemoPayment = async (req, res) => {
 
 const createOrder = async (req, res) => {
   try {
-    if (!razorpay) {
-      return res.status(503).json({ success: false, message: "Payment gateway not configured." });
-    }
-
     const { bill_id, type } = req.body;
 
     if (!bill_id) {
       return res.status(400).json({ success: false, message: "bill_id is required" });
+    }
+
+    if (!razorpay) {
+      return res.status(503).json({ success: false, message: "Payment gateway not configured." });
     }
 
     let amount = 0;

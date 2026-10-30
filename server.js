@@ -213,11 +213,19 @@ io.on("connection", (socket) => {
    DATABASE + SERVER START
 ───────────────────────────────────────────── */
 const PORT = process.env.PORT || 5000;
+const allowLegacyStartupSchemaMutations =
+  process.env.ALLOW_LEGACY_STARTUP_SCHEMA_MUTATIONS === "true" &&
+  process.env.NODE_ENV === "development";
 
 sequelize
   .authenticate()
   .then(async () => {
     console.log("DB connected");
+    if (!allowLegacyStartupSchemaMutations) {
+      console.log("[DB] Startup schema mutation is disabled. Run the tracked migration command separately.");
+      return;
+    }
+    console.warn("[DB] Legacy startup schema mutation is enabled for an isolated non-production environment.");
     try {
       await sequelize.query("ALTER TABLE bills MODIFY COLUMN status VARCHAR(50) NOT NULL DEFAULT 'PENDING'");
       console.log("[DB Migration] Updated bills.status column to VARCHAR(50)");
@@ -804,7 +812,18 @@ sequelize
     return sequelize.sync();
   })
   .then(async () => {
-    console.log("All models synced");
+    console.log("Database ready; migrations are managed separately.");
+
+    if (!allowLegacyStartupSchemaMutations) {
+      startOtpCleanup();
+      server.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+        require("./jobs/leaseReminderCron");
+        console.log("[Jobs] Lease reminder cron registered.");
+        require("./jobs/guardAttendanceAutomation").startGuardAttendanceAutomationJob();
+      });
+      return;
+    }
 
     // Backfill AccountantAssignment for existing accountants
     try {
@@ -863,3 +882,5 @@ process.on("unhandledRejection", (reason, promise) => {
 process.on("uncaughtException", (err) => {
   console.error("[Process Error] Uncaught Exception thrown:", err);
 });
+
+// NOTE: Use migrations for schema changes. Do not rely on sequelize.sync() in production.

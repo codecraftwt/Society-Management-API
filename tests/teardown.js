@@ -76,7 +76,7 @@ module.exports = async function globalTeardown() {
     /* Child rows first. Tags come from tests/helpers/api.js `unique()` prefixes
        and the literal fixtures used by notices-complaints.test.js. */
     const statements = [
-        ["complaint_comments", "DELETE FROM complaint_comments WHERE comment = 'test comment'"],
+        ["complaint_comments", "DELETE FROM complaint_comments WHERE message = 'test comment'"],
         ["complaint_read_status", "DELETE FROM complaint_read_status WHERE complaint_id IN (SELECT id FROM complaints WHERE title LIKE 'Complaint-%' OR title = 'x')"],
         ["notifications (test notices/complaints)", "DELETE FROM notifications WHERE message LIKE '%\"x\"%' OR message LIKE '%API Notice-%' OR message LIKE '%Complaint-%'"],
         ["amenity_bookings (test)", "DELETE FROM amenity_bookings WHERE amenity_id IN (SELECT id FROM amenities WHERE name LIKE 'Amenity-%')"],
@@ -84,7 +84,9 @@ module.exports = async function globalTeardown() {
         ["billing_rules (test)", "DELETE FROM billing_rules WHERE name LIKE 'Rule-%'"],
         ["guard_logs (test)", "DELETE FROM guard_logs WHERE text LIKE 'API log-%'"],
         ["vehicles (test)", "DELETE FROM vehicles WHERE vehicle_number LIKE 'TEST-%'"],
-        ["visitor_preapprovals (test)", "DELETE FROM visitor_preapprovals WHERE purpose LIKE 'Guest-%'"],
+        ["visitor_preapprovals (test)", "DELETE FROM visitor_preapprovals WHERE purpose LIKE 'Guest-%' OR visitor_name LIKE 'Guest-%' OR (mobile = '9876543210' AND valid_date = '2099-01-01')"],
+        ["guard_shifts (test fixtures)", "DELETE FROM guard_shifts WHERE guard_id IN (SELECT id FROM users WHERE email LIKE 'shift-guard-%@yopmail.com' OR email LIKE 'off-duty-guard-%@yopmail.com')"],
+        ["users (test fixtures)", "DELETE FROM users WHERE email LIKE 'matrix-resident-%@yopmail.com' OR email LIKE 'shift-guard-%@yopmail.com' OR email LIKE 'off-duty-guard-%@yopmail.com'"],
         ["notices (test)", "DELETE FROM notices WHERE title LIKE 'API Notice-%' OR title = 'x'"],
         ["complaints (test)", "DELETE FROM complaints WHERE title LIKE 'Complaint-%' OR title = 'x'"],
         ["societies (test)", "DELETE FROM societies WHERE name LIKE 'API Test Society-%'"],

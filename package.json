@@ -10,7 +10,9 @@
     "test:watch": "jest --runInBand --watch",
     "migrate": "node scripts/migrate.js",
     "migrate:status": "node scripts/migrate.js --status",
-    "migrate:dry-run": "node scripts/migrate.js --dry-run"
+    "migrate:dry-run": "node scripts/migrate.js --dry-run",
+    "migrate:create": "node scripts/create-migration.js",
+    "migrate:validate": "node scripts/validate-schema.js"
   },
   "keywords": [],
   "author": "",

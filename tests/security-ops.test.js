@@ -8,10 +8,65 @@ const {
   expectOk,
   expectClientError,
 } = require("./helpers/api");
-const { GuardAttendance } = require("../models");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
+const { GuardAttendance, GuardShift, User } = require("../models");
+const { getCurrentISTDate } = require("../utils/istTime");
+
+let shiftGuardHeaders;
+let shiftGuardId;
+let shiftGuardShiftId;
 
 beforeAll(async () => {
   await GuardAttendance.sync({ alter: true });
+
+  const admin = await login("admin");
+  const societyId = Number(admin.user.society_id);
+
+  const guardUser = await User.create({
+    name: unique("Shift Guard"),
+    email: `${unique("shift-guard")}@yopmail.com`,
+    phone: `9${String(Date.now()).slice(-9)}`,
+    password: await bcrypt.hash("Admin@123", 10),
+    role: "GUARD",
+    roles: ["GUARD"],
+    society_id: societyId,
+    approval_status: "APPROVED",
+    status: "ACTIVE",
+  });
+  shiftGuardId = guardUser.id;
+
+  const today = getCurrentISTDate();
+  const shift = await GuardShift.create({
+    guard_id: shiftGuardId,
+    society_id: societyId,
+    shift_type: "MORNING",
+    start_date: today,
+    end_date: today,
+  });
+  shiftGuardShiftId = shift.id;
+
+  const token = jwt.sign(
+    {
+      id: guardUser.id,
+      email: guardUser.email,
+      role: "GUARD",
+      roles: ["GUARD"],
+      activeRole: "GUARD",
+      society_id: societyId,
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: "1h" }
+  );
+  shiftGuardHeaders = {
+    Authorization: `Bearer ${token}`,
+    "x-society-id": String(societyId),
+  };
+});
+
+afterAll(async () => {
+  if (shiftGuardShiftId) await GuardShift.destroy({ where: { id: shiftGuardShiftId } });
+  if (shiftGuardId) await User.destroy({ where: { id: shiftGuardId } });
 });
 
 describe("Guard shifts API", () => {
@@ -27,8 +82,7 @@ describe("Guard shifts API", () => {
   });
 
   it("GET /api/guard-shift/my succeeds for a guard", async () => {
-    const { headers } = await login("guard");
-    const res = await request(app).get("/api/guard-shift/my").set(headers);
+    const res = await request(app).get("/api/guard-shift/my").set(shiftGuardHeaders);
     expectOk(res);
   });
 

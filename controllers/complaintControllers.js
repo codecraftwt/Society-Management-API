@@ -108,11 +108,11 @@ const getComplaints = async (req, res) => {
       include: [
         {
           model: User,
-          attributes: ["id", "name"],
+          attributes: ["id", "name", "email", "phone", "resident_type", "role"],
         },
         {
           model: Flat,
-          attributes: ["id", "flat_number"],
+          attributes: ["id", "flat_number", "block_id", "floor_id"],
           include: [
             { model: Block, attributes: ["id", "name"] },
             { model: Floor, attributes: ["id", "floor_number"] }

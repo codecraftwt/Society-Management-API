@@ -12,6 +12,7 @@ const ResidentHistory = require("../models/ResidentHistory");
 const FlatMembership = require("../models/FlatMembership");
 const Vehicle = require("../models/Vehicle");
 const { Op } = require("sequelize");
+const sequelize = require("../config/db");
 const { ensureAssignable } = require("../utils/approvalGuard");
 const {
   sanitizeText,
@@ -316,6 +317,7 @@ const getUnassignedFlats = async (req, res) => {
 
 
 const assignResident = async (req, res) => {
+  let transaction;
   try {
     const { flatId } = req.params;
 
@@ -334,6 +336,8 @@ const assignResident = async (req, res) => {
     const assignable = await ensureAssignable(resident_id);
     if (!assignable.ok) return res.status(assignable.status).json(assignable.payload);
 
+    transaction = await sequelize.transaction();
+
     const flat = await Flat.findByPk(flatId, {
       include: [
         {
@@ -346,23 +350,81 @@ const assignResident = async (req, res) => {
           attributes: ["id", "name", "society_id"],
         },
       ],
+      transaction,
+      lock: transaction.LOCK.UPDATE,
     });
-    if (!flat)
+    if (!flat) {
+      await transaction.rollback();
       return res.status(404).json({ message: "Flat not found" });
+    }
 
-    if (flat.resident_id)
+    if (flat.resident_id) {
+      await transaction.rollback();
       return res.status(400).json({ message: "Flat already occupied" });
+    }
 
-    const resident = await User.findByPk(resident_id);
-    if (!resident)
+    const resident = await User.findByPk(resident_id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!resident) {
+      await transaction.rollback();
       return res.status(404).json({ message: "Resident not found" });
+    }
+
+    const requestedSocietyId = req.body.society_id || req.headers["x-society-id"] || req.user.society_id;
+    const flatSocietyId = flat.Block?.society_id || flat.Floor?.Block?.society_id || null;
+    const effectiveSocietyId = flatSocietyId;
+    if (requestedSocietyId && flatSocietyId && Number(requestedSocietyId) !== Number(flatSocietyId)) {
+      await transaction.rollback();
+      return res.status(403).json({ message: "Flat does not belong to the selected society." });
+    }
+    if (!effectiveSocietyId) {
+      await transaction.rollback();
+      return res.status(400).json({ message: "Society could not be resolved for this flat." });
+    }
+
+    const societyMembership = await UserSociety.findOne({
+      where: {
+        user_id: resident.id,
+        society_id: effectiveSocietyId,
+        membership_status: { [Op.ne]: "REJECTED" },
+      },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    const legacySocietyMatch = resident.society_id && Number(resident.society_id) === Number(effectiveSocietyId);
+    if (!societyMembership && !legacySocietyMatch) {
+      await transaction.rollback();
+      return res.status(403).json({ message: "User does not belong to the selected society." });
+    }
+
+    const existingFlatMembership = await FlatMembership.findOne({
+      where: { flat_id: flatId, is_current: true },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    if (existingFlatMembership && Number(existingFlatMembership.user_id) !== Number(resident.id)) {
+      await transaction.rollback();
+      return res.status(409).json({ message: "Flat already has an active occupancy record." });
+    }
+
+    const existingResidentMembership = await FlatMembership.findOne({
+      // A resident may have multiple active flats in the same society.
+      // This lookup is only for reactivating the same resident/flat pair.
+      where: {
+        user_id: resident.id,
+        flat_id: flatId,
+        society_id: effectiveSocietyId,
+        is_current: true,
+      },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
 
     /* ─────────────────────────────
        1️⃣ Resident History
     ───────────────────────────── */
     await ResidentHistory.update(
       { move_out_date: new Date(), is_current: false },
-      { where: { flat_id: flatId, is_current: true } }
+      { where: { flat_id: flatId, is_current: true }, transaction }
     );
 
     await ResidentHistory.create({
@@ -370,7 +432,7 @@ const assignResident = async (req, res) => {
       user_id: resident_id,
       move_in_date: new Date(),
       is_current: true,
-    });
+    }, { transaction });
 
     /* ─────────────────────────────
        2️⃣ Update Flat
@@ -384,14 +446,7 @@ const assignResident = async (req, res) => {
       occupancy_status: isTenant ? "RENTED" : "OWNER_OCCUPIED",
     };
     if (req.body.area_sqft != null) flatUpdate.area_sqft = Number(req.body.area_sqft);
-    await flat.update(flatUpdate);
-
-    const targetSocId = req.body.society_id || req.headers["x-society-id"];
-    const effectiveSocietyId =
-      flat.Block?.society_id ||
-      flat.Floor?.Block?.society_id ||
-      (targetSocId ? parseInt(targetSocId, 10) : null) ||
-      req.user.society_id;
+    await flat.update(flatUpdate, { transaction });
 
     /* ─────────────────────────────
        3️⃣ Normalized Multi-Society Membership & Roles
@@ -415,9 +470,10 @@ const assignResident = async (req, res) => {
             source: "MIGRATED",
             is_default: true,
           },
+          transaction,
         });
         if (origSociety.membership_status !== "ACTIVE") {
-          await origSociety.update({ membership_status: "ACTIVE" });
+          await origSociety.update({ membership_status: "ACTIVE" }, { transaction });
         }
         await UserSocietyRole.findOrCreate({
           where: {
@@ -428,6 +484,7 @@ const assignResident = async (req, res) => {
             user_society_id: origSociety.id,
             role: "RESIDENT",
           },
+          transaction,
         });
       }
 
@@ -446,13 +503,14 @@ const assignResident = async (req, res) => {
           source: "ADMIN_ASSIGNED",
           is_default: !resident.society_id,
         },
+        transaction,
       });
 
       if (userSociety.membership_status !== "ACTIVE") {
-        await userSociety.update({ membership_status: "ACTIVE" });
+        await userSociety.update({ membership_status: "ACTIVE" }, { transaction });
       }
       if (resident_type === "OWNER" && userSociety.resident_type !== "OWNER") {
-        await userSociety.update({ resident_type: "OWNER" });
+        await userSociety.update({ resident_type: "OWNER" }, { transaction });
       }
 
       await UserSocietyRole.findOrCreate({
@@ -464,6 +522,7 @@ const assignResident = async (req, res) => {
           user_society_id: userSociety.id,
           role: "RESIDENT",
         },
+        transaction,
       });
     }
 
@@ -493,14 +552,14 @@ const assignResident = async (req, res) => {
     if (!resident.role) {
       userUpdate.role = "RESIDENT";
     }
-    if (resident.approval_status !== "APPROVED") {
+    if (resident.approval_status === "PENDING" || !resident.approval_status) {
       userUpdate.approval_status = "APPROVED";
     }
-    if (resident.status !== "ACTIVE") {
+    if (resident.status === "PENDING" || !resident.status) {
       userUpdate.status = "ACTIVE";
     }
     if (Object.keys(userUpdate).length > 0) {
-      await resident.update(userUpdate);
+      await resident.update(userUpdate, { transaction });
     }
 
     /* ─────────────────────────────
@@ -508,19 +567,28 @@ const assignResident = async (req, res) => {
     ───────────────────────────── */
     await FlatMembership.update(
       { is_current: false, move_out_date: new Date() },
-      { where: { flat_id: flatId, is_current: true } }
+      { where: { flat_id: flatId, is_current: true }, transaction }
     );
 
-    await FlatMembership.create({
-      flat_id:          flatId,
-      user_id:          resident_id,
-      society_id:       effectiveSocietyId || null,
-      role:             resident_type || "OWNER",
-      is_staying:       true,
-      pays_maintenance: true,
-      move_in_date:     new Date(),
-      is_current:       true,
-    });
+    if (existingResidentMembership && Number(existingResidentMembership.flat_id) === Number(flatId)) {
+      await existingResidentMembership.update({
+        role: resident_type || existingResidentMembership.role || "OWNER",
+        is_staying: true,
+        move_out_date: null,
+        is_current: true,
+      }, { transaction });
+    } else {
+      await FlatMembership.create({
+        flat_id:          flatId,
+        user_id:          resident_id,
+        society_id:       effectiveSocietyId,
+        role:             resident_type || "OWNER",
+        is_staying:       true,
+        pays_maintenance: true,
+        move_in_date:     new Date(),
+        is_current:       true,
+      }, { transaction });
+    }
 
     /* ─────────────────────────────
        4️⃣ PARKING SLOTS
@@ -535,7 +603,7 @@ const assignResident = async (req, res) => {
     // Release all previously assigned slots for this flat
     await ParkingSlot.update(
       { flat_id: null, resident_id: null, status: "AVAILABLE", parking_type: "DEFAULT" },
-      { where: { flat_id: flatId } }
+      { where: { flat_id: flatId }, transaction }
     );
 
     // Assign new slots if provided
@@ -550,9 +618,12 @@ const assignResident = async (req, res) => {
         }
         const slot = await ParkingSlot.findOne({
           where: slotWhere,
+          transaction,
+          lock: transaction.LOCK.UPDATE,
         });
 
         if (!slot) {
+          await transaction.rollback();
           return res.status(400).json({
             message: `Slot ${slotData.slot_id} is not available or does not belong to this society`,
           });
@@ -567,13 +638,15 @@ const assignResident = async (req, res) => {
         slot.status       = "ASSIGNED";
         slot.parking_type = idx === 0 ? "DEFAULT" : "EXTRA"; // ✅ enforce on ParkingSlot
 
-        await slot.save();
+        await slot.save({ transaction });
       }
     }
 
+    await transaction.commit();
     res.json({ message: "Resident assigned successfully" });
 
   } catch (err) {
+    if (transaction && !transaction.finished) await transaction.rollback();
     console.error("❌ [assignResident] ERROR:", err);
     res.status(500).json({ message: err.message });
   }

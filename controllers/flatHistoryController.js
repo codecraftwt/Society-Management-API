@@ -9,7 +9,11 @@ const { ensureAssignable } = require("../utils/approvalGuard");
 // 🟢 MOVE-IN (assign new resident)
 const moveInResident = async (req, res) => {
   try {
-    const { flat_id, user_id } = req.body;
+    const { flat_id, user_id } = req.body || {};
+
+    if (!flat_id || !user_id) {
+      return res.status(400).json({ message: "flat_id and user_id are required" });
+    }
 
     // A rejected registration must never be moved into a flat.
     const assignable = await ensureAssignable(user_id);
@@ -61,7 +65,12 @@ const moveInResident = async (req, res) => {
 // 🔴 MOVE-OUT (remove resident)
 const moveOutResident = async (req, res) => {
   try {
-    const { flat_id, user_id } = req.body;
+    const { flat_id, user_id } = req.body || {};
+
+    if (!flat_id || !user_id) {
+      return res.status(400).json({ message: "flat_id and user_id are required" });
+    }
+
     const departingUser = await User.findByPk(user_id, { attributes: ["resident_type"] });
     const departingType = String(departingUser?.resident_type || "OWNER").toUpperCase();
 

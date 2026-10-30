@@ -8,6 +8,65 @@ const {
   expectOk,
   expectClientError,
 } = require("./helpers/api");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
+const { User, Flat, Block } = require("../models");
+
+let offDutyGuardHeaders;
+let offDutyGuardId;
+let visitorFlatId;
+
+beforeAll(async () => {
+  const admin = await login("admin");
+  const societyId = Number(admin.user.society_id);
+
+  const guardUser = await User.create({
+    name: unique("Off Duty Guard"),
+    email: `${unique("off-duty-guard")}@yopmail.com`,
+    phone: `9${String(Date.now()).slice(-9)}`,
+    password: await bcrypt.hash("Admin@123", 10),
+    role: "GUARD",
+    roles: ["GUARD"],
+    society_id: societyId,
+    approval_status: "APPROVED",
+    status: "ACTIVE",
+  });
+  offDutyGuardId = guardUser.id;
+
+  const flat = await Flat.findOne({
+    include: [
+      {
+        model: Block,
+        where: { society_id: societyId },
+        required: true,
+        attributes: [],
+      },
+    ],
+    attributes: ["id"],
+  });
+  visitorFlatId = flat?.id || 1;
+
+  const token = jwt.sign(
+    {
+      id: guardUser.id,
+      email: guardUser.email,
+      role: "GUARD",
+      roles: ["GUARD"],
+      activeRole: "GUARD",
+      society_id: societyId,
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: "1h" }
+  );
+  offDutyGuardHeaders = {
+    Authorization: `Bearer ${token}`,
+    "x-society-id": String(societyId),
+  };
+});
+
+afterAll(async () => {
+  if (offDutyGuardId) await User.destroy({ where: { id: offDutyGuardId } });
+});
 
 describe("Visitors API", () => {
   it("requires authentication", async () => {
@@ -93,11 +152,10 @@ describe("Visitors API", () => {
   });
 
   it("POST /api/visitors as a guard without a valid shift is rejected", async () => {
-    const { headers } = await login("guard");
     const res = await request(app)
       .post("/api/visitors")
-      .set(headers)
-      .send({ visitor_name: "Test Guest", mobile: "9999999999", flat_id: 1 });
+      .set(offDutyGuardHeaders)
+      .send({ visitor_name: "Test Guest", mobile: "9999999999", flat_id: visitorFlatId });
     expect([400, 403, 404]).toContain(res.status);
   });
 
@@ -158,7 +216,7 @@ describe("Pre-approval API", () => {
       .set(headers)
       .send({
         visitor_name: unique("Guest"),
-        mobile: "9876543210",
+        mobile: `9${String(Date.now()).slice(-9)}`,
         purpose: "GUEST",
         valid_date: "2099-01-01",
         flat_id: flatId,

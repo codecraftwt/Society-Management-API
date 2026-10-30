@@ -5,6 +5,7 @@ const FlatMembership = require("../models/FlatMembership");
 const ResidentHistory = require("../models/ResidentHistory");
 const Block = require("../models/Block");
 const Floor = require("../models/Floor");
+const ParkingSlot = require("../models/ParkingSlot");
 const UserSociety = require("../models/UserSociety");
 const UserSocietyRole = require("../models/UserSocietyRole");
 const { Op } = require("sequelize");
@@ -16,14 +17,18 @@ const notificationService = require("../services/notificationService");
 /* =====
     EMAIL HELPERS
     ===== */
-async function sendApprovalEmail(toEmail, userName, societyName) {
+const escapeEmailHtml = (value) => String(value ?? "")
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+
+async function sendApprovalEmail(toEmail, userName, society, residentType, flats = []) {
   if (!transporter) return;
   const appName = process.env.APP_NAME || "SocietyApp";
 
   await transporter.sendMail({
     from: `"${appName}" <${process.env.MAIL_USER}>`,
     to: toEmail,
-    subject: `🎉 Welcome to ${societyName} — Registration Approved!`,
+    subject: `🎉 Welcome to ${society?.name || "your society"} — Registration Approved!`,
     html: `
 <!DOCTYPE html>
 <html lang="en">
@@ -51,7 +56,7 @@ async function sendApprovalEmail(toEmail, userName, societyName) {
           </h2>
           <p style="margin:0 0 24px;text-align:center;color:#64748b;font-size:14px;line-height:1.6;">
             Hi <strong>${userName}</strong>, great news — your registration request
-            for <strong>${societyName}</strong> has been <strong style="color:#16a34a;">approved</strong>!
+            for <strong>${escapeEmailHtml(society?.name || "your society")}</strong> has been <strong style="color:#16a34a;">approved</strong>!
           </p>
 
           <!-- Green info box -->
@@ -60,8 +65,22 @@ async function sendApprovalEmail(toEmail, userName, societyName) {
               Society
             </p>
             <p style="margin:0;font-size:20px;font-weight:800;color:#14532d;letter-spacing:-0.01em;">
-              ${societyName}
+              ${escapeEmailHtml(society?.name || "your society")}
             </p>
+          </div>
+
+          <div style="background:#151c35;border-radius:14px;padding:18px 20px;margin-bottom:24px;color:#fff;text-align:left;">
+            <p style="margin:0 0 12px;color:#aeb8d8;font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;">Panel access</p>
+            <p style="margin:0;color:#dbe2ff;font-size:12px;">Role</p>
+            <p style="margin:4px 0 12px;font-size:16px;font-weight:700;">${escapeEmailHtml(residentType || "RESIDENT")}</p>
+            <p style="margin:0;color:#dbe2ff;font-size:12px;">Registered email</p>
+            <p style="margin:4px 0 0;font-size:14px;font-weight:700;word-break:break-word;">${escapeEmailHtml(toEmail)}</p>
+            <p style="margin:12px 0 0;color:#f1d58a;font-size:12px;line-height:1.5;">Use the password created during registration. For security, passwords are never included in approval emails.</p>
+          </div>
+
+          <div style="background:#f8f7ff;border:1px solid #e4e1fb;border-radius:14px;padding:18px 12px;margin-bottom:24px;text-align:left;">
+            <p style="margin:0 8px 12px;font-size:16px;font-weight:800;color:#20263a;">Flat &amp; parking details</p>
+            <table width="100%" cellpadding="0" cellspacing="0" style="font-size:12px;"><thead><tr style="color:#778198;text-transform:uppercase;font-size:10px;text-align:left;"><th style="padding:7px 8px;">Wing / Block</th><th style="padding:7px 8px;">Floor</th><th style="padding:7px 8px;">Flat</th><th style="padding:7px 8px;">Parking</th></tr></thead><tbody>${flats.length ? flats.map((flat) => `<tr><td style="padding:9px 8px;border-top:1px solid #e8e6f5;">${escapeEmailHtml(flat.block_name || "—")}</td><td style="padding:9px 8px;border-top:1px solid #e8e6f5;">${escapeEmailHtml(flat.floor_number || "—")}</td><td style="padding:9px 8px;border-top:1px solid #e8e6f5;font-weight:700;">${escapeEmailHtml(flat.flat_number || "—")}</td><td style="padding:9px 8px;border-top:1px solid #e8e6f5;">${escapeEmailHtml(flat.parking || "Not assigned")}</td></tr>`).join("") : `<tr><td colspan="4" style="padding:10px 8px;color:#64748b;">No flat details available.</td></tr>`}</tbody></table>
           </div>
 
           <!-- Steps -->
@@ -433,11 +452,30 @@ exports.approveResident = async (req, res) => {
       });
     }
 
-    const society = await Society.findByPk(resident.society_id);
+    const society = await Society.findByPk(resident.society_id, {
+      attributes: ["id", "name", "logo_url"],
+    });
+    const approvedFlats = await Flat.findAll({
+      where: { resident_id: resident.id },
+      include: [{ model: Floor, attributes: ["floor_number"], include: [{ model: Block, attributes: ["name"], where: { society_id: resident.society_id }, required: true }] }],
+      attributes: ["id", "flat_number"],
+    });
+    const approvedParking = approvedFlats.length
+      ? await ParkingSlot.findAll({
+          where: { flat_id: { [Op.in]: approvedFlats.map((flat) => flat.id) }, resident_id: resident.id, status: "ASSIGNED" },
+          attributes: ["flat_id", "slot_number"],
+        })
+      : [];
+    const approvedFlatDetails = approvedFlats.map((flat) => ({
+      flat_number: flat.flat_number,
+      floor_number: flat.Floor?.floor_number,
+      block_name: flat.Floor?.Block?.name,
+      parking: approvedParking.filter((slot) => Number(slot.flat_id) === Number(flat.id)).map((slot) => slot.slot_number).filter(Boolean).join(", "),
+    }));
     res.json({ message: "Resident Approved Successfully" });
 
     // Fire-and-forget email (Outside transaction)
-    sendApprovalEmail(resident.email, resident.name, society?.name || "your society")
+    sendApprovalEmail(resident.email, resident.name, society, resident.resident_type, approvedFlatDetails)
       .catch((err) => console.error("[Email] Approve email error:", err.message));
 
   } catch (error) {

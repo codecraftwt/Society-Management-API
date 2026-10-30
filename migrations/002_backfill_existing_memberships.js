@@ -7,6 +7,19 @@ module.exports = {
 
   async up(conn, isDryRun) {
     console.log("  -> [002] Starting safe backfill of legacy society assignments...");
+    if (!isDryRun) await conn.beginTransaction();
+    try {
+    const [requiredTables] = await conn.query(
+      "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('users', 'user_societies', 'user_society_roles', 'FlatMemberships', 'flats', 'blocks', 'bills')"
+    );
+    const requiredTableNames = new Set(requiredTables.map((row) => row.TABLE_NAME));
+    const missingTables = ['users', 'user_societies', 'user_society_roles', 'FlatMemberships', 'flats', 'blocks', 'bills']
+      .filter((name) => !requiredTableNames.has(name));
+    if (missingTables.length > 0) {
+      if (!isDryRun) throw new Error(`Migration 002 prerequisites are missing: ${missingTables.join(', ')}`);
+      console.log(`     [DRY RUN] Would backfill after prerequisites exist: ${missingTables.join(', ')}`);
+      return;
+    }
 
     // 1. Fetch all users with a declared society_id
     const [users] = await conn.query(`
@@ -204,11 +217,14 @@ module.exports = {
       `);
       console.log(`     [DRY RUN] FlatMemberships.society_id rows to update: ${fmCount[0].cnt}.`);
     }
+    if (!isDryRun) await conn.commit();
+    } catch (error) {
+      if (!isDryRun) await conn.rollback();
+      throw error;
+    }
   },
 
   async down(conn) {
-    // Non-destructive rollback: removes migrated backfill rows
-    await conn.query("DELETE FROM user_society_roles");
-    await conn.query("DELETE FROM user_societies");
+    throw new Error("Destructive rollback is disabled for production safety. Restore a backup or use a reviewed recovery migration.");
   },
 };

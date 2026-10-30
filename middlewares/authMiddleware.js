@@ -2,6 +2,7 @@ const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const UserSociety = require("../models/UserSociety");
 const UserSocietyRole = require("../models/UserSocietyRole");
+const AccountantAssignment = require("../models/AccountantAssignment");
 const { isUserResidentOfSociety } = require("../utils/accessHelpers");
 
 module.exports = async (req, res, next) => {
@@ -33,7 +34,11 @@ module.exports = async (req, res, next) => {
     // activeRole describes the panel currently selected by the user. A user
     // who switched to Resident or Society Admin must not retain global event
     // visibility just because the account also has SUPER_ADMIN access.
-    const globalRoles = Array.isArray(user.roles) && user.roles.length > 0 ? user.roles : [user.role];
+    let storedRoles = user.roles;
+    if (typeof storedRoles === "string") {
+      try { storedRoles = JSON.parse(storedRoles); } catch (e) { storedRoles = []; }
+    }
+    const globalRoles = Array.isArray(storedRoles) && storedRoles.length > 0 ? storedRoles : [user.role];
     const tokenActiveRole = String(decoded.activeRole || "").toUpperCase();
     const isSuperAdmin = tokenActiveRole
       ? tokenActiveRole === "SUPER_ADMIN"
@@ -85,6 +90,17 @@ module.exports = async (req, res, next) => {
 
         if (roleRows && roleRows.length > 0) {
           roles = roleRows.map((r) => r.role);
+        }
+
+        // Accountant is assigned per society and may not have a matching
+        // UserSocietyRole row. Preserve that active panel role when building
+        // the request-scoped roles used by every protected endpoint.
+        const accountantAssignment = await AccountantAssignment.findOne({
+          where: { user_id: user.id, society_id: targetSocietyId, status: "ACTIVE" },
+          attributes: ["id"],
+        });
+        if (accountantAssignment && !roles.includes("ACCOUNTANT")) {
+          roles = [...roles, "ACCOUNTANT"];
         }
       }
     }

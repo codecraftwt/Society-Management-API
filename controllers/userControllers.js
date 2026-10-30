@@ -42,6 +42,47 @@ const {
 const { ensureAssignable, ensureNotRejected } = require("../utils/approvalGuard");
 const { getOccupancyContextForFlats } = require("../utils/flatOccupancy");
 
+const escapeEmailHtml = (value) => String(value ?? "")
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+
+const buildResidentWelcomeEmail = ({ name, email, password, society, flats }) => {
+  const primary = escapeEmailHtml(society?.primary_color || "#6d3df5");
+  const accent = escapeEmailHtml(society?.accent_color || "#9b6cff");
+  const logo = society?.logo_url
+    ? `<img src="${escapeEmailHtml(society.logo_url)}" alt="${escapeEmailHtml(society.name)} logo" style="max-height:64px;max-width:220px;display:block;margin:0 auto 14px;" />`
+    : `<div style="font-size:24px;font-weight:800;letter-spacing:.04em;color:${primary};margin-bottom:14px;">${escapeEmailHtml(society?.name || "Society Management")}</div>`;
+  const flatRows = flats.length
+    ? flats.map((flat) => `<tr>
+        <td style="padding:11px 10px;border-bottom:1px solid #eef0f6;"><strong>${escapeEmailHtml(flat.block_name || "—")}</strong></td>
+        <td style="padding:11px 10px;border-bottom:1px solid #eef0f6;">${escapeEmailHtml(flat.floor_number || "—")}</td>
+        <td style="padding:11px 10px;border-bottom:1px solid #eef0f6;">${escapeEmailHtml(flat.flat_number || "—")}</td>
+        <td style="padding:11px 10px;border-bottom:1px solid #eef0f6;">${escapeEmailHtml(flat.parking_slots || "Not assigned")}</td>
+      </tr>`).join("")
+    : `<tr><td colspan="4" style="padding:14px 10px;color:#64748b;">No flat assignment details available.</td></tr>`;
+
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+  <body style="margin:0;padding:0;background:#eef1f8;font-family:Arial,Helvetica,sans-serif;color:#172033;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef1f8;padding:32px 12px;"><tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:680px;background:#ffffff;border-radius:22px;overflow:hidden;box-shadow:0 14px 42px rgba(30,41,80,.14);">
+        <tr><td style="height:6px;background:${primary};"></td></tr>
+        <tr><td style="padding:34px 38px 30px;background:linear-gradient(135deg,${primary} 0%,${accent} 100%);text-align:center;color:#fff;">${logo}
+          <div style="font-size:28px;line-height:1.2;font-weight:800;letter-spacing:-.03em;">Welcome to ${escapeEmailHtml(society?.name || "your society")}</div>
+          <div style="margin-top:10px;font-size:14px;line-height:1.5;opacity:.9;">Your resident account has been created successfully</div>
+        </td></tr>
+        <tr><td style="padding:34px 38px 36px;">
+          <div style="font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:${primary};">A warm welcome, ${escapeEmailHtml(name)}</div>
+          <p style="margin:12px 0 0;font-size:16px;line-height:1.7;color:#526078;">We’re delighted to welcome you to the community. Your account and home assignment details are ready below.</p>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:28px;border:1px solid #e7eaf2;border-radius:16px;overflow:hidden;"><tr><td style="padding:18px 20px;background:#f8f7ff;border-bottom:1px solid #e7eaf2;"><div style="font-size:17px;font-weight:800;color:#20263a;">Your home details</div><div style="margin-top:4px;font-size:12px;color:#778198;">Assigned residence and parking information</div></td></tr><tr><td style="padding:14px 12px;"> <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;"><thead><tr style="color:#778198;text-transform:uppercase;font-size:10px;letter-spacing:.07em;text-align:left;"><th style="padding:8px 10px;">Wing / Block</th><th style="padding:8px 10px;">Floor</th><th style="padding:8px 10px;">Flat</th><th style="padding:8px 10px;">Parking</th></tr></thead><tbody>${flatRows}</tbody></table></td></tr></table>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:26px;border-radius:16px;overflow:hidden;background:#151c35;"><tr><td style="padding:22px 24px;"><div style="font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#aeb8d8;">Secure account access</div><div style="margin-top:16px;padding:13px 15px;background:#222b4b;border-radius:10px;"><div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#aeb8d8;">Email</div><div style="margin-top:5px;color:#fff;font-size:15px;font-weight:600;word-break:break-word;">${escapeEmailHtml(email)}</div></div><div style="margin-top:10px;padding:13px 15px;background:#222b4b;border-radius:10px;"><div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#aeb8d8;">Temporary password</div><div style="margin-top:5px;color:#fff;font-size:20px;font-weight:800;letter-spacing:.12em;font-family:Courier New,monospace;word-break:break-word;">${escapeEmailHtml(password)}</div></div></td></tr></table>
+          <div style="margin-top:20px;padding:15px 17px;background:#fff8e8;border:1px solid #f4d78c;border-radius:12px;color:#684f1d;font-size:13px;line-height:1.6;"><strong>Important security step</strong><br>Please sign in and change your temporary password immediately. Never share your password by email, phone, or message.</div>
+          <p style="margin:28px 0 0;color:#526078;font-size:14px;line-height:1.7;">We look forward to having you as part of the community.</p><p style="margin:18px 0 0;color:#526078;font-size:14px;line-height:1.6;">Warm regards,<br><strong>${escapeEmailHtml(society?.name || "Society Management Team")}</strong></p>
+        </td></tr><tr><td style="padding:18px 38px;text-align:center;border-top:1px solid #edf0f5;background:#fbfcfe;color:#98a1b5;font-size:11px;">This is an automated message from ${escapeEmailHtml(society?.name || "Society Management")}.</td></tr>
+      </table>
+    </td></tr></table>
+  </body></html>`;
+};
+
 async function sendAccountantWelcomeEmail(toEmail, name, password, societyName) {
   if (!transporter) return;
   const appName = process.env.APP_NAME || "SocietyApp";
@@ -472,8 +513,8 @@ const createSocietyAdmin = async (req, res) => {
    ===== */
 const checkResidentEmail = async (req, res) => {
   try {
-    const email = sanitizeText(req.query.email || req.body.email || "");
-    const rawSocietyId = req.query.society_id || req.body.society_id || req.headers["x-society-id"];
+    const email = sanitizeText(req.query.email || req.body?.email || "");
+    const rawSocietyId = req.query.society_id || req.body?.society_id || req.headers["x-society-id"];
     const targetSocietyId = (req.user?.role === "SUPER_ADMIN" || req.user?.activeRole === "SUPER_ADMIN")
       ? (rawSocietyId || req.user?.society_id)
       : req.user?.society_id;
@@ -928,10 +969,41 @@ const createResident = async (req, res) => {
     });
 
     if (!isReused) {
+      const assignedFlatIds = (hasFlatAssignments
+        ? flat_assignments.map((assignment) => assignment.flat_id)
+        : [flat_id]
+      ).filter(Boolean);
+      const [welcomeSociety, welcomeFlats, welcomeParking] = await Promise.all([
+        Society.findByPk(targetSocietyId, { attributes: ["name", "logo_url", "primary_color", "accent_color"] }),
+        Flat.findAll({
+          where: { id: { [Op.in]: assignedFlatIds } },
+          include: [
+            { model: Floor, attributes: ["floor_number"], include: [{ model: Block, attributes: ["name"] }] },
+          ],
+          order: [["flat_number", "ASC"]],
+        }),
+        ParkingSlot.findAll({
+          where: { flat_id: { [Op.in]: assignedFlatIds }, resident_id: resident.id, status: "ASSIGNED" },
+          attributes: ["flat_id", "slot_number"],
+          order: [["slot_number", "ASC"]],
+        }),
+      ]);
+      const welcomeFlatDetails = welcomeFlats.map((flat) => ({
+        flat_number: flat.flat_number,
+        floor_number: flat.Floor?.floor_number,
+        block_name: flat.Floor?.Block?.name,
+        parking_slots: welcomeParking.filter((slot) => Number(slot.flat_id) === Number(flat.id)).map((slot) => slot.slot_number).filter(Boolean).join(", "),
+      }));
       sendEmail({
         to:      rawEmail,
-        subject: "Society Resident Account Created",
-        html:    `<h2>Welcome ${resident.name}</h2><p>Your Resident account has been created.</p>`,
+        subject: `Welcome to ${welcomeSociety?.name || "your society"} — Your Resident Account Is Ready`,
+        html:    buildResidentWelcomeEmail({
+          name: resident.name,
+          email: rawEmail,
+          password,
+          society: welcomeSociety,
+          flats: welcomeFlatDetails,
+        }),
       }).catch((err) =>
         console.error("[Mailer] Resident create email failed:", err.message)
       );
@@ -1241,6 +1313,7 @@ const getResidents = async (req, res) => {
 
     // 1. Filter by Society (Super Admin vs Regular Admin, supporting multi-society memberships)
     let targetSocietyId = null;
+    let societyRolesByUser = new Map();
     if (req.user.activeRole === "SUPER_ADMIN" || req.user.role === "SUPER_ADMIN") {
       if (society_id) targetSocietyId = society_id;
     } else {
@@ -1255,9 +1328,44 @@ const getResidents = async (req, res) => {
           society_id: targetSocietyId,
           membership_status: { [Op.ne]: "REJECTED" },
         },
-        attributes: ["user_id"],
+        attributes: ["id", "user_id"],
       });
       const memberIds = userSocieties.map((us) => us.user_id);
+      const societyRoleRows = memberIds.length > 0
+        ? await UserSocietyRole.findAll({
+            where: { user_society_id: { [Op.in]: userSocieties.map((us) => us.id) } },
+            attributes: ["user_society_id", "role"],
+          })
+        : [];
+      societyRolesByUser = new Map();
+      userSocieties.forEach((membership) => societyRolesByUser.set(membership.user_id, []));
+      societyRoleRows.forEach((row) => {
+        const membership = userSocieties.find((item) => item.id === row.user_society_id);
+        if (!membership) return;
+        const roles = societyRolesByUser.get(membership.user_id) || [];
+        roles.push(row.role);
+        societyRolesByUser.set(membership.user_id, roles);
+      });
+
+      // Accountant appointments are society-scoped and are persisted in their
+      // own assignment table. Merge active appointments into the role map so
+      // the resident directory and its role filter show the same role as the
+      // Accountant directory.
+      const activeAccountantAssignments = memberIds.length > 0
+        ? await AccountantAssignment.findAll({
+            where: {
+              society_id: targetSocietyId,
+              user_id: { [Op.in]: memberIds },
+              status: "ACTIVE",
+            },
+            attributes: ["user_id"],
+          })
+        : [];
+      activeAccountantAssignments.forEach((assignment) => {
+        const roles = societyRolesByUser.get(assignment.user_id) || [];
+        if (!roles.includes("ACCOUNTANT")) roles.push("ACCOUNTANT");
+        societyRolesByUser.set(assignment.user_id, roles);
+      });
       conditions.push({
         [Op.or]: [
           { society_id: targetSocietyId },
@@ -1293,7 +1401,17 @@ const getResidents = async (req, res) => {
       if (u.role && !rList.includes(u.role)) {
         rList.push(u.role);
       }
-      return rList.includes("RESIDENT");
+      const societyRoles = societyRolesByUser?.get(u.id) || [];
+      rList.push(...societyRoles);
+      // Management accounts may also be residents of this society even when
+      // their legacy global roles do not yet contain RESIDENT. They must be
+      // visible here so an admin can assign their first flat.
+      return rList.some((role) => [
+        "RESIDENT",
+        "SOCIETY_ADMIN",
+        "COMMITTEE_MEMBER",
+        "ACCOUNTANT",
+      ].includes(String(role).toUpperCase()));
     });
 
     // Deduplicate users (in case of duplicate entries)
@@ -1634,11 +1752,17 @@ const getResidents = async (req, res) => {
         scopedSocieties = userSocietiesList.filter((s) => Number(s.id) === targetSocietyNum);
         scopedFlats = userFlats.filter((f) => Number(f.society_id) === targetSocietyNum);
         const thisSoc = userSocMap.get(targetSocietyNum);
-        if (thisSoc && Array.isArray(thisSoc.roles) && thisSoc.roles.length > 0) {
-          scopedRoles = thisSoc.roles;
-        } else {
-          scopedRoles = ["RESIDENT"];
-        }
+        const globalRoles = Array.isArray(user.roles)
+          ? user.roles
+          : (typeof user.roles === "string" ? (() => { try { return JSON.parse(user.roles) || []; } catch (e) { return []; } })() : []);
+        const societyRoles = societyRolesByUser?.get(user.id) || [];
+        scopedRoles = [...new Set([
+          ...globalRoles,
+          ...(thisSoc?.roles || []),
+          ...societyRoles,
+          ...(user.role ? [user.role] : []),
+        ])];
+        if (scopedRoles.length === 0) scopedRoles = ["RESIDENT"];
         if (thisSoc) scopedPrimarySoc = thisSoc;
       }
 
@@ -2751,8 +2875,12 @@ const updateAccountant = async (req, res) => {
    ===== */
 const toggleAccountantStatus = async (req, res) => {
   try {
-    const targetId = req.params.id;
-    const { status } = req.body;
+    const targetId = req.params.id || req.body?.id || req.query?.id;
+    const { status } = req.body || {};
+
+    if (!targetId) {
+      return res.status(400).json({ message: "Accountant id is required" });
+    }
 
     let assignment = await AccountantAssignment.findOne({
       where: {
@@ -2845,8 +2973,56 @@ const deleteAccountant = async (req, res) => {
 };
 
 /* =====
-   GET MY PROFILE
-   ===== */
+    GET MY PROFILE
+    ===== */
+const resolveProfilePanels = async (user, societyId) => {
+  const roles = new Set();
+  const membership = user?.id && societyId
+    ? await UserSociety.findOne({
+        where: { user_id: user.id, society_id: societyId, membership_status: "ACTIVE" },
+        include: [{ model: UserSocietyRole, as: "societyRoles", attributes: ["role"] }],
+      })
+    : null;
+  (membership?.societyRoles || []).forEach((entry) => {
+    if (entry.role) roles.add(String(entry.role).toUpperCase());
+  });
+
+  // Legacy users without society-role rows still need their primary account
+  // role, but do not copy global management roles into another society.
+  if (roles.size === 0 && user?.society_id && String(user.society_id) === String(societyId)) {
+    if (user.role) roles.add(String(user.role).toUpperCase());
+  }
+
+  const assignment = user?.id && societyId
+    ? await AccountantAssignment.findOne({
+        where: { user_id: user.id, society_id: societyId, status: "ACTIVE" },
+        attributes: ["is_society_resident"],
+      })
+    : null;
+  if (assignment) roles.add("ACCOUNTANT");
+
+  const activeMembership = user?.id
+    ? await FlatMembership.findOne({
+        where: { user_id: user.id, society_id: societyId, is_current: true, move_out_date: null },
+        attributes: ["id"],
+      })
+    : null;
+  const directFlat = user?.id
+    ? await Flat.findOne({
+        where: { resident_id: user.id },
+        attributes: ["id"],
+        include: [{ model: Block, required: true, where: { society_id: societyId }, attributes: [] }],
+      })
+    : null;
+  const isResident = Boolean(activeMembership || directFlat || assignment?.is_society_resident === true);
+  if (isResident) roles.add("RESIDENT");
+
+  return Array.from(roles).filter((role) => [
+    "SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT",
+    "RESIDENT", "FAMILY_MEMBER", "GUARD",
+  ].includes(role));
+};
+
 const getMyProfile = async (req, res) => {
   try {
     const user = await User.findByPk(req.user.id, {
@@ -2867,7 +3043,19 @@ const getMyProfile = async (req, res) => {
         userObj.Society = activeSociety;
       }
     }
+    // Keep the cached web/mobile session in sync with the roles available in
+    // the currently selected society. Without this, /users/me refreshes only
+    // profile fields and the role switcher can remain stuck on Resident even
+    // when the user is also a Committee Member.
+    const availablePanels = await resolveProfilePanels(userObj, activeSocietyId);
+    const isSocietyResident = availablePanels.includes("RESIDENT");
+    const residencyFlags = {
+      is_society_resident: isSocietyResident,
+      can_switch_to_resident: isSocietyResident,
+    };
     userObj.activeRole = activeRole;
+    userObj.availablePanels = availablePanels;
+    Object.assign(userObj, residencyFlags);
     userObj.society_name = userObj.Society?.name || null;
     userObj.society_logo = userObj.Society?.logo_url || null;
     userObj.society_logo_url = userObj.Society?.logo_url || null;

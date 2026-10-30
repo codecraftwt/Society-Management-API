@@ -4,14 +4,28 @@
  * amenity book → verify = per-row Payment + CREDIT (idempotent), cancel reverses;
  * expense create/edit/void ledger sync; balance = opening ± ledger; RBAC; reports; charts.
  */
-const { request, app, login } = require("./helpers/api");
+const { request, app, login, unique } = require("./helpers/api");
 const { Op } = require("sequelize");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
 const models = require("../models");
-const { Payment, LedgerEntry, Expense, Bill, AmenityBooking, Society } = models;
+const {
+  Payment,
+  LedgerEntry,
+  Expense,
+  Bill,
+  AmenityBooking,
+  Society,
+  User,
+  Block,
+  Flat,
+  Amenity,
+} = models;
 
 jest.setTimeout(60000);
 
 let admin, resident, accountant, committee, guard;
+let societyId, blockId, flatId, amenityId, matrixResident;
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
@@ -36,10 +50,73 @@ describe("Financial Tracking E2E Matrix", () => {
 
   beforeAll(async () => {
     admin = await login("admin");
-    resident = await login("resident");
     accountant = await login("accountant");
     committee = await login("committee");
     guard = await login("guard");
+
+    societyId = Number(admin.user.society_id);
+    matrixResident = await User.create({
+      name: unique("Matrix Resident"),
+      email: `${unique("matrix-resident")}@yopmail.com`,
+      phone: `9${String(Date.now()).slice(-9)}`,
+      password: await bcrypt.hash("Admin@123", 10),
+      role: "RESIDENT",
+      roles: ["RESIDENT"],
+      society_id: societyId,
+      approval_status: "APPROVED",
+      status: "ACTIVE",
+      resident_type: "OWNER",
+    });
+
+    const block = await Block.create({
+      name: unique("Matrix Block"),
+      society_id: societyId,
+    });
+    blockId = block.id;
+
+    const flat = await Flat.create({
+      flat_number: unique("M-"),
+      block_id: blockId,
+      resident_id: matrixResident.id,
+      occupancy_status: "OWNER_OCCUPIED",
+      flat_type: "2BHK",
+    });
+    flatId = flat.id;
+
+    const amenity = await Amenity.create({
+      society_id: societyId,
+      name: unique("Matrix Amenity"),
+      type: "PAID",
+      booking_type: "SLOT",
+      rate_per_hour: 200,
+      opening_time: "00:00:00",
+      closing_time: "23:59:59",
+      slot_duration: 60,
+      capacity: 10,
+      is_active: true,
+    });
+    amenityId = amenity.id;
+
+    const token = jwt.sign(
+      {
+        id: matrixResident.id,
+        email: matrixResident.email,
+        role: "RESIDENT",
+        roles: ["RESIDENT"],
+        activeRole: "RESIDENT",
+        society_id: societyId,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
+    );
+    resident = {
+      token,
+      user: matrixResident,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "x-society-id": String(societyId),
+      },
+    };
   });
 
   afterAll(async () => {
@@ -48,6 +125,10 @@ describe("Financial Tracking E2E Matrix", () => {
     await Expense.destroy({ where: { id: { [Op.in]: created.expenses } } });
     await AmenityBooking.destroy({ where: { id: { [Op.in]: created.bookings } } });
     await Bill.destroy({ where: { id: { [Op.in]: created.bills } } });
+    if (flatId) await Flat.destroy({ where: { id: flatId } });
+    if (amenityId) await Amenity.destroy({ where: { id: amenityId } });
+    if (blockId) await Block.destroy({ where: { id: blockId } });
+    if (matrixResident) await User.destroy({ where: { id: matrixResident.id } });
   });
 
   const trackLedger = (rows) =>
@@ -67,7 +148,7 @@ describe("Financial Tracking E2E Matrix", () => {
   });
 
   test("Opening balance: accountant denied manage; admin set is audited", async () => {
-    const soc = await Society.findByPk(6);
+    const soc = await Society.findByPk(societyId);
     const wasFirst = Number(soc.opening_balance) === 0 && soc.opening_balance_effective_date === null;
 
     const r403 = await request(app)
@@ -89,7 +170,7 @@ describe("Financial Tracking E2E Matrix", () => {
     const create = await request(app)
       .post("/api/bills")
       .set(admin.headers)
-      .send({ flat_id: 10, title: `Matrix Bill ${Date.now()}`, amount: 500, billing_month: "Sep-2026" });
+      .send({ flat_id: flatId, title: `Matrix Bill ${Date.now()}`, amount: 500, billing_month: "Sep-2026" });
     expect(create.status).toBe(200);
     const billId = create.body.id;
     created.bills.push(billId);
@@ -120,7 +201,7 @@ describe("Financial Tracking E2E Matrix", () => {
     expect(payCount2).toBe(1);
 
     const credits = await LedgerEntry.findAll({
-      where: { society_id: 6, source: "BILL", reference_id: billId, type: "CREDIT" },
+      where: { society_id: societyId, source: "BILL", reference_id: billId, type: "CREDIT" },
     });
     trackLedger(credits);
     expect(credits.length).toBe(1);
@@ -131,7 +212,7 @@ describe("Financial Tracking E2E Matrix", () => {
       .set(admin.headers);
     expect([200, 400]).toContain(reconfirm.status);
     const creditsAfter2 = await LedgerEntry.findAll({
-      where: { society_id: 6, source: "BILL", reference_id: billId, type: "CREDIT" },
+      where: { society_id: societyId, source: "BILL", reference_id: billId, type: "CREDIT" },
     });
     trackLedger(creditsAfter2);
     expect(creditsAfter2.length).toBe(1);
@@ -141,7 +222,7 @@ describe("Financial Tracking E2E Matrix", () => {
     const book = await request(app)
       .post("/api/amenities/book")
       .set(resident.headers)
-      .send({ amenityId: 8, date: futureDate(), startTime: "10:00:00" });
+      .send({ amenityId: amenityId, date: futureDate(), startTime: "10:00:00" });
     expect(book.status).toBe(201);
     const bookingId = book.body.data?.id || book.body.bookings?.[0]?.id;
     expect(bookingId).toBeDefined();
@@ -162,7 +243,7 @@ describe("Financial Tracking E2E Matrix", () => {
     expect(Number(pays[0].amount)).toBe(200);
 
     const credits = await LedgerEntry.findAll({
-      where: { society_id: 6, source: "AMENITY", reference_id: bookingId, type: "CREDIT" },
+      where: { society_id: societyId, source: "AMENITY", reference_id: bookingId, type: "CREDIT" },
     });
     trackLedger(credits.filter((c) => c.status !== "REVERSED"));
     expect(credits.length).toBe(1);
@@ -174,7 +255,7 @@ describe("Financial Tracking E2E Matrix", () => {
       .send({ booking_ids: [bookingId] });
     expect(reVerify.status).toBe(200);
     const credits2 = await LedgerEntry.findAll({
-      where: { society_id: 6, source: "AMENITY", reference_id: bookingId, type: "CREDIT" },
+      where: { society_id: societyId, source: "AMENITY", reference_id: bookingId, type: "CREDIT" },
     });
     trackLedger(credits2);
     expect(credits2.length).toBe(1);
@@ -184,7 +265,7 @@ describe("Financial Tracking E2E Matrix", () => {
     const book = await request(app)
       .post("/api/amenities/book")
       .set(resident.headers)
-      .send({ amenityId: 8, date: futureDate(), startTime: "11:00:00" });
+      .send({ amenityId: amenityId, date: futureDate(), startTime: "11:00:00" });
     expect(book.status).toBe(201);
     const bookingId = book.body.data?.id || book.body.bookings?.[0]?.id;
     created.bookings.push(bookingId);
@@ -201,13 +282,13 @@ describe("Financial Tracking E2E Matrix", () => {
     expect(cancel.status).toBe(200);
 
     const credits = await LedgerEntry.findAll({
-      where: { society_id: 6, source: "AMENITY", reference_id: bookingId, type: "CREDIT" },
+      where: { society_id: societyId, source: "AMENITY", reference_id: bookingId, type: "CREDIT" },
     });
     trackLedger(credits);
     const active = credits.filter((c) => c.status !== "REVERSED");
     const reversed = credits.filter((c) => c.status === "REVERSED");
     const debits = await LedgerEntry.findAll({
-      where: { society_id: 6, source: "AMENITY", reference_id: bookingId, type: "DEBIT" },
+      where: { society_id: societyId, source: "AMENITY", reference_id: bookingId, type: "DEBIT" },
     });
     trackLedger(debits);
     expect(active.length).toBe(0);
@@ -227,7 +308,7 @@ describe("Financial Tracking E2E Matrix", () => {
     created.expenses.push(expId);
 
     let debits = await LedgerEntry.findAll({
-      where: { society_id: 6, source: "EXPENSE", reference_id: expId, type: "DEBIT" },
+      where: { society_id: societyId, source: "EXPENSE", reference_id: expId, type: "DEBIT" },
     });
     trackLedger(debits);
     expect(debits.length).toBe(1);
@@ -239,7 +320,7 @@ describe("Financial Tracking E2E Matrix", () => {
       .send({ amount: 700 });
     expect(update.status).toBe(200);
     debits = await LedgerEntry.findAll({
-      where: { society_id: 6, source: "EXPENSE", reference_id: expId, type: "DEBIT" },
+      where: { society_id: societyId, source: "EXPENSE", reference_id: expId, type: "DEBIT" },
     });
     trackLedger(debits);
     expect(Number(debits[0].amount)).toBe(700);
@@ -257,11 +338,11 @@ describe("Financial Tracking E2E Matrix", () => {
     const expense = await Expense.findByPk(expId);
     expect(expense.status).toBe("VOID");
     debits = await LedgerEntry.findAll({
-      where: { society_id: 6, source: "EXPENSE", reference_id: expId, type: "DEBIT" },
+      where: { society_id: societyId, source: "EXPENSE", reference_id: expId, type: "DEBIT" },
     });
     trackLedger(debits);
     const reversals = await LedgerEntry.findAll({
-      where: { society_id: 6, source: "EXPENSE", reference_id: expId, type: "CREDIT" },
+      where: { society_id: societyId, source: "EXPENSE", reference_id: expId, type: "CREDIT" },
     });
     trackLedger(reversals);
     expect(debits.filter((d) => d.status !== "REVERSED").length).toBe(0);
@@ -270,7 +351,7 @@ describe("Financial Tracking E2E Matrix", () => {
   });
 
   test("Balance is always computed = opening + ΣCREDIT − ΣDEBIT", async () => {
-    const soc = await Society.findByPk(6);
+    const soc = await Society.findByPk(societyId);
     const opening = Number(soc.opening_balance);
     const bal = await request(app).get("/api/account/balance").set(admin.headers);
     expect(bal.status).toBe(200);

@@ -95,41 +95,6 @@ module.exports = {
   },
 
   async down(conn) {
-    if (await tableExists(conn, "notifications")) {
-      const indexes = await getIndexes(conn, "notifications");
-      if (indexes.has("uniq_notification_source_event")) {
-        await conn.query("ALTER TABLE `notifications` DROP INDEX `uniq_notification_source_event`");
-      }
-      const columns = await getColumns(conn, "notifications");
-      for (const name of ["push_error", "push_attempted_at", "push_status", "source_event_id"]) {
-        if (columns.has(name)) {
-          await conn.query(`ALTER TABLE \`notifications\` DROP COLUMN \`${name}\``);
-        }
-      }
-    }
-
-    if (await tableExists(conn, "guard_attendance")) {
-      const indexes = await getIndexes(conn, "guard_attendance");
-      for (const name of ["idx_ga_shift_end_notice", "idx_ga_status_date", "idx_ga_status_due"]) {
-        if (indexes.has(name)) {
-          await conn.query(`ALTER TABLE \`guard_attendance\` DROP INDEX \`${name}\``);
-        }
-      }
-      const columns = await getColumns(conn, "guard_attendance");
-      for (const name of [
-        "punch_out_source",
-        "auto_punch_out_reason",
-        "auto_punch_out_at",
-        "is_auto_punch_out",
-        "acknowledged_at",
-        "shift_end_notified_at",
-        "auto_punch_out_due_at",
-        "scheduled_end_at",
-      ]) {
-        if (columns.has(name)) {
-          await conn.query(`ALTER TABLE \`guard_attendance\` DROP COLUMN \`${name}\``);
-        }
-      }
-    }
+    throw new Error("Destructive rollback is disabled for production safety. Restore a backup or use a reviewed recovery migration.");
   },
 };

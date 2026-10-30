@@ -3,6 +3,7 @@ const fs   = require("fs");
 const { Op } = require("sequelize");
 const { Document, User, Flat, Block, Notification } = require("../models");
 const notificationService = require("../services/notificationService");
+const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
 
 /* ════════════════════════════════════════
    HELPER: bytes → "2.4 MB"
@@ -46,20 +47,9 @@ const getDocuments = async (req, res) => {
     const residentRoles = ["RESIDENT", "FAMILY_MEMBER"];
 
     if (residentRoles.includes(user.role)) {
-      const flat = await Flat.findOne({
-        where: { resident_id: user.id },
-        include: [
-          {
-            model: Block,
-            where: { society_id: user.society_id },
-            required: true,
-            attributes: [],
-          },
-        ],
-        attributes: ["id"],
-      });
+      const authorizedFlatIds = await getUserAuthorizedFlatIds(user.id, user.society_id);
 
-      if (!flat) {
+      if (!authorizedFlatIds.length) {
         return res.status(403).json({
           message: "Access denied. You must be assigned to a flat to view documents.",
         });

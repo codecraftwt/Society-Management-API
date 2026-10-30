@@ -144,6 +144,57 @@ beforeAll(async () => {
                 await sequelize.query(`ALTER TABLE notifications ADD COLUMN ${name} ${definition}`);
             }
         }
+
+        const [parcelRows] = await sequelize.query(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'parcels'"
+        );
+        const parcelCols = new Set(parcelRows.map((r) => r.COLUMN_NAME));
+        const parcelColumns = [
+            ["requested_by", "INT NULL DEFAULT NULL"],
+            ["arrival_guard_id", "INT NULL DEFAULT NULL"],
+            ["delivery_guard_id", "INT NULL DEFAULT NULL"],
+            ["pickup_time", "DATETIME NULL DEFAULT NULL"],
+        ];
+        for (const [name, definition] of parcelColumns) {
+            if (!parcelCols.has(name)) {
+                await sequelize.query(`ALTER TABLE parcels ADD COLUMN ${name} ${definition}`);
+            }
+        }
+
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS events (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                society_id INT NOT NULL,
+                title VARCHAR(255) NOT NULL,
+                description TEXT NULL,
+                event_date DATE NULL,
+                event_time TIME NULL,
+                location VARCHAR(255) NULL,
+                is_active TINYINT(1) NOT NULL DEFAULT 1,
+                created_by_user_id INT NULL,
+                created_by_name VARCHAR(255) NULL,
+                created_by_role VARCHAR(50) NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_events_society_date (society_id, event_date),
+                INDEX idx_events_created_by (created_by_user_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `);
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS event_media (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                event_id INT NOT NULL,
+                media_type ENUM('IMAGE', 'VIDEO') NOT NULL DEFAULT 'IMAGE',
+                url TEXT NOT NULL,
+                public_id VARCHAR(255) NOT NULL,
+                thumb_url TEXT NULL,
+                sort_order INT NOT NULL DEFAULT 0,
+                original_name VARCHAR(255) NULL,
+                size_bytes BIGINT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_event_media_event (event_id, sort_order)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `);
     } catch (err) {
         // Table might not exist yet or query failed
     }

@@ -1,3 +1,5 @@
+// NOTE: OtpVerification uses sync for auto-creation as a fallback
+// For production, ensure table is created via migrations
 const { DataTypes } = require("sequelize");
 const sequelize = require("../config/db");
 
@@ -27,7 +29,7 @@ const OtpVerification = sequelize.define(
     attempts: {
       type: DataTypes.INTEGER,
       defaultValue: 0,
-      comment: "Failed attempt counter — max 5",
+      comment: "Failed attempt counter - max 5",
     },
 
     used: {
@@ -42,11 +44,6 @@ const OtpVerification = sequelize.define(
     createdAt: "created_at",
     updatedAt: false,
   }
-);
-
-// Auto-create the table if it doesn't exist — no migration file needed
-OtpVerification.sync({ alter: false }).catch((err) =>
-  console.error("[OtpVerification] sync error:", err.message)
 );
 
 module.exports = OtpVerification;

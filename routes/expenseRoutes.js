@@ -19,6 +19,11 @@ router.get("/", checkPermission("accounting", "view"), listExpenses);
 router.get("/:id", checkPermission("accounting", "view"), getExpense);
 router.post("/", checkPermission("accounting", "create"), createExpense);
 router.put("/:id", checkPermission("accounting", "edit"), updateExpense);
-router.delete("/:id", checkPermission("accounting", "delete"), voidExpense);
+router.delete(
+  "/:id",
+  role.strict("SUPER_ADMIN", "SOCIETY_ADMIN", "ACCOUNTANT"),
+  checkPermission("accounting", "delete"),
+  voidExpense
+);
 
 module.exports = router;

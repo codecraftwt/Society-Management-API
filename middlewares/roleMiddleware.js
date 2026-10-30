@@ -1,4 +1,4 @@
-module.exports = (...allowedRoles) => {
+const createRoleMiddleware = (allowedRoles, { allowAdminEscalation = true, useActiveRole = false } = {}) => {
   return (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({ message: "Not authenticated" });
@@ -42,19 +42,35 @@ module.exports = (...allowedRoles) => {
 
     // Dynamic RBAC: If route permits administrative roles (SOCIETY_ADMIN or COMMITTEE_MEMBER), also allow ACCOUNTANT through
     // so downstream permission checks (checkPermission) can validate their dynamic permissions.
-    if ((allowedRoles.includes("COMMITTEE_MEMBER") || allowedRoles.includes("SOCIETY_ADMIN") || allowedRoles.includes("ADMIN")) && userRoles.has("ACCOUNTANT")) {
+    // Strict routes opt out so a role list can never silently grant accountant access.
+    if (
+      allowAdminEscalation &&
+      (allowedRoles.includes("COMMITTEE_MEMBER") || allowedRoles.includes("SOCIETY_ADMIN") || allowedRoles.includes("ADMIN")) &&
+      userRoles.has("ACCOUNTANT")
+    ) {
       userRoles.add("COMMITTEE_MEMBER");
       userRoles.add("SOCIETY_ADMIN");
     }
 
-    const hasAccess = allowedRoles.some((r) => userRoles.has(r));
+    const effectiveRoles =
+      useActiveRole && activeRole
+        ? new Set([String(activeRole).toUpperCase()])
+        : userRoles;
+    const hasAccess = allowedRoles.some((r) => effectiveRoles.has(r));
 
     if (!hasAccess) {
       return res.status(403).json({
-        message: `Access denied. Required role(s): ${allowedRoles.join(", ")}. Your roles: ${Array.from(userRoles).join(", ")}`,
+        message: `Access denied. Required role(s): ${allowedRoles.join(", ")}. Your roles: ${Array.from(effectiveRoles).join(", ")}`,
       });
     }
 
     next();
   };
 };
+
+const role = (...allowedRoles) => createRoleMiddleware(allowedRoles);
+role.strict = (...allowedRoles) => createRoleMiddleware(allowedRoles, { allowAdminEscalation: false });
+role.active = (...allowedRoles) =>
+  createRoleMiddleware(allowedRoles, { allowAdminEscalation: false, useActiveRole: true });
+
+module.exports = role;

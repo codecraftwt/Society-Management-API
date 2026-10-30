@@ -23,7 +23,6 @@ const role = require("../middlewares/roleMiddleware");
 
 router.use(auth);
 
-// Added SOCIETY_ADMIN temporarily to unblock testing
-router.get("/", role("GUARD", "RESIDENT", "SOCIETY_ADMIN"), getSocietyContacts);
+router.get("/", role.strict("GUARD", "RESIDENT"), getSocietyContacts);
 
 module.exports = router;

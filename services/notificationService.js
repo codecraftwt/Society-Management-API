@@ -88,6 +88,7 @@ const sendNotification = async ({
   const store = getNotificationStore();
   let createdRecord = null;
   let recordId = null;
+  let wasExisting = false;
 
   // 1. Persist notification to configured store
   if (store === "firestore") {
@@ -180,7 +181,7 @@ const sendNotification = async ({
       if (row.push_status === "SENT") {
         return normalizeNotification(row.toJSON());
       }
-      transportDedupeMap.delete(sourceEventId || `${type}:${row.id}:${receiverUserId}`);
+      wasExisting = true;
     }
 
     createdRecord = row.toJSON();
@@ -189,24 +190,27 @@ const sendNotification = async ({
 
   const normalized = normalizeNotification(createdRecord);
 
-  // 2. Prevent duplicate transport emissions
-  const dedupeKey = sourceEventId || `${type}:${recordId}:${receiverUserId}`;
-  if (isDuplicateTransport(dedupeKey)) {
-    return normalized;
-  }
-
-  // 3. Socket.IO Real-Time Delivery
-  try {
-    if (global.io) {
-      const socketPayload = {
-        ...normalized,
-        ...extraData,
-        id: String(recordId),
-      };
-      global.io.to(`user_${receiverUserId}`).emit("new_notification", socketPayload);
+  // 2. Prevent duplicate transport emissions. Existing rows only retry push;
+  // their socket event was already emitted when the row was first created.
+  if (!wasExisting) {
+    const dedupeKey = sourceEventId || `${type}:${recordId}:${receiverUserId}`;
+    if (isDuplicateTransport(dedupeKey)) {
+      return normalized;
     }
-  } catch (socketErr) {
-    console.error("[NotificationService] Socket emission error:", socketErr.message);
+
+    // 3. Socket.IO Real-Time Delivery
+    try {
+      if (global.io) {
+        const socketPayload = {
+          ...normalized,
+          ...extraData,
+          id: String(recordId),
+        };
+        global.io.to(`user_${receiverUserId}`).emit("new_notification", socketPayload);
+      }
+    } catch (socketErr) {
+      console.error("[NotificationService] Socket emission error:", socketErr.message);
+    }
   }
 
   // 4. FCM Push Delivery

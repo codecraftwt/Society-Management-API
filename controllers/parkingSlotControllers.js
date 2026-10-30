@@ -1,5 +1,5 @@
 
-const { ParkingSlot, Flat, Block, Floor, HouseHoldMember, User, Vehicle } = require("../models");
+const { ParkingSlot, Flat, Block, Floor, HouseHoldMember, User, Vehicle, ParkingRequest } = require("../models");
 const FlatMembership = require("../models/FlatMembership");
 const { Op }         = require("sequelize");
 const { sanitizeText, isPositiveNumber } = require("../utils/validation");
@@ -207,6 +207,24 @@ const getParkingSlots = async (req, res) => {
       distinct: true,
     });
 
+    // Visitor parking uses the slot directly while the guest is inside. It has
+    // no resident_id/flat_id, so enrich the slot response from the active
+    // visitor parking request for the admin panel.
+    const visitorRequests = await ParkingRequest.findAll({
+      where: {
+        ...(targetSocietyId ? { society_id: targetSocietyId } : {}),
+        parking_type: "VISITOR",
+        status: "APPROVED",
+        assigned_spot: { [Op.ne]: null },
+      },
+      attributes: ["id", "assigned_spot", "guest_name", "vehicle_number", "vehicle_type", "flat_id", "expected_arrival"],
+      order: [["createdAt", "DESC"]],
+    });
+    const visitorBySpot = {};
+    visitorRequests.forEach((request) => {
+      if (!visitorBySpot[request.assigned_spot]) visitorBySpot[request.assigned_spot] = request.toJSON();
+    });
+
     // Fallback: If slots are assigned to flat/resident but don't have direct Vehicle.parking_slot_id, resolve from flat/resident
     const missingFlatIds = slots.filter((s) => !s.Vehicle && s.flat_id).map((s) => s.flat_id);
     let fallbackVehiclesMap = {};
@@ -237,6 +255,7 @@ const getParkingSlots = async (req, res) => {
 
       const resolvedVehicle = j.Vehicle || (j.flat_id ? fallbackVehiclesMap[j.flat_id] : null);
 
+      const visitor = j.status !== "AVAILABLE" ? visitorBySpot[j.slot_number] : null;
       return {
         id:            j.id,
         society_id:    j.society_id,
@@ -258,6 +277,14 @@ const getParkingSlots = async (req, res) => {
               vehicle_type:   resolvedVehicle.vehicle_type,
             }
           : null,
+        visitor: visitor ? {
+          id: visitor.id,
+          guest_name: visitor.guest_name,
+          vehicle_number: visitor.vehicle_number,
+          vehicle_type: visitor.vehicle_type,
+          flat_id: visitor.flat_id,
+          expected_arrival: visitor.expected_arrival,
+        } : null,
       };
     };
 
@@ -433,7 +460,10 @@ const updateParkingSlot = async (req, res) => {
 ═══════════════════════════════════════════ */
 const revokeSlotAssignment = async (req, res) => {
   try {
-    const { slot_id } = req.body;
+    const { slot_id } = req.body || {};
+    if (!slot_id) {
+      return res.status(400).json({ message: "slot_id is required" });
+    }
     const isSuperAdmin = req.user.role === "SUPER_ADMIN" || req.user.activeRole === "SUPER_ADMIN";
     const targetSocietyId = resolveTargetSocietyId(req);
     const where = { id: slot_id };

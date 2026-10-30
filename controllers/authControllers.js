@@ -52,10 +52,29 @@ async function fetchUserSocietiesList(userId) {
       const userRecord = await User.findByPk(userId, { attributes: ["id", "society_id", "role", "roles"] });
       const userRoles = userRecord ? resolveUserRoles(userRecord) : [];
       const isSocAdmin = userRoles.includes("SOCIETY_ADMIN");
+      const activeAccountantAssignments = await AccountantAssignment.findAll({
+        where: { user_id: userId, status: "ACTIVE" },
+        attributes: ["society_id", "is_society_resident"],
+      });
+      const accountantSocietyIds = new Map(
+        activeAccountantAssignments.map((assignment) => [
+          String(assignment.society_id),
+          assignment.is_society_resident === true,
+        ])
+      );
 
       const list = [];
       for (const us of userSocieties) {
         let roles = (us.societyRoles || []).map((r) => r.role);
+        if (accountantSocietyIds.has(String(us.society_id)) && !roles.includes("ACCOUNTANT")) {
+          roles.push("ACCOUNTANT");
+        }
+        // Residence is society-specific. Do not rely only on the global
+        // users.roles JSON or UserSocietyRole rows; an active flat/household
+        // membership is the source of truth for the Resident panel.
+        if (userRecord && await isUserResidentOfSociety(userRecord, us.society_id) && !roles.includes("RESIDENT")) {
+          roles.push("RESIDENT");
+        }
         if (isSocAdmin && String(userRecord?.society_id) === String(us.society_id) && !roles.includes("SOCIETY_ADMIN")) {
           roles.unshift("SOCIETY_ADMIN");
         }
@@ -173,8 +192,17 @@ async function isUserResidentOfSociety(user, societyId = null) {
 
 /* Resolve a user's effective role list. */
 function resolveUserRoles(user) {
-  const roles = Array.isArray(user.roles) && user.roles.length > 0 ? [...user.roles] : [];
-  const add = (r) => { if (r && !roles.includes(r)) roles.push(r); };
+  let storedRoles = user?.roles;
+  if (typeof storedRoles === "string") {
+    try { storedRoles = JSON.parse(storedRoles); } catch (e) { storedRoles = []; }
+  }
+  const roles = Array.isArray(storedRoles) && storedRoles.length > 0
+    ? storedRoles.map((r) => String(r).toUpperCase())
+    : [];
+  const add = (r) => {
+    const normalized = r ? String(r).toUpperCase() : "";
+    if (normalized && !roles.includes(normalized)) roles.push(normalized);
+  };
 
   add(user.role);
   if (roles.includes("COMMITTEE_MEMBER") || roles.includes("COMMITTEE")) {
@@ -196,10 +224,14 @@ const SOCIETY_MEMBER_ROLES = [
 ];
 
 function isOutsiderAccountant(user) {
+  let storedRoles = user?.roles;
+  if (typeof storedRoles === "string") {
+    try { storedRoles = JSON.parse(storedRoles); } catch (e) { storedRoles = []; }
+  }
   const declared = [
-    ...(Array.isArray(user.roles) && user.roles.length ? user.roles : []),
+    ...(Array.isArray(storedRoles) && storedRoles.length ? storedRoles : []),
     user.role,
-  ].filter(Boolean);
+  ].filter(Boolean).map((r) => String(r).toUpperCase());
 
   const hasAccountant = declared.some((r) => r === "ACCOUNTANT");
   const hasSocietyRole = declared.some((r) => SOCIETY_MEMBER_ROLES.includes(r));
@@ -233,9 +265,21 @@ async function getAvailablePanels(user) {
     }
   }
 
-  if (roles.includes("ACCOUNTANT")) {
-    const assignment = await AccountantAssignment.findOne({
-      where: { user_id: user.id, status: "ACTIVE" }
+  // Accountant appointments are society-scoped and may exist even when the
+  // legacy users.roles JSON was not updated. Resolve the active assignment for
+  // the currently selected society before deciding which panels to expose.
+  const accountantAssignment = user?.id && user?.society_id
+    ? await AccountantAssignment.findOne({
+        where: { user_id: user.id, society_id: user.society_id, status: "ACTIVE" },
+        attributes: ["society_id", "is_society_resident"],
+      })
+    : null;
+  const hasAccountantPanel = roles.includes("ACCOUNTANT") || Boolean(accountantAssignment) || user.role === "ACCOUNTANT";
+
+  if (hasAccountantPanel) {
+    const assignment = accountantAssignment || await AccountantAssignment.findOne({
+      where: { user_id: user.id, status: "ACTIVE" },
+      attributes: ["society_id", "is_society_resident"],
     });
     if (assignment || user.role === "ACCOUNTANT") {
       if (!panels.includes("ACCOUNTANT")) panels.push("ACCOUNTANT");
@@ -279,13 +323,18 @@ function generateOtp() {
   return crypto.randomInt(100000, 999999).toString();
 }
 
-async function sendOtpEmail(toEmail, otp, userName) {
+async function sendOtpEmail(toEmail, otp, userName, context = {}) {
   if (!transporter) return;
   if (process.env.NODE_ENV === "test") {
     console.log(`[Mailer] Test mode — skipping email to ${toEmail}`);
     return;
   }
   const appName = process.env.APP_NAME || "SocietyApp";
+  const isSuperAdmin = String(context.role || "").toUpperCase() === "SUPER_ADMIN";
+  const loginContext = isSuperAdmin
+    ? "Super Admin Panel Access"
+    : (context.societyName ? `Login Verification — ${context.societyName}` : "Login Verification");
+  const safeContext = String(loginContext).replace(/[&<>\"]+/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[char]));
 
   const istIntl = new Intl.DateTimeFormat("en-IN", {
     timeZone: "Asia/Kolkata",
@@ -314,7 +363,7 @@ async function sendOtpEmail(toEmail, otp, userName) {
   await transporter.sendMail({
     from: `"${appName}" <${process.env.MAIL_USER}>`,
     to: toEmail,
-    subject: `${otp} is your ${appName} login OTP`,
+    subject: `${loginContext} — ${appName}`,
     html: `
   <!DOCTYPE html>
   <html lang="en">
@@ -328,28 +377,29 @@ async function sendOtpEmail(toEmail, otp, userName) {
       <tr><td align="center">
         <table width="100%" style="max-width:520px;" cellpadding="0" cellspacing="0">
           <tr>
-            <td style="background:linear-gradient(135deg,#4f46e5 0%,#6366f1 45%,#8b5cf6 100%);border-radius:22px 22px 0 0;padding:30px 32px 26px;text-align:center;">
+            <td style="background:linear-gradient(135deg,#111936 0%,#202b5a 58%,#4f46a5 100%);border-radius:22px 22px 0 0;padding:34px 32px 30px;text-align:center;">
               <div style="display:inline-block;width:62px;height:62px;border-radius:50%;background:rgba(255,255,255,0.16);border:1.5px solid rgba(255,255,255,0.35);line-height:62px;font-size:28px;text-align:center;margin-bottom:12px;">
                 🔐
               </div>
-              <h2 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#ffffff;letter-spacing:-0.02em;">
+              <div style="display:inline-block;margin:0 0 14px;padding:7px 13px;border:1px solid rgba(255,255,255,.28);border-radius:999px;color:#e7e9ff;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;">${safeContext}</div>
+              <h2 style="margin:0 0 6px;font-size:25px;font-weight:800;color:#ffffff;letter-spacing:-0.03em;">
                 Verify Your Login
               </h2>
               <p style="margin:0;font-size:14px;color:rgba(255,255,255,0.85);line-height:1.5;">
-                One more step to get you signed in
+                ${safeContext}
               </p>
             </td>
           </tr>
 
           <tr>
             <td style="background:#ffffff;padding:32px 32px 24px;">
-              <p style="margin:0 0 20px;font-size:15px;color:#334155;line-height:1.65;">
+              <p style="margin:0 0 20px;font-size:15px;color:#334155;line-height:1.7;">
                 Hi <strong style="color:#0f172a;">${userName || "there"}</strong>,
                 <br/>
-                use the one-time code below to complete your sign in to <strong style="color:#4f46e5;">${appName}</strong>.
+                 use the one-time code below to complete your sign in to <strong style="color:#4f46e5;">${appName}</strong>.
               </p>
 
-              <p style="margin:0 0 14px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.16em;color:#94a3b8;text-align:center;">
+              <p style="margin:0 0 14px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.16em;color:#64748b;text-align:center;">
                 One-Time Password
               </p>
 
@@ -357,8 +407,8 @@ async function sendOtpEmail(toEmail, otp, userName) {
                 <tr>${digits.join("")}</tr>
               </table>
 
-              <p style="margin:0 0 22px;font-size:12px;color:#94a3b8;text-align:center;">
-                This code expires in <strong style="color:#6366f1;">2 minutes</strong>
+              <p style="margin:0 0 22px;font-size:13px;color:#64748b;text-align:center;">
+                This secure code expires in <strong style="color:#4f46e5;">2 minutes</strong>
               </p>
 
               <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px;">
@@ -516,8 +566,15 @@ exports.login = async (req, res) => {
       OtpVerification.destroy({ where: { email } }),
     ]);
 
+    // The login context is resolved from the authenticated user's backend record.
+    // This keeps society branding accurate and avoids trusting frontend role labels.
+    const loginRoles = resolveUserRoles(user);
+    const loginRole = loginRoles.includes("SUPER_ADMIN") ? "SUPER_ADMIN" : loginRoles[0];
     // ✅ Await the email so the client timer only starts after dispatch
-    await sendOtpEmail(email, otp, user.name);
+    await sendOtpEmail(email, otp, user.name, {
+      role: loginRole,
+      societyName: user.Society?.name,
+    });
 
     const expires_at = new Date(Date.now() + 2 * 60 * 1000);
     await OtpVerification.create({ email, otp_hash, expires_at });
@@ -745,7 +802,9 @@ exports.resendOtp = async (req, res) => {
 
     const { email, id: userId } = decoded;
 
-    const user = await User.findByPk(userId);
+    const user = await User.findByPk(userId, {
+      include: [{ model: Society, attributes: ["name"] }],
+    });
     if (!user) return res.status(404).json({ message: "User not found" });
 
     // ✅ Run OTP generation + DB destroy in parallel
@@ -756,7 +815,11 @@ exports.resendOtp = async (req, res) => {
     ]);
 
     // ✅ Await the email so the resend timer only restarts after dispatch
-    await sendOtpEmail(email, otp, user.name);
+    const resendRoles = resolveUserRoles(user);
+    await sendOtpEmail(email, otp, user.name, {
+      role: resendRoles.includes("SUPER_ADMIN") ? "SUPER_ADMIN" : resendRoles[0],
+      societyName: user.Society?.name,
+    });
 
     const expires_at = new Date(Date.now() + 2 * 60 * 1000);
     await OtpVerification.create({ email, otp_hash, expires_at });

@@ -432,6 +432,15 @@ describe("Resident Multi-Society Management API & Security Tests", () => {
         status: "ACTIVE",
       });
 
+      // The assignment endpoint requires the resident to already belong to
+      // the target society. Keep the primary Society A membership intact while
+      // explicitly granting this fixture active membership in Society B.
+      await UserSociety.create({
+        user_id: residentSocA.id,
+        society_id: societyBId,
+        membership_status: "ACTIVE",
+      });
+
       // Create an unassigned flat in Society B
       const Block = require("../models/Block");
       let blockB = await Block.findOne({ where: { society_id: societyBId } });
@@ -487,4 +496,3 @@ describe("Resident Multi-Society Management API & Security Tests", () => {
     });
   });
 });
-

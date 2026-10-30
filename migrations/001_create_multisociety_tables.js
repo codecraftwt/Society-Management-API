@@ -104,8 +104,6 @@ module.exports = {
   },
 
   async down(conn) {
-    await conn.query("DROP TABLE IF EXISTS user_society_roles");
-    await conn.query("DROP TABLE IF EXISTS user_societies");
-    await conn.query("DROP TABLE IF EXISTS society_invites");
+    throw new Error("Destructive rollback is disabled for production safety. Restore a backup or use a reviewed recovery migration.");
   },
 };

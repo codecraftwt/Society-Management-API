@@ -52,8 +52,13 @@ const bookingLabel = (b) => slotLabel(b) || dateRangeLabel(b);
 ═══════════════════════════════════════ */
 exports.createAmenity = async (req, res) => {
   try {
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+    if (!name) {
+      return res.status(400).json({ success: false, message: "Amenity name is required" });
+    }
     const amenity = await Amenity.create({
       ...req.body,
+      name,
       society_id: req.user.society_id,
     });
     res.status(201).json({ success: true, data: amenity });

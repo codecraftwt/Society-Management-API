@@ -14,6 +14,9 @@ const FINANCE_TABLES = [
 
 async function run() {
   try {
+    if (process.env.NODE_ENV === "production" || process.env.ALLOW_DESTRUCTIVE_RESET !== "true") {
+      throw new Error("Refusing destructive reset. Use an isolated database with ALLOW_DESTRUCTIVE_RESET=true.");
+    }
     await sequelize.authenticate();
     console.log("DB connected.");
 
