@@ -479,7 +479,8 @@ function issueAccessToken(user, activeRole, targetSocietyId, customRoles) {
     society_id: targetSocietyId !== undefined && targetSocietyId !== null ? targetSocietyId : user.society_id,
   };
 
-  const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "1d" });
+  const expiresIn = (process.env.JWT_EXPIRES_IN && process.env.JWT_EXPIRES_IN.trim()) || "24h";
+  const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn });
 
   return { token, payload };
 }

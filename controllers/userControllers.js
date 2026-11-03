@@ -2379,11 +2379,11 @@ const getMyFlat = async (req, res) => {
     }
 
     // ===
-    // 3. ✅ FALLBACK: Direct Flat.resident_id assignment
-    //    Catches residents created without a FlatMembership row,
-    //    or legacy records where FlatMembership is missing/stale.
+    // 3. ✅ MERGE: Direct Flat.resident_id assignment
+    //    Include legacy/direct assignments even when membership rows also
+    //    exist; the same flat is removed by addedFlatIds.
     // ===
-    if (flatsList.length === 0) {
+    {
       const directFlats = await Flat.findAll({
         where: { resident_id: userId },
         include: [

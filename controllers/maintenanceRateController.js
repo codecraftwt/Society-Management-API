@@ -1,7 +1,7 @@
 const MaintenanceRate = require("../models/MaintenanceRate");
 
 const MAINTENANCE_TYPES = ["LUMPSUM", "SQ_FEET", "FLAT"];
-const FLAT_TYPES = ["1BHK", "2BHK", "3BHK", "ROW_HOUSE", "COMMERCIAL"];
+const FLAT_TYPES = ["1BHK", "2BHK", "3BHK", "ROW_HOUSE", "COMMERCIAL", "ALL"];
 const RESIDENT_TYPES = ["OWNER", "TENANT"];
 const FREQUENCIES = ["MONTHLY", "QUARTERLY", "YEARLY", "ONE_TIME"];
 

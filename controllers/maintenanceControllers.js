@@ -24,7 +24,7 @@ async function stampAudit(payload) {
 }
 
 const MAINTENANCE_TYPES = ["LUMPSUM", "SQ_FEET", "FLAT"];
-const FLAT_TYPES = ["1BHK", "2BHK", "3BHK", "ROW_HOUSE", "COMMERCIAL"];
+const FLAT_TYPES = ["1BHK", "2BHK", "3BHK", "ROW_HOUSE", "COMMERCIAL", "ALL"];
 const RESIDENT_TYPES = ["OWNER", "TENANT"];
 const FREQUENCIES = ["MONTHLY", "QUARTERLY", "YEARLY", "ONE_TIME"];
 
@@ -159,7 +159,7 @@ const saveConfig = async (req, res) => {
     // Validate FLAT configs against the flat types that actually exist in this society.
     if (data.maintenance_type === "FLAT") {
       const existingTypes = await getSocietyFlatTypes(req.user.society_id);
-      if (!existingTypes.includes(data.flat_type)) {
+      if (data.flat_type !== "ALL" && !existingTypes.includes(data.flat_type)) {
         return res.status(400).json({
           message: `No '${data.flat_type}' flats exist in this society. Available flat types: ${existingTypes.length ? existingTypes.join(", ") : "none yet"}`,
         });
@@ -243,11 +243,170 @@ const deleteConfig = async (req, res) => {
 };
 
 /* ─────────────────────────────────────────
+   SHARED RATE RESOLUTION LOGIC
+   - Evaluates active rates with priority:
+     1) Specific individual BHK rate for flat.flat_type
+     2) Active "ALL" BHK rate fallback
+   - Lumpsum applies to all properties (both Flats and Row Houses)
+   - SQ_FEET applies to Row Houses
+   - Detects conflicting active configurations of the same priority
+   - Guarantees zero duplicate bills per property and billing period
+───────────────────────────────────────── */
+function resolveBillingItems({ rates, eligibleFlats, requestedMonth, due_date, existingMap }) {
+  // 1. Conflict detection among active rates
+  const seenRates = new Map();
+  for (const r of rates) {
+    if (!r.is_active) continue;
+    const key = `${r.maintenance_type}:${r.flat_type || "NONE"}:${r.resident_type || "OWNER"}`;
+    if (seenRates.has(key)) {
+      const typeLabel = r.flat_type ? (r.flat_type === "ALL" ? "All BHK" : r.flat_type) : r.maintenance_type;
+      throw new Error(`Conflicting active configurations found for ${typeLabel} (${r.resident_type || "OWNER"}). Please deactivate duplicate active rates before generating bills.`);
+    }
+    seenRates.set(key, r);
+  }
+
+  // 2. Partition active rates
+  const activeRates = rates.filter((r) => r.is_active);
+  const lumpsumRates = activeRates.filter((r) => r.maintenance_type === "LUMPSUM");
+  const sqftRates = activeRates.filter((r) => r.maintenance_type === "SQ_FEET");
+  const flatRates = activeRates.filter((r) => r.maintenance_type === "FLAT");
+
+  const individualBhkMap = new Map();
+  const allBhkMap = new Map();
+  for (const r of flatRates) {
+    const resRole = r.resident_type || "OWNER";
+    if (r.flat_type === "ALL") {
+      allBhkMap.set(`ALL:${resRole}`, r);
+    } else {
+      individualBhkMap.set(`${r.flat_type}:${resRole}`, r);
+    }
+  }
+
+  const items = [];
+  let totalAmount = 0;
+  let alreadyBilledCount = 0;
+  const ratesAppliedMap = new Map();
+
+  const recordItem = (flat, rate, amount, calcDetails, extra = {}) => {
+    const isDuplicate = existingMap.has(`${flat.id}:${rate.id}`);
+    if (isDuplicate) {
+      alreadyBilledCount += 1;
+    } else {
+      totalAmount += amount;
+    }
+    ratesAppliedMap.set(rate.id, rate);
+    const membership = flat.FlatMemberships?.[0];
+    const user = membership?.User;
+    const rateName = rate.name || (rate.flat_type === "ALL" ? "All BHK Maintenance" : `${rate.flat_type || ""} ${rate.maintenance_type}`.trim());
+
+    items.push({
+      flat_id: flat.id,
+      flat_number: flat.flat_number,
+      flat_type: flat.flat_type,
+      property_type: flat.Block?.property_type || "APARTMENT",
+      block_name: flat.Block?.name || "—",
+      resident_id: user?.id || membership?.user_id,
+      resident_name: user?.name || "Owner",
+      resident_email: user?.email || "",
+      resident_phone: user?.phone || "",
+      role: membership?.role || "OWNER",
+      rate_id: rate.id,
+      rate_name: rateName,
+      maintenance_type: rate.maintenance_type,
+      amount,
+      calculation_details: calcDetails,
+      is_already_billed: isDuplicate,
+      due_date: due_date || addDays(30),
+      ...extra,
+    });
+  };
+
+  /* ─── A. SQ_FEET: Row houses calculation ─── */
+  for (const rate of sqftRates) {
+    const ratePerSqft = Number(rate.rate_per_sqft);
+    const sqftFlats = eligibleFlats.filter(
+      (f) => f.Block?.property_type === "ROW_HOUSE" && f.occupancy_status !== "RENTED"
+    );
+    for (const flat of sqftFlats) {
+      const area = flat.area_sqft ? Number(flat.area_sqft) : 0;
+      const amount = area * ratePerSqft;
+      const hasArea = area > 0;
+      const calcDetails = {
+        maintenance_type: "SQ_FEET",
+        area_sqft: area,
+        rate_per_sqft: ratePerSqft,
+        calculation: `${area} × ${ratePerSqft}`,
+        calculated_amount: amount,
+      };
+      recordItem(flat, rate, hasArea ? amount : 0, calcDetails, {
+        area_sqft: area,
+        rate_per_sqft: ratePerSqft,
+        has_area: hasArea,
+      });
+    }
+  }
+
+  /* ─── B. LUMPSUM: Both Flats AND Row Houses receive fixed amount ─── */
+  for (const rate of lumpsumRates) {
+    const amount = Number(rate.amount || 0);
+    for (const flat of eligibleFlats) {
+      if (flat.occupancy_status === "RENTED") continue;
+      const calcDetails = {
+        maintenance_type: "LUMPSUM",
+        property_type: flat.Block?.property_type || "APARTMENT",
+        configured_amount: amount,
+      };
+      recordItem(flat, rate, amount, calcDetails);
+    }
+  }
+
+  /* ─── C. FLAT Type: Individual BHK takes priority, All BHK acts as fallback ─── */
+  if (flatRates.length > 0) {
+    for (const flat of eligibleFlats) {
+      if (flat.occupancy_status === "RENTED") continue;
+      const residentRole = flat.FlatMemberships?.[0]?.role || "OWNER";
+      const indKey = `${flat.flat_type}:${residentRole}`;
+      const allKey = `ALL:${residentRole}`;
+
+      let chosenRate = null;
+      let appliedConfig = null;
+
+      // Priority 1: Individual BHK rate
+      if (individualBhkMap.has(indKey)) {
+        chosenRate = individualBhkMap.get(indKey);
+        appliedConfig = "INDIVIDUAL_BHK";
+      }
+      // Priority 2: All BHK fallback rate
+      else if (allBhkMap.has(allKey)) {
+        chosenRate = allBhkMap.get(allKey);
+        appliedConfig = "ALL_BHK";
+      }
+
+      if (chosenRate) {
+        const amount = Number(chosenRate.amount || 0);
+        const calcDetails = {
+          maintenance_type: "FLAT",
+          flat_type: flat.flat_type,
+          applied_config: appliedConfig,
+          configured_amount: amount,
+        };
+        recordItem(flat, chosenRate, amount, calcDetails);
+      }
+    }
+  }
+
+  return {
+    items,
+    totalAmount,
+    alreadyBilledCount,
+    ratesApplied: Array.from(ratesAppliedMap.values()),
+  };
+}
+
+/* ─────────────────────────────────────────
    PREVIEW MAINTENANCE BILLS
    POST or GET /maintenance/preview
    Body / Query: { billing_month?, rate_ids?, due_date? }
-   - Inspects active maintenance rates and eligible owner flats.
-   - Calculates who will receive a bill, the amount, and checks for already generated bills.
 ───────────────────────────────────────── */
 const previewBills = async (req, res) => {
   try {
@@ -255,13 +414,14 @@ const previewBills = async (req, res) => {
     const { billing_month, rate_ids, due_date, issue_date, last_pay_date } = req.method === "GET" ? req.query : req.body;
 
     const requestedMonth = (billing_month && String(billing_month).trim()) || monthNameAndYear();
-
     const previewIssueDate = issue_date || new Date().toISOString().slice(0, 10);
     const previewDueDate = last_pay_date || due_date || addDays(30);
 
     const rateWhere = { society_id: societyId, is_active: true };
     let parsedRateIds = rate_ids;
-    if (typeof rate_ids === "string") {
+    if (rate_ids === "ALL") {
+      parsedRateIds = null;
+    } else if (typeof rate_ids === "string") {
       try {
         parsedRateIds = JSON.parse(rate_ids);
       } catch (e) {
@@ -321,7 +481,6 @@ const previewBills = async (req, res) => {
       order: [["id", "ASC"]],
     });
 
-    // Check existing bills for this billing month to detect already billed flats
     const existingBills = await Bill.findAll({
       where: {
         billing_month: requestedMonth,
@@ -331,101 +490,23 @@ const previewBills = async (req, res) => {
     });
     const existingMap = new Set(existingBills.map((b) => `${b.flat_id}:${b.maintenance_rate_id}`));
 
-    const items = [];
-    let totalAmount = 0;
-    let alreadyBilledCount = 0;
-
-    for (const rate of rates) {
-      /* ─── SQ_FEET preview ─── */
-      if (rate.maintenance_type === "SQ_FEET") {
-        const ratePerSqft = Number(rate.rate_per_sqft);
-        const sqftFlats = eligibleFlats.filter(
-          (f) => f.Block?.property_type === "ROW_HOUSE" && f.occupancy_status !== "RENTED"
-        );
-
-        for (const flat of sqftFlats) {
-          const membership = flat.FlatMemberships?.[0];
-          const user = membership?.User;
-          const isDuplicate = existingMap.has(`${flat.id}:${rate.id}`);
-          const area = flat.area_sqft ? Number(flat.area_sqft) : 0;
-          const amount = area * ratePerSqft;
-          const hasArea = area > 0;
-
-          if (isDuplicate) {
-            alreadyBilledCount += 1;
-          } else if (hasArea) {
-            totalAmount += amount;
-          }
-
-          items.push({
-            flat_id: flat.id,
-            flat_number: flat.flat_number,
-            flat_type: flat.flat_type,
-            block_name: flat.Block?.name || "—",
-            resident_id: user?.id || membership?.user_id,
-            resident_name: user?.name || "Owner",
-            resident_email: user?.email || "",
-            resident_phone: user?.phone || "",
-            role: membership?.role || "OWNER",
-            rate_id: rate.id,
-            rate_name: rate.name || "SQ_FEET",
-            maintenance_type: rate.maintenance_type,
-            area_sqft: area,
-            rate_per_sqft: ratePerSqft,
-            amount: hasArea ? amount : 0,
-            has_area: hasArea,
-            is_already_billed: isDuplicate,
-            due_date: due_date || addDays(30),
-          });
-        }
-        continue;
-      }
-
-      /* ─── LUMPSUM / FLAT ─── */
-      for (const flat of eligibleFlats) {
-        if (rate.maintenance_type === "FLAT" && flat.flat_type !== rate.flat_type) continue;
-        if (flat.occupancy_status === "RENTED") continue;
-
-        const membership = flat.FlatMemberships?.[0];
-        const user = membership?.User;
-        const isDuplicate = existingMap.has(`${flat.id}:${rate.id}`);
-        const amount = Number(rate.amount || 0);
-
-        if (isDuplicate) {
-          alreadyBilledCount += 1;
-        } else {
-          totalAmount += amount;
-        }
-
-        items.push({
-          flat_id: flat.id,
-          flat_number: flat.flat_number,
-          flat_type: flat.flat_type,
-          block_name: flat.Block?.name || "—",
-          resident_id: user?.id || membership?.user_id,
-          resident_name: user?.name || "Owner",
-          resident_email: user?.email || "",
-          resident_phone: user?.phone || "",
-          role: membership?.role || "OWNER",
-          rate_id: rate.id,
-          rate_name: rate.name || `${rate.flat_type || ""} ${rate.maintenance_type}`.trim(),
-          maintenance_type: rate.maintenance_type,
-          amount,
-          is_already_billed: isDuplicate,
-          due_date: due_date || addDays(30),
-        });
-      }
-    }
+    const { items, totalAmount, alreadyBilledCount, ratesApplied } = resolveBillingItems({
+      rates,
+      eligibleFlats,
+      requestedMonth,
+      due_date: previewDueDate,
+      existingMap,
+    });
 
     return res.json({
       billing_month: requestedMonth,
-      due_date: due_date || addDays(30),
+      due_date: previewDueDate,
       eligible_count: items.length,
       billable_count: items.filter((i) => !i.is_already_billed).length,
       already_billed_count: alreadyBilledCount,
       total_amount: totalAmount,
       residents: items,
-      rates_applied: rates.map((r) => ({
+      rates_applied: ratesApplied.map((r) => ({
         id: r.id,
         name: r.name,
         maintenance_type: r.maintenance_type,
@@ -435,292 +516,194 @@ const previewBills = async (req, res) => {
     });
   } catch (err) {
     console.error("[previewBills] error:", err);
-    return res.status(500).json({ message: "Failed to preview maintenance bills", error: err.message });
+    return res.status(400).json({ message: err.message || "Failed to preview maintenance bills" });
   }
 };
 
 /* ─────────────────────────────────────────
    GENERATE MAINTENANCE BILLS
    POST /maintenance/generate
-   Body: { billing_month?, rate_ids?, due_date? }
-   - Goes through each active rate of the society.
-   - LUMPSUM / FLAT generate bills for eligible OWNER flats.
-   - SQ_FEET cannot be generated (no area data) → reported as skipped.
-   - Supports custom due_date (last date of payment).
+   Body: { billing_month?, rate_ids?, due_date?, issue_date?, last_pay_date? }
 ───────────────────────────────────────── */
 const generateBills = async (req, res) => {
-  const societyId = req.user.society_id;
-  const { billing_month, rate_ids, due_date, issue_date, last_pay_date } = req.body;
+  try {
+    const societyId = req.user.society_id;
+    const { billing_month, rate_ids, due_date, issue_date, last_pay_date } = req.body;
 
-  const requestedMonth = billing_month || monthNameAndYear();
-  const monthRegex = /^[A-Za-z]+\s\d{4}$/;
-  if (!monthRegex.test(requestedMonth)) {
-    return res.status(400).json({ message: "billing_month must be in format like 'September 2026'" });
-  }
-
-  let parsedRateIds = rate_ids;
-  if (typeof rate_ids === "string") {
-    try {
-      parsedRateIds = JSON.parse(rate_ids);
-    } catch {
-      parsedRateIds = rate_ids.split(",").map(Number).filter(Boolean);
+    const requestedMonth = billing_month || monthNameAndYear();
+    const monthRegex = /^[A-Za-z]+\s\d{4}$/;
+    if (!monthRegex.test(requestedMonth)) {
+      return res.status(400).json({ message: "billing_month must be in format like 'September 2026'" });
     }
-  }
 
-  if (!Array.isArray(parsedRateIds) || parsedRateIds.length === 0) {
-    return res.status(400).json({ message: "Please select a maintenance bill type before generating bills." });
-  }
+    let parsedRateIds = rate_ids;
+    if (rate_ids === "ALL") {
+      parsedRateIds = null;
+    } else if (typeof rate_ids === "string") {
+      try {
+        parsedRateIds = JSON.parse(rate_ids);
+      } catch {
+        parsedRateIds = rate_ids.split(",").map(Number).filter(Boolean);
+      }
+    }
 
-  if (parsedRateIds.length > 1) {
-    return res.status(400).json({ message: "Please select exactly one maintenance bill type to generate bills." });
-  }
+    const rateWhere = { society_id: societyId, is_active: true };
+    if (Array.isArray(parsedRateIds) && parsedRateIds.length > 0) {
+      rateWhere.id = { [Op.in]: parsedRateIds };
+    }
 
-  const rateWhere = { society_id: societyId, is_active: true, id: parsedRateIds[0] };
+    const rates = await MaintenanceRate.findAll({ where: rateWhere });
+    if (rates.length === 0) {
+      return res.status(400).json({ message: "No active maintenance configurations found to generate from." });
+    }
 
-  const rates = await MaintenanceRate.findAll({ where: rateWhere });
-  if (rates.length === 0) {
-    return res.status(400).json({ message: "No active maintenance configurations found to generate from." });
-  }
+    const blockIds = (
+      await Block.findAll({
+        where: { society_id: societyId },
+        attributes: ["id"],
+      })
+    ).map((b) => b.id);
 
-  const blockIds = (
-    await Block.findAll({
-      where: { society_id: societyId },
-      attributes: ["id"],
-    })
-  ).map((b) => b.id);
-
-  const eligibleFlats = await Flat.findAll({
-    where: { block_id: { [Op.in]: blockIds } },
-    attributes: ["id", "flat_number", "flat_type", "block_id", "occupancy_status", "area_sqft"],
-    include: [
-      { model: Block, attributes: ["id", "name", "property_type"], required: false, where: { society_id: societyId } },
-      {
-        model: FlatMembership,
-        required: true,
-        attributes: ["id", "user_id", "role"],
-        where: {
-          role: "OWNER",
-          is_current: true,
-          is_staying: true,
-          pays_maintenance: true,
+    const eligibleFlats = await Flat.findAll({
+      where: { block_id: { [Op.in]: blockIds } },
+      attributes: ["id", "flat_number", "flat_type", "block_id", "occupancy_status", "area_sqft"],
+      include: [
+        { model: Block, attributes: ["id", "name", "property_type"], required: false, where: { society_id: societyId } },
+        {
+          model: FlatMembership,
+          required: true,
+          attributes: ["id", "user_id", "role"],
+          where: {
+            role: "OWNER",
+            is_current: true,
+            is_staying: true,
+            pays_maintenance: true,
+          },
         },
-      },
-    ],
-    order: [["id", "ASC"]],
-  });
-  if (eligibleFlats.length === 0) {
-    return res.status(400).json({ message: "No eligible owner flats found to bill." });
-  }
+      ],
+      order: [["id", "ASC"]],
+    });
+    if (eligibleFlats.length === 0) {
+      return res.status(400).json({ message: "No eligible owner flats found to bill." });
+    }
 
-  const results = [];
-  const summary = { generated: 0, skipped_duplicates: 0, skipped_sqft: 0, missing_areas: [], errors: [] };
-  const notified = new Set();
-  const finalDueDate = last_pay_date || due_date ? new Date(last_pay_date || due_date) : addDays(30);
-  const finalIssueDate = issue_date ? new Date(issue_date) : new Date();
-
-  for (const rate of rates) {
-    /* ─── SQ_FEET: validate ALL eligible row-house areas BEFORE creating any bills ─── */
-    if (rate.maintenance_type === "SQ_FEET") {
-      const ratePerSqft = Number(rate.rate_per_sqft);
+    // Check for SQ_FEET missing area validation before generating bills
+    const sqftRates = rates.filter((r) => r.maintenance_type === "SQ_FEET" && r.is_active);
+    if (sqftRates.length > 0) {
       const sqftFlats = eligibleFlats.filter(
         (f) => f.Block?.property_type === "ROW_HOUSE" && f.occupancy_status !== "RENTED"
       );
-
-      if (sqftFlats.length === 0) {
-        summary.skipped_sqft += 1;
-        continue;
-      }
-
-      // Validate: every eligible flat must have a positive area_sqft
       const missingAreaFlats = sqftFlats.filter(
         (f) => !f.area_sqft || Number(f.area_sqft) <= 0
       );
-
       if (missingAreaFlats.length > 0) {
-        summary.missing_areas = missingAreaFlats.map((f) => f.flat_number);
         return res.status(400).json({
           message: `SQ.FT maintenance bills cannot be generated. Area is missing for: ${missingAreaFlats.map((f) => f.flat_number).join(", ")}. Please update the property area before generating bills.`,
-          missing_areas: summary.missing_areas,
+          missing_areas: missingAreaFlats.map((f) => f.flat_number),
         });
       }
-
-      // All areas are valid — generate bills
-      for (const flat of sqftFlats) {
-        const flatId = flat.id;
-        const area = Number(flat.area_sqft);
-        const calculatedAmount = area * ratePerSqft;
-
-        // Duplicate prevention
-        const existing = await Bill.count({
-          where: {
-            flat_id: flatId,
-            billing_month: requestedMonth,
-            type: "MAINTENANCE",
-            maintenance_rate_id: rate.id,
-          },
-        });
-        if (existing > 0) {
-          summary.skipped_duplicates += 1;
-          continue;
-        }
-
-        const calculation = {
-          maintenance_type: "SQ_FEET",
-          area_sqft: area,
-          rate_per_sqft: ratePerSqft,
-          calculation: `${area} × ${ratePerSqft}`,
-          calculated_amount: calculatedAmount,
-        };
-
-        const bill = await Bill.create({
-          flat_id: flatId,
-          title: `Maintenance ${requestedMonth}`,
-          amount: calculatedAmount,
-          billing_month: requestedMonth,
-          issue_date: finalIssueDate,
-          due_date: finalDueDate,
-          last_pay_date: finalDueDate,
-          status: "PENDING",
-          type: "MAINTENANCE",
-          maintenance_rate_id: rate.id,
-          calculation_details: JSON.stringify(calculation),
-        });
-
-        results.push(bill);
-        summary.generated += 1;
-
-        // Notification
-        const membership = flat.FlatMemberships?.[0];
-        if (!membership) continue;
-        const targetUserId = membership.user_id;
-        if (notified.has(`${flatId}:${targetUserId}`)) continue;
-        notified.add(`${flatId}:${targetUserId}`);
-
-        const user = await User.findByPk(targetUserId, { attributes: ["id", "fcm_token"] });
-        if (!user) { summary.errors.push(`Could not reload owner for flat ${flatId}`); continue; }
-
-        const settings = await UserSetting.findOne({ where: { user_id: user.id } });
-        if (settings && settings.payment_updates === false) continue;
-
-        await notificationService.sendNotification({
-          societyId,
-          receiverUserId: user.id,
-          receiverRole: "RESIDENT",
-          title: "New Maintenance Bill",
-          message: `Your maintenance bill of ₹${Number(bill.amount).toFixed(2)} for ${requestedMonth} is now available.`,
-          type: "BILL",
-          actionType: "BILL_PAYMENT",
-          actionRoute: "/resident/bills",
-          fcmToken: user.fcm_token,
-          sourceEventId: `MAINTENANCE_BILL:${bill.id}:${user.id}`,
-          extraData: { route: "/resident/bills", billId: bill.id.toString() },
-        });
-      }
-      continue;
     }
 
-    /* ─── LUMPSUM / FLAT ─── */
-    for (const flat of eligibleFlats) {
-      if (rate.maintenance_type === "FLAT" && flat.flat_type !== rate.flat_type) continue;
-      if (flat.occupancy_status === "RENTED") continue;
+    // Existing bills for duplicate checking
+    const existingBills = await Bill.findAll({
+      where: {
+        billing_month: requestedMonth,
+        type: "MAINTENANCE",
+      },
+      attributes: ["flat_id", "maintenance_rate_id"],
+    });
+    const existingMap = new Set(existingBills.map((b) => `${b.flat_id}:${b.maintenance_rate_id}`));
 
-      const flatId = flat.id;
-      const amount = Number(rate.amount);
+    const finalDueDate = last_pay_date || due_date ? new Date(last_pay_date || due_date) : addDays(30);
+    const finalIssueDate = issue_date ? new Date(issue_date) : new Date();
 
-      // Duplicate prevention: same flat + month + type + rate row.
-      const existing = await Bill.count({
-        where: {
-          flat_id: flatId,
-          billing_month: requestedMonth,
-          type: "MAINTENANCE",
-          maintenance_rate_id: rate.id,
-        },
-      });
-      if (existing > 0) {
+    const { items } = resolveBillingItems({
+      rates,
+      eligibleFlats,
+      requestedMonth,
+      due_date: finalDueDate,
+      existingMap,
+    });
+
+    const results = [];
+    const summary = { generated: 0, skipped_duplicates: 0, skipped_sqft: 0, missing_areas: [], errors: [] };
+    const notified = new Set();
+
+    for (const item of items) {
+      if (item.is_already_billed) {
         summary.skipped_duplicates += 1;
         continue;
       }
 
-      let calculation = null;
-      let calculatedAmount = amount;
-
-      if (rate.maintenance_type === "LUMPSUM") {
-        calculation = { maintenance_type: "LUMPSUM", configured_amount: amount };
-      } else if (rate.maintenance_type === "FLAT") {
-        calculation = {
-          maintenance_type: "FLAT",
-          flat_type: rate.flat_type,
-          configured_amount: amount,
-        };
-      }
-
       const bill = await Bill.create({
-        flat_id: flatId,
+        flat_id: item.flat_id,
         title: `Maintenance ${requestedMonth}`,
-        amount: calculatedAmount,
+        amount: item.amount,
         billing_month: requestedMonth,
         issue_date: finalIssueDate,
         due_date: finalDueDate,
         last_pay_date: finalDueDate,
         status: "PENDING",
         type: "MAINTENANCE",
-        maintenance_rate_id: rate.id,
-        calculation_details: calculation ? JSON.stringify(calculation) : null,
+        maintenance_rate_id: item.rate_id,
+        calculation_details: item.calculation_details ? JSON.stringify(item.calculation_details) : null,
       });
 
       results.push(bill);
       summary.generated += 1;
 
-      const membership = flat.FlatMemberships?.[0];
-      if (!membership) continue;
+      // Notification
+      const targetUserId = item.resident_id;
+      if (targetUserId && !notified.has(`${item.flat_id}:${targetUserId}`)) {
+        notified.add(`${item.flat_id}:${targetUserId}`);
+        try {
+          const user = await User.findByPk(targetUserId, { attributes: ["id", "fcm_token"] });
+          if (user) {
+            const settings = await UserSetting.findOne({ where: { user_id: user.id } });
+            if (!settings || settings.payment_updates !== false) {
+              const formattedDueDate = due_date
+                ? new Date(due_date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+                : null;
+              const notifMsg = formattedDueDate
+                ? `Your maintenance bill of ₹${Number(bill.amount).toFixed(2)} for ${requestedMonth} is now available. Due date: ${formattedDueDate}.`
+                : `Your maintenance bill of ₹${Number(bill.amount).toFixed(2)} for ${requestedMonth} is now available.`;
 
-      const targetUserId = membership.user_id;
-      if (notified.has(`${flatId}:${targetUserId}`)) continue;
-      notified.add(`${flatId}:${targetUserId}`);
-
-      const user = await User.findByPk(targetUserId, { attributes: ["id", "fcm_token"] });
-      if (!user) {
-        summary.errors.push(`Could not reload owner for flat ${flatId}`);
-        continue;
+              await notificationService.sendNotification({
+                societyId,
+                receiverUserId: user.id,
+                receiverRole: "RESIDENT",
+                title: "New Maintenance Bill",
+                message: notifMsg,
+                type: "BILL",
+                actionType: "BILL_PAYMENT",
+                actionRoute: "/resident/bills",
+                fcmToken: user.fcm_token,
+                sourceEventId: `MAINTENANCE_BILL:${bill.id}:${user.id}`,
+                extraData: { route: "/resident/bills", billId: bill.id.toString() },
+              });
+            }
+          }
+        } catch (notifErr) {
+          summary.errors.push(`Notification failed for flat ${item.flat_id}: ${notifErr.message}`);
+        }
       }
-
-      const settings = await UserSetting.findOne({ where: { user_id: user.id } });
-      if (settings && settings.payment_updates === false) continue;
-
-      const formattedDueDate = due_date
-        ? new Date(due_date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
-        : null;
-      const notifMsg = formattedDueDate
-        ? `Your maintenance bill of ₹${Number(bill.amount).toFixed(2)} for ${requestedMonth} is now available. Due date: ${formattedDueDate}.`
-        : `Your maintenance bill of ₹${Number(bill.amount).toFixed(2)} for ${requestedMonth} is now available.`;
-
-      await notificationService.sendNotification({
-        societyId,
-        receiverUserId: user.id,
-        receiverRole: "RESIDENT",
-        title: "New Maintenance Bill",
-        message: notifMsg,
-        type: "BILL",
-        actionType: "BILL_PAYMENT",
-        actionRoute: "/resident/bills",
-        fcmToken: user.fcm_token,
-        sourceEventId: `MAINTENANCE_BILL:${bill.id}:${user.id}`,
-        extraData: { route: "/resident/bills", billId: bill.id.toString() },
-      });
     }
+
+    await stampAudit({
+      societyId,
+      action: "MAINTENANCE_GENERATED",
+      entityType: "MaintenanceRate",
+      entityId: rates[0]?.id || null,
+      newValue: { billing_month: requestedMonth, ...summary },
+      reason: null,
+      actor: req.user,
+    });
+
+    return res.json({ summary, bills: results });
+  } catch (err) {
+    console.error("[generateBills] error:", err);
+    return res.status(400).json({ message: err.message || "Failed to generate maintenance bills" });
   }
-
-  await stampAudit({
-    societyId,
-    action: "MAINTENANCE_GENERATED",
-    entityType: "MaintenanceRate",
-    entityId: parsedRateIds[0],
-    newValue: { billing_month: requestedMonth, ...summary },
-    reason: null,
-    actor: req.user,
-  });
-
-  return res.json({ summary, bills: results });
 };
 
 /* ─────────────────────────────────────────

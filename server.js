@@ -356,7 +356,10 @@ sequelize
         console.log(`[DB Migration] Note making MaintenanceRates.${col} nullable:`, err.message);
       }
     };
-    await makeNullable("flat_type", "ENUM('1BHK','2BHK','3BHK','ROW_HOUSE','COMMERCIAL')");
+    try {
+      await sequelize.query("ALTER TABLE MaintenanceRates MODIFY COLUMN flat_type VARCHAR(50) NULL");
+    } catch (err) {}
+    await makeNullable("flat_type", "VARCHAR(50)");
     await makeNullable("resident_type", "ENUM('OWNER','TENANT')");
     await makeNullable("amount", "DECIMAL(10,2)");
 

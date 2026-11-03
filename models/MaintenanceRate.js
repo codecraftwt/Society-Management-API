@@ -23,9 +23,9 @@ const MaintenanceRate = sequelize.define(
       type: DataTypes.ENUM("LUMPSUM", "SQ_FEET", "FLAT"),
       allowNull: false,
     },
-    // FLAT-type configs use flat_type; LUMPSUM/SQ_FEET keep it NULL.
+    // FLAT-type configs use flat_type ("1BHK", "2BHK", "3BHK", "ROW_HOUSE", "COMMERCIAL", or "ALL" for all BHKs); LUMPSUM/SQ_FEET keep it NULL.
     flat_type: {
-      type: DataTypes.ENUM("1BHK", "2BHK", "3BHK", "ROW_HOUSE", "COMMERCIAL"),
+      type: DataTypes.STRING(50),
       allowNull: true,
       defaultValue: null,
     },

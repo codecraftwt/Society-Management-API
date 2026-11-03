@@ -202,6 +202,7 @@ exports.getAllBookings = async (req, res) => {
 
     const bookings = await AmenityBooking.findAll({
       where,
+      distinct: true,
       include: [
         {
           model: Amenity,

@@ -31,9 +31,16 @@ function groupAmenityBookings(rows) {
   const out = [];
   const legacyFullDay = new Map();
   const legacySlot = new Map();
+  const seenIds = new Set();
 
   rows.forEach((b) => {
     const row = plain(b);
+
+    /* Deduplicate rows by booking ID to prevent duplicate records from SQL joins */
+    if (row.id) {
+      if (seenIds.has(row.id)) return;
+      seenIds.add(row.id);
+    }
 
     /* ── NEW single-row path: row already has from_date/to_date ── */
     if (row.from_date && row.to_date) {
