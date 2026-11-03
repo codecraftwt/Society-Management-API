@@ -26,6 +26,7 @@ const ALL_SOCIETY_ROLES = [
   "ADMIN",
   "SUPER_ADMIN",
   "TENANT",
+  "ACCOUNTANT",
 ];
 
 const MANAGEMENT_ROLES = [
@@ -42,8 +43,12 @@ const TRIGGER_ROLES = [
   "GUARD",
   "RESIDENT",
   "FAMILY_MEMBER",
+  "SOCIETY_ADMIN",
   "COMMITTEE_MEMBER",
+  "ADMIN",
+  "SUPER_ADMIN",
   "TENANT",
+  "ACCOUNTANT",
 ];
 
 // Resolving is a management action. Residents/tenants/accountants cannot
@@ -92,4 +97,5 @@ router.patch("/:id", auth, role.strict(...MANAGEMENT_ROLES), updateEmergency);
 router.delete("/:id", auth, role.strict("SUPER_ADMIN", "ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), deleteEmergency);
 
 module.exports = router;
+
 
