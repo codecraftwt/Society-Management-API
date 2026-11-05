@@ -856,15 +856,11 @@ describe("Cleaning Staff — gate scan", () => {
       .post("/api/auth/login")
       .send({ email: otherGuard.email, password: "Admin@123" });
     expect(loginRes.status).toBe(200);
+    expect(loginRes.body.token).toBeTruthy();
 
-    const otpRes = await request(app)
-      .post("/api/auth/verify-otp")
-      .send({ otp: "123456", tempToken: loginRes.body.tempToken });
-    expect(otpRes.status).toBe(200);
-
-    const headers = { Authorization: `Bearer ${otpRes.body.token}` };
-    if (otpRes.body.user?.society_id) {
-      headers["x-society-id"] = String(otpRes.body.user.society_id);
+    const headers = { Authorization: `Bearer ${loginRes.body.token}` };
+    if (loginRes.body.user?.society_id) {
+      headers["x-society-id"] = String(loginRes.body.user.society_id);
     }
 
     const res = await request(app)

@@ -1315,7 +1315,7 @@ const getResidents = async (req, res) => {
     let targetSocietyId = null;
     let societyRolesByUser = new Map();
     if (req.user.activeRole === "SUPER_ADMIN" || req.user.role === "SUPER_ADMIN") {
-      if (society_id) targetSocietyId = society_id;
+      if (society_id && /^\d+$/.test(String(society_id))) targetSocietyId = Number(society_id);
     } else {
       targetSocietyId = req.user.society_id;
     }
@@ -3377,10 +3377,36 @@ const addTenantByOwner = async (req, res) => {
       return res.status(400).json({ message: "flat_id is required." });
     }
 
-    const ownerMembership = await FlatMembership.findOne({
+    let ownerMembership = await FlatMembership.findOne({
       where: { flat_id, user_id: req.user.id, role: "OWNER", is_current: true },
     });
-    if (!ownerMembership) return res.status(403).json({ message: "Access denied." });
+    // Legacy installations may not have an active OWNER membership row even
+    // though the flat still points to its owner through resident_id. Keep the
+    // fallback society-scoped and require the flat to be owned by this user.
+    if (!ownerMembership) {
+      const ownedFlat = await Flat.findOne({
+        where: { id: flat_id, resident_id: req.user.id },
+        include: [{
+          model: Block,
+          where: { society_id: req.user.society_id },
+          attributes: [],
+          required: true,
+        }],
+        attributes: ["id"],
+      });
+      if (!ownedFlat) return res.status(403).json({ message: "Access denied." });
+      // Normalize the legacy ownership representation so the remainder of
+      // the lifecycle (remove/renew) has the same membership contract.
+      ownerMembership = await FlatMembership.create({
+        flat_id,
+        user_id: req.user.id,
+        society_id: req.user.society_id,
+        role: "OWNER",
+        is_staying: true,
+        pays_maintenance: true,
+        is_current: true,
+      });
+    }
 
     const normalizedEmail = String(email || "").trim().toLowerCase();
     if (!normalizedEmail || !name || !phone || !password || !move_in_date || !move_out_date) {
@@ -3420,6 +3446,7 @@ const addTenantByOwner = async (req, res) => {
     await FlatMembership.create({
       flat_id,
       user_id: tenant.id,
+      society_id: req.user.society_id,
       role: "TENANT",
       is_staying: true,
       pays_maintenance: false,
@@ -3479,7 +3506,14 @@ const removeTenantByOwner = async (req, res) => {
     const ownerMembership = await FlatMembership.findOne({
       where: { flat_id, user_id: req.user.id, role: "OWNER", is_current: true },
     });
-    if (!ownerMembership) return res.status(403).json({ message: "Access denied." });
+    if (!ownerMembership) {
+      const ownedFlat = await Flat.findOne({
+        where: { id: flat_id, resident_id: req.user.id },
+        include: [{ model: Block, where: { society_id: req.user.society_id }, attributes: [], required: true }],
+        attributes: ["id"],
+      });
+      if (!ownedFlat) return res.status(403).json({ message: "Access denied." });
+    }
 
     const tenantMembership = await FlatMembership.findOne({
       where: { id: tenant_membership_id, flat_id, role: "TENANT", is_current: true },
@@ -3503,7 +3537,7 @@ const removeTenantByOwner = async (req, res) => {
       { where: { resident_id: tenantUserId } }
     );
 
-    await ownerMembership.update({ is_staying: true });
+    if (ownerMembership) await ownerMembership.update({ is_staying: true });
     await Flat.update(
       { resident_id: req.user.id, occupancy_status: "OWNER_OCCUPIED" },
       { where: { id: flat_id } }

@@ -23,6 +23,10 @@ const Expense = sequelize.define("Expense", {
     defaultValue: "CASH",
   },
   receipt_url: { type: DataTypes.STRING(500), allowNull: true },
+  receipt_file_name: { type: DataTypes.STRING(255), allowNull: true },
+  receipt_mime_type: { type: DataTypes.STRING(100), allowNull: true },
+  receipt_file_size: { type: DataTypes.INTEGER, allowNull: true },
+  receipt_public_id: { type: DataTypes.STRING(500), allowNull: true },
   // POSTED -> money out happened. VOID -> soft deleted + ledger reversal.
   status: { type: DataTypes.ENUM("POSTED", "VOID"), allowNull: false, defaultValue: "POSTED" },
   created_by: { type: DataTypes.INTEGER, allowNull: true },

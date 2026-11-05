@@ -510,7 +510,87 @@ function startOtpCleanup() {
 exports.startOtpCleanup = startOtpCleanup;
 
 /* =====
-    POST /auth/login  — Step 1: validate credentials → send OTP
+    Build the full authenticated session payload for a user who has passed
+    credential validation. Role, society and panel resolution happen here so
+    login responses are identical to the former post-OTP response.
+    ===== */
+async function buildLoginResponse(user) {
+  const availableSocieties = await fetchUserSocietiesList(user.id);
+  const defaultSociety = availableSocieties.find((s) => s.is_default) || availableSocieties[0];
+  const activeSocietyId = defaultSociety ? defaultSociety.id : user.society_id;
+  let activeSocietyRoles = defaultSociety && defaultSociety.roles && defaultSociety.roles.length > 0
+    ? defaultSociety.roles
+    : resolveUserRoles(user);
+
+  const isDirectSocAdmin = (String(user.society_id) === String(activeSocietyId) || !activeSocietyId) &&
+    (user.role === "SOCIETY_ADMIN" || (Array.isArray(user.roles) && user.roles.includes("SOCIETY_ADMIN")));
+  if (isDirectSocAdmin && !activeSocietyRoles.includes("SOCIETY_ADMIN")) {
+    activeSocietyRoles = ["SOCIETY_ADMIN", ...activeSocietyRoles];
+  }
+
+  // Role priority for initialRole:
+  // SUPER_ADMIN > SOCIETY_ADMIN > COMMITTEE_MEMBER > ACCOUNTANT > GUARD > RESIDENT > FAMILY_MEMBER
+  let initialRole;
+  if (activeSocietyRoles.includes("SUPER_ADMIN") || user.role === "SUPER_ADMIN") {
+    initialRole = "SUPER_ADMIN";
+  } else if (activeSocietyRoles.includes("SOCIETY_ADMIN") || isDirectSocAdmin) {
+    initialRole = "SOCIETY_ADMIN";
+  } else if (activeSocietyRoles.includes("COMMITTEE_MEMBER") || user.role === "COMMITTEE_MEMBER") {
+    initialRole = "COMMITTEE_MEMBER";
+  } else if (activeSocietyRoles.includes("ACCOUNTANT") || user.role === "ACCOUNTANT") {
+    initialRole = "ACCOUNTANT";
+  } else if (activeSocietyRoles.includes("GUARD") || user.role === "GUARD") {
+    initialRole = "GUARD";
+  } else if (activeSocietyRoles.includes(user.role)) {
+    initialRole = user.role;
+  } else {
+    initialRole = activeSocietyRoles[0] || "RESIDENT";
+  }
+
+  const { token } = issueAccessToken(user, initialRole, activeSocietyId, activeSocietyRoles);
+  const roles = activeSocietyRoles;
+  const scopedUser = {
+    ...user.toJSON(),
+    society_id: activeSocietyId,
+    role: initialRole,
+    roles,
+    resident_type: defaultSociety?.resident_type || user.resident_type,
+  };
+  const availablePanels = await getAvailablePanels(scopedUser);
+  const residencyFlags = await getResidencyFlags(scopedUser, availablePanels);
+  const dynamicPermissions = await fetchEffectivePermissions(activeSocietyId, initialRole);
+
+  return {
+    message: "Login successful",
+    token,
+    availablePanels,
+    availableSocieties,
+    activeSocietyId,
+    ...residencyFlags,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: initialRole,
+      roles,
+      activeRole: initialRole,
+      availablePanels,
+      availableSocieties,
+      ...residencyFlags,
+      dynamic_permissions: dynamicPermissions,
+      permissions: dynamicPermissions,
+      resident_type: scopedUser.resident_type || null,
+      society_id: activeSocietyId,
+      society_name: defaultSociety?.name || user.Society?.name || null,
+      society_logo: defaultSociety?.logo_url || user.Society?.logo_url || null,
+      society_logo_url: defaultSociety?.logo_url || user.Society?.logo_url || null,
+      profile_picture: user.profile_picture || null,
+    },
+  };
+}
+
+/* =====
+    POST /auth/login  — validate credentials → issue JWT directly
     ===== */
 exports.login = async (req, res) => {
   try {
@@ -560,274 +640,10 @@ exports.login = async (req, res) => {
     if (!isMatch)
       return res.status(400).json({ message: "Invalid credentials" });
 
-    // ✅ Generate OTP + clear old records in parallel
-    const otp = generateOtp();
-    const [otp_hash] = await Promise.all([
-      bcrypt.hash(otp, 8), // ✅ rounds=8 instead of 10 (faster, still safe for short-lived OTPs)
-      OtpVerification.destroy({ where: { email } }),
-    ]);
-
-    // The login context is resolved from the authenticated user's backend record.
-    // This keeps society branding accurate and avoids trusting frontend role labels.
-    const loginRoles = resolveUserRoles(user);
-    const loginRole = loginRoles.includes("SUPER_ADMIN") ? "SUPER_ADMIN" : loginRoles[0];
-    // ✅ Await the email so the client timer only starts after dispatch
-    await sendOtpEmail(email, otp, user.name, {
-      role: loginRole,
-      societyName: user.Society?.name,
-    });
-
-    const expires_at = new Date(Date.now() + 2 * 60 * 1000);
-    await OtpVerification.create({ email, otp_hash, expires_at });
-
-    const roles = resolveUserRoles(user);
-
-    const tempToken = jwt.sign(
-      {
-        id: user.id,
-        email,
-        roles,
-        activeRole: user.role,
-        phase: "otp_pending",
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: "3m" }
-    );
-
-    const availablePanels = await getAvailablePanels(user);
-    const availableSocieties = await fetchUserSocietiesList(user.id);
-    const residencyFlags = await getResidencyFlags(user, availablePanels);
-
-    return res.status(200).json({
-      message: "OTP sent to your registered email address",
-      tempToken,
-      availablePanels,
-      availableSocieties,
-      ...residencyFlags,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        roles,
-        activeRole: user.role,
-        availablePanels,
-        availableSocieties,
-        ...residencyFlags,
-        society_id: user.society_id,
-        society_name: user.Society?.name || null,
-        society_logo: user.Society?.logo_url || null,
-        society_logo_url: user.Society?.logo_url || null,
-        profile_picture: user.profile_picture || null,
-      },
-    });
+    const session = await buildLoginResponse(user);
+    return res.status(200).json(session);
   } catch (err) {
     console.error("Login error:", err);
-    return res.status(500).json({ message: err.message });
-  }
-};
-
-/* =====
-    POST /auth/verify-otp  — Step 2: verify OTP → issue real JWT
-    ===== */
-exports.verifyOtp = async (req, res) => {
-  try {
-    const { otp, tempToken } = req.body;
-
-    if (!otp || !tempToken) {
-      return res.status(400).json({ message: "OTP and session token are required" });
-    }
-
-    let decoded;
-    try {
-      decoded = jwt.verify(tempToken, process.env.JWT_SECRET);
-    } catch (err) {
-      if (err.name === "TokenExpiredError") {
-        return res.status(401).json({ message: "Session expired. Please login again." });
-      }
-      return res.status(401).json({ message: "Invalid session. Please login again." });
-    }
-
-    if (decoded.phase !== "otp_pending") {
-      return res.status(401).json({ message: "Invalid session phase." });
-    }
-
-    const { email, id: userId } = decoded;
-
-    const record = await OtpVerification.findOne({
-      where: {
-        email,
-        used: false,
-        expires_at: { [Op.gt]: new Date() },
-      },
-      order: [["created_at", "DESC"]],
-    });
-
-    if (!record) {
-      return res.status(400).json({
-        message: "OTP has expired or is invalid. Please login again.",
-      });
-    }
-
-    if (record.attempts >= 5) {
-      await record.destroy();
-      return res.status(429).json({
-        message: "Too many failed attempts. Please login again.",
-      });
-    }
-
-    const isValid = await bcrypt.compare(otp.trim(), record.otp_hash);
-
-    if (!isValid) {
-      await record.update({ attempts: record.attempts + 1 });
-      const remaining = 4 - record.attempts;
-      return res.status(400).json({
-        message: `Incorrect OTP. ${
-          remaining > 0
-            ? `${remaining} attempt(s) remaining.`
-            : "No attempts remaining. Please login again."
-        }`,
-      });
-    }
-
-    // ✅ Run DB destroy + user fetch in parallel
-    const [user] = await Promise.all([
-      User.findOne({
-        where: { id: userId },
-        include: [{ model: Society, attributes: ["id", "name", "logo_url"] }],
-      }),
-      record.destroy(),
-    ]);
-
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    const availableSocieties = await fetchUserSocietiesList(user.id);
-    const defaultSociety = availableSocieties.find((s) => s.is_default) || availableSocieties[0];
-    const activeSocietyId = defaultSociety ? defaultSociety.id : user.society_id;
-    let activeSocietyRoles = defaultSociety && defaultSociety.roles && defaultSociety.roles.length > 0
-      ? defaultSociety.roles
-      : resolveUserRoles(user);
-
-    const isDirectSocAdmin = (String(user.society_id) === String(activeSocietyId) || !activeSocietyId) &&
-      (user.role === "SOCIETY_ADMIN" || (Array.isArray(user.roles) && user.roles.includes("SOCIETY_ADMIN")));
-    if (isDirectSocAdmin && !activeSocietyRoles.includes("SOCIETY_ADMIN")) {
-      activeSocietyRoles = ["SOCIETY_ADMIN", ...activeSocietyRoles];
-    }
-
-    // Role priority for initialRole:
-    // SUPER_ADMIN > SOCIETY_ADMIN > COMMITTEE_MEMBER > ACCOUNTANT > GUARD > RESIDENT > FAMILY_MEMBER
-    let initialRole;
-    if (activeSocietyRoles.includes("SUPER_ADMIN") || user.role === "SUPER_ADMIN") {
-      initialRole = "SUPER_ADMIN";
-    } else if (activeSocietyRoles.includes("SOCIETY_ADMIN") || isDirectSocAdmin) {
-      initialRole = "SOCIETY_ADMIN";
-    } else if (activeSocietyRoles.includes("COMMITTEE_MEMBER") || user.role === "COMMITTEE_MEMBER") {
-      initialRole = "COMMITTEE_MEMBER";
-    } else if (activeSocietyRoles.includes("ACCOUNTANT") || user.role === "ACCOUNTANT") {
-      initialRole = "ACCOUNTANT";
-    } else if (activeSocietyRoles.includes("GUARD") || user.role === "GUARD") {
-      initialRole = "GUARD";
-    } else if (activeSocietyRoles.includes(user.role)) {
-      initialRole = user.role;
-    } else {
-      initialRole = activeSocietyRoles[0] || "RESIDENT";
-    }
-
-    const { token } = issueAccessToken(user, initialRole, activeSocietyId, activeSocietyRoles);
-    const roles = activeSocietyRoles;
-    const scopedUser = {
-      ...user.toJSON(),
-      society_id: activeSocietyId,
-      role: initialRole,
-      roles,
-      resident_type: defaultSociety?.resident_type || user.resident_type,
-    };
-    const availablePanels = await getAvailablePanels(scopedUser);
-    const residencyFlags = await getResidencyFlags(scopedUser, availablePanels);
-    const dynamicPermissions = await fetchEffectivePermissions(activeSocietyId, initialRole);
-
-    return res.status(200).json({
-      message: "Login successful",
-      token,
-      availablePanels,
-      availableSocieties,
-      activeSocietyId,
-      ...residencyFlags,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: initialRole,
-        roles,
-        activeRole: initialRole,
-        availablePanels,
-        availableSocieties,
-        ...residencyFlags,
-        dynamic_permissions: dynamicPermissions,
-        permissions: dynamicPermissions,
-        resident_type: scopedUser.resident_type || null,
-        society_id: activeSocietyId,
-        society_name: defaultSociety?.name || user.Society?.name || null,
-        society_logo: defaultSociety?.logo_url || user.Society?.logo_url || null,
-        society_logo_url: defaultSociety?.logo_url || user.Society?.logo_url || null,
-        profile_picture: user.profile_picture || null,
-      },
-    });
-  } catch (err) {
-    console.error("OTP verify error:", err);
-    return res.status(500).json({ message: err.message });
-  }
-};
-
-/* =====
-    POST /auth/resend-otp
-    ===== */
-exports.resendOtp = async (req, res) => {
-  try {
-    const { tempToken } = req.body;
-
-    if (!tempToken) {
-      return res.status(400).json({ message: "Session token is required" });
-    }
-
-    let decoded;
-    try {
-      decoded = jwt.verify(tempToken, process.env.JWT_SECRET);
-    } catch {
-      return res.status(401).json({ message: "Session expired. Please login again." });
-    }
-
-    if (decoded.phase !== "otp_pending") {
-      return res.status(401).json({ message: "Invalid session." });
-    }
-
-    const { email, id: userId } = decoded;
-
-    const user = await User.findByPk(userId, {
-      include: [{ model: Society, attributes: ["name"] }],
-    });
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    // ✅ Run OTP generation + DB destroy in parallel
-    const otp = generateOtp();
-    const [otp_hash] = await Promise.all([
-      bcrypt.hash(otp, 8), // ✅ rounds=8
-      OtpVerification.destroy({ where: { email } }),
-    ]);
-
-    // ✅ Await the email so the resend timer only restarts after dispatch
-    const resendRoles = resolveUserRoles(user);
-    await sendOtpEmail(email, otp, user.name, {
-      role: resendRoles.includes("SUPER_ADMIN") ? "SUPER_ADMIN" : resendRoles[0],
-      societyName: user.Society?.name,
-    });
-
-    const expires_at = new Date(Date.now() + 2 * 60 * 1000);
-    await OtpVerification.create({ email, otp_hash, expires_at });
-
-    return res.status(200).json({ message: "OTP resent successfully" });
-  } catch (err) {
-    console.error("Resend OTP error:", err);
     return res.status(500).json({ message: err.message });
   }
 };
@@ -902,9 +718,9 @@ exports.sendRegistrationOtp = async (req, res) => {
 /* =====
     POST /auth/verify-registration-otp
 
-    Confirms the emailed code for an applicant who does not have an account yet,
-    so it cannot reuse verifyOtp (which requires a real userId). On success the
-    code is burned (used = true) and the client may call /auth/register.
+    Confirms the emailed code for an applicant who does not have an account yet.
+    On success the code is burned (used = true) and the client may call
+    /auth/register.
     ===== */
 exports.verifyRegistrationOtp = async (req, res) => {
   try {

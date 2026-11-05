@@ -32,6 +32,9 @@ const AmenityBooking = sequelize.define(
       type: DataTypes.INTEGER,
       allowNull: true,
     },
+    occupancy_category: { type: DataTypes.STRING(20), allowNull: true },
+    rate_per_hour_snapshot: { type: DataTypes.DECIMAL(10, 2), allowNull: true },
+    amount: { type: DataTypes.DECIMAL(10, 2), allowNull: true },
 
     date: {
       type: DataTypes.DATEONLY,

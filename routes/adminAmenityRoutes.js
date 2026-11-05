@@ -7,6 +7,7 @@ const {
   updateAmenity,
   toggleAmenity,
   disableAmenity,
+  deleteAmenity,
   getAllBookings,
   getPendingBookings,
   approveBooking,
@@ -28,6 +29,7 @@ router.post   ("/",               role("SOCIETY_ADMIN", "COMMITTEE_MEMBER", "SUP
 router.put    ("/:id",            role("SOCIETY_ADMIN", "COMMITTEE_MEMBER", "SUPER_ADMIN"), checkPermission("amenities", "edit"), updateAmenity);
 router.patch  ("/:id/toggle",     role("SOCIETY_ADMIN", "COMMITTEE_MEMBER", "SUPER_ADMIN"), checkPermission("amenities", "edit"), toggleAmenity);   // Re-enable (clears disable metadata)
 router.patch  ("/:id/disable",    role("SOCIETY_ADMIN", "COMMITTEE_MEMBER", "SUPER_ADMIN"), checkPermission("amenities", "edit"), disableAmenity);  // Disable with reason/type/dates
+router.delete ("/:id",             role("SOCIETY_ADMIN", "COMMITTEE_MEMBER", "SUPER_ADMIN"), checkPermission("amenities", "delete"), deleteAmenity);
 
 /* BOOKING MANAGEMENT (read) */
 router.get("/bookings",         checkPermission("amenities", "view"), getAllBookings);
@@ -41,4 +43,4 @@ router.put("/bookings/:id/cancel",  role("SOCIETY_ADMIN", "COMMITTEE_MEMBER", "S
 /* INSIGHTS */
 router.get("/:id/availability", checkPermission("amenities", "view"), getAdminAvailability);
 
-module.exports = router;
+module.exports = router;

@@ -314,6 +314,10 @@ sequelize
       ["frequency", "ALTER TABLE MaintenanceRates ADD COLUMN frequency VARCHAR(20) NOT NULL DEFAULT 'MONTHLY' AFTER rate_per_sqft"],
       ["description", "ALTER TABLE MaintenanceRates ADD COLUMN description TEXT NULL AFTER frequency"],
       ["is_active", "ALTER TABLE MaintenanceRates ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1 AFTER description"],
+      ["owner_amount", "ALTER TABLE MaintenanceRates ADD COLUMN owner_amount DECIMAL(10,2) NULL AFTER amount"],
+      ["tenant_amount", "ALTER TABLE MaintenanceRates ADD COLUMN tenant_amount DECIMAL(10,2) NULL AFTER owner_amount"],
+      ["owner_rate_per_sqft", "ALTER TABLE MaintenanceRates ADD COLUMN owner_rate_per_sqft DECIMAL(10,4) NULL AFTER rate_per_sqft"],
+      ["tenant_rate_per_sqft", "ALTER TABLE MaintenanceRates ADD COLUMN tenant_rate_per_sqft DECIMAL(10,4) NULL AFTER owner_rate_per_sqft"],
     ];
     for (const [col, sql] of rateColMigrations) {
       if (!rateCols.has(col)) {

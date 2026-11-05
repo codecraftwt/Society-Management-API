@@ -497,7 +497,8 @@ const createExpense = async (req, res) => {
     const societyId = resolveSocietyId(req);
     if (!societyId) return res.status(400).json({ success: false, message: "Society could not be resolved." });
 
-    const { pay_to, reason, amount, payment_date, payment_mode, receipt_url } = req.body;
+    const { pay_to, reason, amount, payment_date, payment_mode } = req.body;
+    const receipt = req.file ? { receipt_url: req.file.path, receipt_file_name: req.file.originalname, receipt_mime_type: req.file.mimetype, receipt_file_size: req.file.size, receipt_public_id: req.file.filename } : {};
     if (!pay_to || !reason || amount === undefined) {
       await t.rollback();
       return res.status(400).json({ success: false, message: "pay_to, reason and amount are required." });
@@ -524,7 +525,7 @@ const createExpense = async (req, res) => {
       payment_date: payment_date || new Date().toISOString().slice(0, 10),
       paid_by: paidBy,
       payment_mode: resolvedPaymentMode,
-      receipt_url: receipt_url || null,
+      ...receipt,
       status: "POSTED",
       created_by: req.user.id,
     }, { transaction: t });
@@ -594,7 +595,8 @@ const updateExpense = async (req, res) => {
       updates.payment_mode = ["CASH", "UPI", "BANK_TRANSFER", "CHEQUE", "OTHER"].includes(mode) ? mode : "CASH";
     }
     if (req.body.payment_date !== undefined) updates.payment_date = req.body.payment_date;
-    if (req.body.receipt_url !== undefined) updates.receipt_url = req.body.receipt_url;
+    if (req.file) Object.assign(updates, { receipt_url: req.file.path, receipt_file_name: req.file.originalname, receipt_mime_type: req.file.mimetype, receipt_file_size: req.file.size, receipt_public_id: req.file.filename });
+    if (String(req.body.remove_receipt).toLowerCase() === "true") Object.assign(updates, { receipt_url: null, receipt_file_name: null, receipt_mime_type: null, receipt_file_size: null, receipt_public_id: null });
     if (req.body.amount !== undefined) {
       const amt = Number(req.body.amount);
       if (!Number.isFinite(amt) || amt <= 0) {

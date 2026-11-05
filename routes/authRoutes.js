@@ -4,8 +4,6 @@ const router = express.Router();
 
 const {
   login,
-  verifyOtp,
-  resendOtp,
   sendRegistrationOtp,
   verifyRegistrationOtp,
   switchRole,
@@ -20,8 +18,6 @@ const auth = require("../middlewares/authMiddleware");
 
 /* Public routes */
 router.post("/login",             login);
-router.post("/verify-otp",        verifyOtp);
-router.post("/resend-otp",        resendOtp);
 router.post("/send-registration-otp",    sendRegistrationOtp);
 router.post("/verify-registration-otp",  verifyRegistrationOtp);
 router.get("/check-email",        checkEmailAvailability);

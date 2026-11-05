@@ -12,6 +12,7 @@ const {
 const { sendPushNotification } = require("../utils/pushNotification");
 const { auditLog } = require("../utils/ledgerService");
 const notificationService = require("../services/notificationService");
+const { getOccupancyContextForFlats } = require("../utils/flatOccupancy");
 
 /* Best-effort audit stamp so a failure in the audit book never blocks the
    actual maintenance operation (configs/bills are not transactional here). */
@@ -45,11 +46,16 @@ function normalizeRateInput(body, society_id) {
     flat_type,
     resident_type,
     amount,
+    owner_amount,
+    tenant_amount,
     rate_per_sqft,
+    owner_rate_per_sqft,
+    tenant_rate_per_sqft,
     frequency,
     description,
     is_active,
   } = body;
+  const validNonNegative = (value) => value !== undefined && value !== null && value !== "" && Number.isFinite(Number(value)) && Number(value) >= 0;
 
   if (!maintenance_type || !MAINTENANCE_TYPES.includes(maintenance_type)) {
     return { error: `maintenance_type must be one of: ${MAINTENANCE_TYPES.join(", ")}` };
@@ -67,16 +73,16 @@ function normalizeRateInput(body, society_id) {
   }
 
   if (maintenance_type === "LUMPSUM") {
-    if (amount === undefined || amount === null || isNaN(Number(amount)) || Number(amount) < 0) {
+    if (!validNonNegative(owner_amount ?? amount) || (tenant_amount !== undefined && !validNonNegative(tenant_amount))) {
       return { error: "amount is required and must be a non-negative number for LUMPSUM" };
     }
   } else if (maintenance_type === "SQ_FEET") {
-    if (rate_per_sqft === undefined || rate_per_sqft === null || isNaN(Number(rate_per_sqft)) || Number(rate_per_sqft) < 0) {
+    if (!validNonNegative(owner_rate_per_sqft ?? rate_per_sqft) || (tenant_rate_per_sqft !== undefined && !validNonNegative(tenant_rate_per_sqft))) {
       return { error: "rate_per_sqft is required and must be a non-negative number for SQ_FEET" };
     }
   } else if (maintenance_type === "FLAT") {
     if (!flat_type) return { error: "flat_type is required for FLAT maintenance" };
-    if (amount === undefined || amount === null || isNaN(Number(amount)) || Number(amount) < 0) {
+    if (!validNonNegative(owner_amount ?? amount) || (tenant_amount !== undefined && !validNonNegative(tenant_amount))) {
       return { error: "amount is required and must be a non-negative number for FLAT" };
     }
   }
@@ -89,7 +95,11 @@ function normalizeRateInput(body, society_id) {
       flat_type: maintenance_type === "FLAT" ? flat_type : (flat_type || null),
       resident_type: resident_type || null,
       amount: maintenance_type === "SQ_FEET" ? null : (amount !== undefined && amount !== null ? Number(amount) : null),
+      owner_amount: maintenance_type === "SQ_FEET" ? null : Number(owner_amount ?? amount),
+      tenant_amount: maintenance_type === "SQ_FEET" ? null : Number(tenant_amount ?? owner_amount ?? amount),
       rate_per_sqft: maintenance_type === "SQ_FEET" ? Number(rate_per_sqft) : (rate_per_sqft !== undefined && rate_per_sqft !== null ? Number(rate_per_sqft) : null),
+      owner_rate_per_sqft: maintenance_type === "SQ_FEET" ? Number(owner_rate_per_sqft ?? rate_per_sqft) : null,
+      tenant_rate_per_sqft: maintenance_type === "SQ_FEET" ? Number(tenant_rate_per_sqft ?? owner_rate_per_sqft ?? rate_per_sqft) : null,
       frequency: frequency || "MONTHLY",
       description: (description || "").toString().trim() || null,
       is_active: is_active === undefined ? true : !!is_active,
@@ -277,8 +287,10 @@ function resolveBillingItems({ rates, eligibleFlats, requestedMonth, due_date, e
     const resRole = r.resident_type || "OWNER";
     if (r.flat_type === "ALL") {
       allBhkMap.set(`ALL:${resRole}`, r);
+      if (!r.resident_type || r.tenant_amount !== null && r.tenant_amount !== undefined) allBhkMap.set("ALL:TENANT", r);
     } else {
       individualBhkMap.set(`${r.flat_type}:${resRole}`, r);
+      if (!r.resident_type || r.tenant_amount !== null && r.tenant_amount !== undefined) individualBhkMap.set(`${r.flat_type}:TENANT`, r);
     }
   }
 
@@ -295,7 +307,7 @@ function resolveBillingItems({ rates, eligibleFlats, requestedMonth, due_date, e
       totalAmount += amount;
     }
     ratesAppliedMap.set(rate.id, rate);
-    const membership = flat.FlatMemberships?.[0];
+    const membership = flat.occupancy_context?.owner || flat.FlatMemberships?.[0];
     const user = membership?.User;
     const rateName = rate.name || (rate.flat_type === "ALL" ? "All BHK Maintenance" : `${rate.flat_type || ""} ${rate.maintenance_type}`.trim());
 
@@ -310,6 +322,9 @@ function resolveBillingItems({ rates, eligibleFlats, requestedMonth, due_date, e
       resident_email: user?.email || "",
       resident_phone: user?.phone || "",
       role: membership?.role || "OWNER",
+      occupancy_status: flat.occupancy_context?.occupancyStatus === "RENTED" ? "TENANT_OCCUPIED" : (flat.occupancy_context?.occupancyStatus || "OWNER_OCCUPIED"),
+      owner_name: flat.occupancy_context?.owner?.User?.name || null,
+      tenant_name: flat.occupancy_context?.activeTenant?.User?.name || null,
       rate_id: rate.id,
       rate_name: rateName,
       maintenance_type: rate.maintenance_type,
@@ -324,18 +339,22 @@ function resolveBillingItems({ rates, eligibleFlats, requestedMonth, due_date, e
   /* ─── A. SQ_FEET: Row houses calculation ─── */
   for (const rate of sqftRates) {
     const ratePerSqft = Number(rate.rate_per_sqft);
-    const sqftFlats = eligibleFlats.filter(
-      (f) => f.Block?.property_type === "ROW_HOUSE" && f.occupancy_status !== "RENTED"
-    );
+    const sqftFlats = eligibleFlats.filter((f) => f.Block?.property_type === "ROW_HOUSE");
     for (const flat of sqftFlats) {
+      if (flat.occupancy_context?.occupancyStatus === "VACANT") continue;
+      const occupancyRole = flat.occupancy_context?.occupancyStatus === "RENTED" ? "TENANT" : "OWNER";
       const area = flat.area_sqft ? Number(flat.area_sqft) : 0;
-      const amount = area * ratePerSqft;
+      const selectedRate = Number(occupancyRole === "TENANT" ? (rate.tenant_rate_per_sqft ?? rate.rate_per_sqft) : (rate.owner_rate_per_sqft ?? rate.rate_per_sqft));
+      const amount = area * selectedRate;
       const hasArea = area > 0;
       const calcDetails = {
         maintenance_type: "SQ_FEET",
         area_sqft: area,
-        rate_per_sqft: ratePerSqft,
-        calculation: `${area} × ${ratePerSqft}`,
+        rate_per_sqft: selectedRate,
+        occupancy_at_generation: occupancyRole === "TENANT" ? "TENANT_OCCUPIED" : "OWNER_OCCUPIED",
+        owner_rate_per_sqft: Number(rate.owner_rate_per_sqft ?? rate.rate_per_sqft),
+        tenant_rate_per_sqft: Number(rate.tenant_rate_per_sqft ?? rate.rate_per_sqft),
+        calculation: `${area} × ${selectedRate}`,
         calculated_amount: amount,
       };
       recordItem(flat, rate, hasArea ? amount : 0, calcDetails, {
@@ -350,10 +369,16 @@ function resolveBillingItems({ rates, eligibleFlats, requestedMonth, due_date, e
   for (const rate of lumpsumRates) {
     const amount = Number(rate.amount || 0);
     for (const flat of eligibleFlats) {
-      if (flat.occupancy_status === "RENTED") continue;
+      if (flat.occupancy_context?.occupancyStatus === "VACANT") continue;
+      const isTenant = flat.occupancy_context?.occupancyStatus === "RENTED";
+      const amount = Number(isTenant ? (rate.tenant_amount ?? rate.amount) : (rate.owner_amount ?? rate.amount) || 0);
       const calcDetails = {
         maintenance_type: "LUMPSUM",
         property_type: flat.Block?.property_type || "APARTMENT",
+        owner_base_amount: Number(rate.owner_amount ?? rate.amount ?? 0),
+        tenant_configured_amount: Number(rate.tenant_amount ?? rate.amount ?? 0),
+        additional_tenant_charge: isTenant ? Number(rate.tenant_amount ?? rate.amount ?? 0) - Number(rate.owner_amount ?? rate.amount ?? 0) : 0,
+        occupancy_at_generation: isTenant ? "TENANT_OCCUPIED" : "OWNER_OCCUPIED",
         configured_amount: amount,
       };
       recordItem(flat, rate, amount, calcDetails);
@@ -363,8 +388,8 @@ function resolveBillingItems({ rates, eligibleFlats, requestedMonth, due_date, e
   /* ─── C. FLAT Type: Individual BHK takes priority, All BHK acts as fallback ─── */
   if (flatRates.length > 0) {
     for (const flat of eligibleFlats) {
-      if (flat.occupancy_status === "RENTED") continue;
-      const residentRole = flat.FlatMemberships?.[0]?.role || "OWNER";
+      if (flat.occupancy_context?.occupancyStatus === "VACANT") continue;
+      const residentRole = flat.occupancy_context?.occupancyStatus === "RENTED" ? "TENANT" : "OWNER";
       const indKey = `${flat.flat_type}:${residentRole}`;
       const allKey = `ALL:${residentRole}`;
 
@@ -383,11 +408,18 @@ function resolveBillingItems({ rates, eligibleFlats, requestedMonth, due_date, e
       }
 
       if (chosenRate) {
-        const amount = Number(chosenRate.amount || 0);
+        const isTenant = residentRole === "TENANT";
+        const ownerAmount = Number(chosenRate.owner_amount ?? chosenRate.amount ?? 0);
+        const tenantAmount = Number(chosenRate.tenant_amount ?? chosenRate.amount ?? 0);
+        const amount = isTenant ? tenantAmount : ownerAmount;
         const calcDetails = {
           maintenance_type: "FLAT",
           flat_type: flat.flat_type,
           applied_config: appliedConfig,
+          owner_base_amount: ownerAmount,
+          tenant_configured_amount: tenantAmount,
+          additional_tenant_charge: isTenant ? tenantAmount - ownerAmount : 0,
+          occupancy_at_generation: isTenant ? "TENANT_OCCUPIED" : "OWNER_OCCUPIED",
           configured_amount: amount,
         };
         recordItem(flat, chosenRate, amount, calcDetails);
@@ -462,14 +494,9 @@ const previewBills = async (req, res) => {
         { model: Block, attributes: ["id", "name", "property_type"], required: false, where: { society_id: societyId } },
         {
           model: FlatMembership,
-          required: true,
+          required: false,
           attributes: ["id", "user_id", "role", "is_staying", "pays_maintenance", "is_current"],
-          where: {
-            role: "OWNER",
-            is_current: true,
-            is_staying: true,
-            pays_maintenance: true,
-          },
+          where: { is_current: true },
           include: [
             {
               model: User,
@@ -479,6 +506,13 @@ const previewBills = async (req, res) => {
         },
       ],
       order: [["id", "ASC"]],
+    });
+
+    const occupancy = await getOccupancyContextForFlats(eligibleFlats.map((f) => f.id));
+    eligibleFlats.forEach((flat) => {
+      const ctx = occupancy.get(flat.id);
+      flat.occupancy_context = ctx;
+      flat.FlatMemberships = ctx?.memberships || flat.FlatMemberships || [];
     });
 
     const existingBills = await Bill.findAll({
@@ -505,6 +539,15 @@ const previewBills = async (req, res) => {
       billable_count: items.filter((i) => !i.is_already_billed).length,
       already_billed_count: alreadyBilledCount,
       total_amount: totalAmount,
+      summary: {
+        total_flats_evaluated: eligibleFlats.length,
+        owner_occupied_flats: new Set(items.filter((i) => i.occupancy_status === "OWNER_OCCUPIED").map((i) => i.flat_id)).size,
+        tenant_occupied_flats: new Set(items.filter((i) => i.occupancy_status === "TENANT_OCCUPIED").map((i) => i.flat_id)).size,
+        vacant_flats: eligibleFlats.filter((f) => f.occupancy_context?.occupancyStatus === "VACANT").length,
+        eligible_flats: items.length,
+        excluded_flats: eligibleFlats.length - items.length,
+        total_amount: totalAmount,
+      },
       residents: items,
       rates_applied: ratesApplied.map((r) => ({
         id: r.id,
@@ -512,6 +555,10 @@ const previewBills = async (req, res) => {
         maintenance_type: r.maintenance_type,
         flat_type: r.flat_type,
         amount: r.amount,
+        owner_amount: r.owner_amount,
+        tenant_amount: r.tenant_amount,
+        owner_rate_per_sqft: r.owner_rate_per_sqft,
+        tenant_rate_per_sqft: r.tenant_rate_per_sqft,
       })),
     });
   } catch (err) {
@@ -571,17 +618,18 @@ const generateBills = async (req, res) => {
         { model: Block, attributes: ["id", "name", "property_type"], required: false, where: { society_id: societyId } },
         {
           model: FlatMembership,
-          required: true,
+          required: false,
           attributes: ["id", "user_id", "role"],
-          where: {
-            role: "OWNER",
-            is_current: true,
-            is_staying: true,
-            pays_maintenance: true,
-          },
+          where: { is_current: true },
         },
       ],
       order: [["id", "ASC"]],
+    });
+    const occupancy = await getOccupancyContextForFlats(eligibleFlats.map((f) => f.id));
+    eligibleFlats.forEach((flat) => {
+      const ctx = occupancy.get(flat.id);
+      flat.occupancy_context = ctx;
+      flat.FlatMemberships = ctx?.memberships || flat.FlatMemberships || [];
     });
     if (eligibleFlats.length === 0) {
       return res.status(400).json({ message: "No eligible owner flats found to bill." });
@@ -590,9 +638,7 @@ const generateBills = async (req, res) => {
     // Check for SQ_FEET missing area validation before generating bills
     const sqftRates = rates.filter((r) => r.maintenance_type === "SQ_FEET" && r.is_active);
     if (sqftRates.length > 0) {
-      const sqftFlats = eligibleFlats.filter(
-        (f) => f.Block?.property_type === "ROW_HOUSE" && f.occupancy_status !== "RENTED"
-      );
+      const sqftFlats = eligibleFlats.filter((f) => f.Block?.property_type === "ROW_HOUSE" && f.occupancy_context?.occupancyStatus !== "VACANT");
       const missingAreaFlats = sqftFlats.filter(
         (f) => !f.area_sqft || Number(f.area_sqft) <= 0
       );
@@ -818,7 +864,7 @@ const listBills = async (req, res) => {
         {
           model: MaintenanceRate,
           as: "rate",
-          attributes: ["id", "name", "maintenance_type", "flat_type", "amount", "rate_per_sqft"],
+          attributes: ["id", "name", "maintenance_type", "flat_type", "amount", "owner_amount", "tenant_amount", "rate_per_sqft", "owner_rate_per_sqft", "tenant_rate_per_sqft"],
           // Every maintenance bill must belong to a maintenance rate in the
           // logged-in society. Making this join required prevents legacy or
           // cross-society bills from appearing in the generated-bills tab.
@@ -856,8 +902,9 @@ const getBillDetail = async (req, res) => {
     if (!bill) return res.status(404).json({ message: "Maintenance bill not found" });
 
     const rate = await MaintenanceRate.findOne({
-      where: { id: bill.maintenance_rate_id },
+      where: { id: bill.maintenance_rate_id, society_id: req.user.society_id },
     });
+    if (!rate) return res.status(404).json({ message: "Maintenance bill not found" });
 
     // Resolve current owner (responsible payer) via Bill -> Flat -> FlatMembership -> OWNER.
     let owner = null;

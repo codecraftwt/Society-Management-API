@@ -56,8 +56,12 @@ exports.createAmenity = async (req, res) => {
     if (!name) {
       return res.status(400).json({ success: false, message: "Amenity name is required" });
     }
+    const type = String(req.body.type || "FREE").toUpperCase();
+    const resident = type === "PAID" ? Number(req.body.resident_rate_per_hour) : 0;
+    const tenant = type === "PAID" ? Number(req.body.tenant_rate_per_hour) : 0;
+    if (type === "PAID" && (!Number.isFinite(resident) || resident <= 0 || !Number.isFinite(tenant) || tenant <= 0)) return res.status(400).json({ success: false, message: "Owner/Resident and Tenant prices are required and must be positive." });
     const amenity = await Amenity.create({
-      ...req.body,
+      ...req.body, type, resident_rate_per_hour: resident, tenant_rate_per_hour: tenant, rate_per_hour: resident,
       name,
       society_id: req.user.society_id,
     });
@@ -75,10 +79,28 @@ exports.updateAmenity = async (req, res) => {
     const { id } = req.params;
     const amenity = await Amenity.findOne({ where: { id, society_id: req.user.society_id } });
     if (!amenity) return res.status(404).json({ success: false, message: "Amenity not found" });
-    await amenity.update(req.body);
+    const type = String(req.body.type || amenity.type || "FREE").toUpperCase();
+    const resident = type === "PAID" ? Number(req.body.resident_rate_per_hour) : 0;
+    const tenant = type === "PAID" ? Number(req.body.tenant_rate_per_hour) : 0;
+    if (type === "PAID" && (!Number.isFinite(resident) || resident <= 0 || !Number.isFinite(tenant) || tenant <= 0)) return res.status(400).json({ success: false, message: "Owner/Resident and Tenant prices are required and must be positive." });
+    await amenity.update({ ...req.body, type, resident_rate_per_hour: resident, tenant_rate_per_hour: tenant, rate_per_hour: resident });
     res.json({ success: true, data: amenity });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
+  }
+};
+
+/* Delete only unused amenities so booking history and accounting references remain intact. */
+exports.deleteAmenity = async (req, res) => {
+  try {
+    const amenity = await Amenity.findOne({ where: { id: req.params.id, society_id: req.user.society_id } });
+    if (!amenity) return res.status(404).json({ success: false, message: "Amenity not found" });
+    const bookingCount = await AmenityBooking.count({ where: { amenity_id: amenity.id } });
+    if (bookingCount > 0) return res.status(409).json({ success: false, message: "This amenity has booking history and cannot be deleted. Disable it instead." });
+    await amenity.destroy();
+    return res.json({ success: true, message: "Amenity deleted successfully." });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
   }
 };
 
@@ -208,7 +230,7 @@ exports.getAllBookings = async (req, res) => {
           model: Amenity,
           attributes: [
             "id", "name", "icon", "type", "booking_type",
-            "rate_per_hour", "slot_duration", "capacity",
+            "rate_per_hour", "resident_rate_per_hour", "tenant_rate_per_hour", "slot_duration", "capacity",
             "opening_time", "closing_time", "requires_approval",
           ],
         },
@@ -275,7 +297,7 @@ exports.getPendingBookings = async (req, res) => {
           model: Amenity,
           attributes: [
             "id", "name", "icon", "type", "booking_type",
-            "rate_per_hour", "slot_duration", "capacity",
+            "rate_per_hour", "resident_rate_per_hour", "tenant_rate_per_hour", "slot_duration", "capacity",
             "opening_time", "closing_time", "requires_approval",
           ],
         },

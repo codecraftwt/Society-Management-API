@@ -5,6 +5,7 @@ const {
   AmenityBooking,
   User,
   Flat,
+  FlatMembership,
   HouseHoldMember,
   Notification,
   Payment,
@@ -66,7 +67,7 @@ const bookingUnits = (b) => {
 
 /* Total payable amount for a booking = rate_per_hour × billable units */
 const bookingAmount = (amenity, b) => {
-  const rate = Number(amenity?.rate_per_hour) || Number(b?.rate_per_hour) || 0;
+  const rate = Number(b?.rate_per_hour_snapshot ?? (String(b?.occupancy_category).toUpperCase() === "TENANT" ? amenity?.tenant_rate_per_hour : amenity?.resident_rate_per_hour)) || 0;
   return rate * bookingUnits(b);
 };
 
@@ -152,7 +153,7 @@ exports.getAllAmenities = async (req, res) => {
       where: societyId ? { society_id: societyId } : {},
       attributes: [
         "id", "name", "icon", "type", "booking_type",
-        "rate_per_hour", "opening_time", "closing_time",
+        "rate_per_hour", "resident_rate_per_hour", "tenant_rate_per_hour", "opening_time", "closing_time",
         "slot_duration", "capacity", "requires_approval", "is_active",
         "disable_type", "disabled_reason", "disabled_from", "disabled_until",
       ],
@@ -364,7 +365,16 @@ exports.createBooking = async (req, res) => {
       }));
     }
 
-    const flatId = await getUserFlatId(userId, societyId);
+    const authorizedFlatIds = await getUserAuthorizedFlatIds(userId, societyId);
+    const requestedFlatId = req.body.flat_id ? Number(req.body.flat_id) : null;
+    if (requestedFlatId && !authorizedFlatIds.includes(requestedFlatId)) { await t.rollback(); return res.status(403).json({ success: false, message: "Selected flat is not authorized." }); }
+    const flatId = requestedFlatId || authorizedFlatIds[0] || null;
+    const userRecord = await User.findByPk(userId, { attributes: ["resident_type"] });
+    const selectedMembership = flatId
+      ? await FlatMembership.findOne({ where: { user_id: userId, flat_id: flatId, society_id: societyId, is_current: true }, attributes: ["role"] })
+      : null;
+    const occupancyCategory = String(selectedMembership?.role || userRecord?.resident_type || "OWNER").toUpperCase() === "TENANT" ? "TENANT" : "OWNER";
+    const applicableRate = occupancyCategory === "TENANT" ? Number(amenity.tenant_rate_per_hour) : Number(amenity.resident_rate_per_hour);
 
     const adminUser = await User.findOne({
       where: { society_id: societyId, role: "SOCIETY_ADMIN" },
@@ -459,7 +469,7 @@ exports.createBooking = async (req, res) => {
         start_time:     startTimeVal,
         end_time:       endTime,
         status:         bookingStatus,
-        payment_status: "NA",
+        payment_status: "NA", occupancy_category: occupancyCategory, rate_per_hour_snapshot: 0, amount: 0,
       }, { transaction: t });
 
       await t.commit();
@@ -484,7 +494,7 @@ exports.createBooking = async (req, res) => {
     const endTime      = isFullDay ? "23:59:59" : slotList[slotList.length - 1].end_time;
     const startTimeVal = isFullDay ? "00:00:00" : slotList[0].start_time;
     const unitCount    = bookingUnits({ from_date: fromDate, to_date: toDate, slots: slotList });
-    const totalAmount  = (Number(amenity.rate_per_hour) || 0) * unitCount;
+    const totalAmount  = applicableRate * unitCount;
 
     const row = await AmenityBooking.create({
       society_id:         societyId,
@@ -500,6 +510,7 @@ exports.createBooking = async (req, res) => {
       status:             "PAYMENT_PENDING",
       payment_status:     "PENDING",
       payment_expires_at: paymentExpiry,
+      occupancy_category: occupancyCategory, rate_per_hour_snapshot: applicableRate, amount: totalAmount,
     }, { transaction: t });
 
     await t.commit();

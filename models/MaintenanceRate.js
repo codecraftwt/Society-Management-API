@@ -40,11 +40,16 @@ const MaintenanceRate = sequelize.define(
       allowNull: true,
       defaultValue: null,
     },
+    // New paired configuration fields. Legacy amount/rate_per_sqft remain supported.
+    owner_amount: { type: DataTypes.DECIMAL(10, 2), allowNull: true, defaultValue: null },
+    tenant_amount: { type: DataTypes.DECIMAL(10, 2), allowNull: true, defaultValue: null },
     rate_per_sqft: {
       type: DataTypes.DECIMAL(10, 2),
       allowNull: true,
       defaultValue: null,
     },
+    owner_rate_per_sqft: { type: DataTypes.DECIMAL(10, 4), allowNull: true, defaultValue: null },
+    tenant_rate_per_sqft: { type: DataTypes.DECIMAL(10, 4), allowNull: true, defaultValue: null },
     frequency: {
       type: DataTypes.STRING,
       allowNull: false,

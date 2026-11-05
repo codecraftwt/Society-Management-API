@@ -57,16 +57,10 @@ async function login() {
   if (token) return token;
   const creds = { email: "societyadmin32@yopmail.com", password: "Admin@123" };
   const loginRes = await request(app).post("/api/auth/login").send(creds);
-  if (loginRes.status !== 200 || !loginRes.body.tempToken) {
+  if (loginRes.status !== 200 || !loginRes.body.token) {
     throw new Error("login failed t10exp: " + loginRes.status + " " + JSON.stringify(loginRes.body));
   }
-  const otpRes = await request(app)
-    .post("/api/auth/verify-otp")
-    .send({ otp: "123456", tempToken: loginRes.body.tempToken });
-  if (otpRes.status !== 200 || !otpRes.body.token) {
-    throw new Error("otp failed (twow): " + otpRes.status + " " + JSON.stringify(otpRes.body));
-  }
-  token = otpRes.body.token;
+  token = loginRes.body.token;
   return token;
 }
 

@@ -18,6 +18,8 @@ const Amenity = sequelize.define("Amenity", {
   },
 
   rate_per_hour:    { type: DataTypes.DECIMAL(10, 2), defaultValue: 0.00 },
+  resident_rate_per_hour: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0.00 },
+  tenant_rate_per_hour: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0.00 },
   opening_time:     { type: DataTypes.TIME,    allowNull: true },
   closing_time:     { type: DataTypes.TIME,    allowNull: true },
   slot_duration:    { type: DataTypes.INTEGER, defaultValue: 60 },

@@ -241,9 +241,12 @@ const assignFlatToResident = async (req, res) => {
 
 const getAllFlats = async (req, res) => {
   try {
-    const targetSocietyId = (req.user?.activeRole === "SUPER_ADMIN")
+    const rawSocietyId = (req.user?.activeRole === "SUPER_ADMIN")
       ? (req.headers["x-society-id"] || req.query?.society_id)
       : req.user?.society_id;
+    const targetSocietyId = rawSocietyId && /^\d+$/.test(String(rawSocietyId))
+      ? Number(rawSocietyId)
+      : null;
 
     const blockWhere = targetSocietyId ? { society_id: targetSocietyId } : {};
 
@@ -973,12 +976,38 @@ const updateFlat = async (req, res) => {
     for (const field of allowed) {
       if (req.body[field] !== undefined) {
         if (field === "flat_type") {
-          if (req.body.flat_type !== null && !["1BHK", "2BHK", "3BHK"].includes(req.body.flat_type)) {
+          if (req.body.flat_type !== null && req.body.flat_type !== "" && !["1BHK", "2BHK", "3BHK"].includes(req.body.flat_type)) {
             return res.status(400).json({ message: "Invalid flat_type. Allowed: 1BHK, 2BHK, 3BHK." });
           }
-          updates.flat_type = req.body.flat_type;
+          updates.flat_type = req.body.flat_type || null;
         } else if (field === "area_sqft") {
-          updates.area_sqft = req.body.area_sqft != null ? Number(req.body.area_sqft) : null;
+          const num = req.body.area_sqft != null && req.body.area_sqft !== "" ? Number(req.body.area_sqft) : null;
+          if (num !== null && (isNaN(num) || num < 0)) {
+            return res.status(400).json({ message: "Area sqft must be a non-negative number." });
+          }
+          updates.area_sqft = num;
+        } else if (field === "flat_number") {
+          const numStr = String(req.body.flat_number).trim();
+          if (!numStr) {
+            return res.status(400).json({ message: "Flat number cannot be empty." });
+          }
+          const duplicate = await Flat.findOne({
+            where: {
+              block_id: flat.block_id,
+              flat_number: numStr,
+              id: { [Op.ne]: flat.id },
+            },
+          });
+          if (duplicate) {
+            return res.status(400).json({ message: `Flat number "${numStr}" already exists in this block.` });
+          }
+          updates.flat_number = numStr;
+        } else if (field === "occupancy_status") {
+          const validStatuses = ["VACANT", "RENTED", "OWNER_OCCUPIED"];
+          if (req.body.occupancy_status && !validStatuses.includes(req.body.occupancy_status)) {
+            return res.status(400).json({ message: "Invalid occupancy status. Allowed: VACANT, RENTED, OWNER_OCCUPIED." });
+          }
+          updates.occupancy_status = req.body.occupancy_status;
         } else {
           updates[field] = req.body[field];
         }
@@ -986,7 +1015,16 @@ const updateFlat = async (req, res) => {
     }
 
     await flat.update(updates);
-    res.json({ message: "Flat updated", flat });
+
+    const reloaded = await Flat.findByPk(flatId, {
+      include: [
+        { model: Block, attributes: ["id", "name", "property_type"] },
+        { model: Floor, attributes: ["id", "floor_number"], include: [{ model: Block, attributes: ["id", "name", "property_type"] }] },
+        { model: User, attributes: ["id", "name", "email", "phone"] },
+      ],
+    });
+
+    res.json({ message: "Flat updated successfully", flat: reloaded || flat });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

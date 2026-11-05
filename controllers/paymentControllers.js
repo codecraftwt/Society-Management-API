@@ -3,7 +3,7 @@
 
 const { Op } = require("sequelize");
 const crypto = require("crypto");
-const { Bill, Payment, AmenityBooking, Amenity, Flat, Block, Society } = require("../models");
+const { Bill, Payment, AmenityBooking, Amenity, Flat, Block, Society, FlatMembership } = require("../models");
 const razorpay = require("../utils/razorpay");
 const sequelize = require("../config/db");
 const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
@@ -126,6 +126,19 @@ const verifyDemoPayment = async (req, res) => {
 
     const societyId = bill.Flat?.Block?.society_id || req.user.society_id;
     const source = bill.type === "MAINTENANCE" ? "MAINTENANCE" : "BILL";
+
+    if (source === "MAINTENANCE") {
+      const ownerMembership = await FlatMembership.findOne({
+        where: { flat_id: bill.flat_id, user_id: req.user.id, role: "OWNER", is_current: true },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      const isLegacyDirectOwner = Number(bill.Flat?.resident_id) === Number(req.user.id);
+      if (!ownerMembership && !isLegacyDirectOwner) {
+        await t.rollback();
+        return res.status(403).json({ success: false, message: "Maintenance charges are payable by the owner." });
+      }
+    }
 
     await Payment.create(
       {

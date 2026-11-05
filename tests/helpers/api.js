@@ -19,27 +19,16 @@ async function login(role = "admin") {
   if (!creds) throw new Error(`Unknown test role: ${role}`);
 
   const loginRes = await request(app).post("/api/auth/login").send(creds);
-  if (loginRes.status !== 200 || !loginRes.body.tempToken) {
+  if (loginRes.status !== 200 || !loginRes.body.token) {
     throw new Error(
       `Login failed for ${creds.email}: ${loginRes.status} ${JSON.stringify(loginRes.body)}`
     );
   }
 
-  const otpRes = await request(app).post("/api/auth/verify-otp").send({
-    otp: "123456",
-    tempToken: loginRes.body.tempToken,
-  });
-
-  if (otpRes.status !== 200 || !otpRes.body.token) {
-    throw new Error(
-      `OTP verify failed for ${creds.email}: ${otpRes.status} ${JSON.stringify(otpRes.body)}`
-    );
-  }
-
   const session = {
-    token: otpRes.body.token,
-    user: otpRes.body.user,
-    headers: { Authorization: `Bearer ${otpRes.body.token}` },
+    token: loginRes.body.token,
+    user: loginRes.body.user,
+    headers: { Authorization: `Bearer ${loginRes.body.token}` },
   };
 
   if (session.user?.society_id) {
