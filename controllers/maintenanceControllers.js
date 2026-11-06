@@ -489,7 +489,7 @@ const previewBills = async (req, res) => {
 
     const eligibleFlats = await Flat.findAll({
       where: { block_id: { [Op.in]: blockIds } },
-      attributes: ["id", "flat_number", "flat_type", "block_id", "occupancy_status", "area_sqft"],
+      attributes: ["id", "flat_number", "flat_type", "block_id", "resident_id", "occupancy_status", "area_sqft"],
       include: [
         { model: Block, attributes: ["id", "name", "property_type"], required: false, where: { society_id: societyId } },
         {
@@ -504,6 +504,7 @@ const previewBills = async (req, res) => {
             },
           ],
         },
+        { model: User, required: false, attributes: ["id", "name", "email", "phone", "resident_type"] },
       ],
       order: [["id", "ASC"]],
     });
@@ -513,6 +514,12 @@ const previewBills = async (req, res) => {
       const ctx = occupancy.get(flat.id);
       flat.occupancy_context = ctx;
       flat.FlatMemberships = ctx?.memberships || flat.FlatMemberships || [];
+      // Some admin-residents are stored on Flat.resident_id without an
+      // OWNER membership. Treat that assignment as the owner for billing.
+      if (ctx && !ctx.owner && flat.resident_id && flat.User) {
+        ctx.owner = { user_id: flat.resident_id, role: "OWNER", is_staying: true, User: flat.User };
+        ctx.occupancyStatus = "OWNER_OCCUPIED";
+      }
     });
 
     const existingBills = await Bill.findAll({
@@ -613,7 +620,7 @@ const generateBills = async (req, res) => {
 
     const eligibleFlats = await Flat.findAll({
       where: { block_id: { [Op.in]: blockIds } },
-      attributes: ["id", "flat_number", "flat_type", "block_id", "occupancy_status", "area_sqft"],
+      attributes: ["id", "flat_number", "flat_type", "block_id", "resident_id", "occupancy_status", "area_sqft"],
       include: [
         { model: Block, attributes: ["id", "name", "property_type"], required: false, where: { society_id: societyId } },
         {
@@ -622,6 +629,7 @@ const generateBills = async (req, res) => {
           attributes: ["id", "user_id", "role"],
           where: { is_current: true },
         },
+        { model: User, required: false, attributes: ["id", "name", "email", "phone", "resident_type"] },
       ],
       order: [["id", "ASC"]],
     });
@@ -630,6 +638,10 @@ const generateBills = async (req, res) => {
       const ctx = occupancy.get(flat.id);
       flat.occupancy_context = ctx;
       flat.FlatMemberships = ctx?.memberships || flat.FlatMemberships || [];
+      if (ctx && !ctx.owner && flat.resident_id && flat.User) {
+        ctx.owner = { user_id: flat.resident_id, role: "OWNER", is_staying: true, User: flat.User };
+        ctx.occupancyStatus = "OWNER_OCCUPIED";
+      }
     });
     if (eligibleFlats.length === 0) {
       return res.status(400).json({ message: "No eligible owner flats found to bill." });

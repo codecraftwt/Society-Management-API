@@ -197,6 +197,13 @@ const createOrder = async (req, res) => {
       if (!bill)
         return res.status(404).json({ success: false, message: "Bill not found" });
 
+      // Tenants may view maintenance bills, but only owners can submit
+      // payment for them. Enforce this server-side so the app cannot bypass
+      // the UI restriction.
+      if (bill.type === "MAINTENANCE" && String(req.user?.resident_type || "").toUpperCase() === "TENANT") {
+        return res.status(403).json({ success: false, message: "Tenants cannot pay maintenance bills. Please contact society management." });
+      }
+
       amount = bill.amount;
     }
 
