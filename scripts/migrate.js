@@ -143,7 +143,17 @@ async function run() {
       const applied = appliedMap.get(file);
       if (applied?.checksum) {
         const checksum = crypto.createHash("sha256").update(fs.readFileSync(path.join(MIGRATIONS_DIR, file))).digest("hex");
-        if (checksum !== applied.checksum) throw new Error(`Applied migration ${file} has been modified; restore the original file or create a new migration.`);
+        if (checksum !== applied.checksum) {
+          // A failed migration may have partially committed work because
+          // migration.up() is not wrapped in a transaction. Allow a reviewed,
+          // idempotent fix to retry it, but keep checksum protection for every
+          // migration that was successfully applied.
+          if (applied.status === "failed") {
+            console.warn(`[Migrate] Checksum changed for previously failed migration ${file}; allowing retry.`);
+          } else {
+            throw new Error(`Applied migration ${file} has been modified; restore the original file or create a new migration.`);
+          }
+        }
       }
     }
     console.log(`[Migrate] Found ${migrationFiles.length} total migration(s), ${pending.length} pending/failed.`);
