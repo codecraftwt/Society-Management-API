@@ -16,7 +16,9 @@ module.exports = {
     // 2. Backfill from flats.resident_id where not in resident_history
     await conn.query(`
       INSERT INTO resident_history (flat_id, user_id, move_in_date, is_current, created_at)
-      SELECT f.id, f.resident_id, COALESCE(f.created_at, NOW()), 1, NOW()
+      -- Older installations do not have flats.created_at. Use the current
+      -- timestamp for this legacy backfill instead of assuming that column.
+      SELECT f.id, f.resident_id, NOW(), 1, NOW()
       FROM flats f
       LEFT JOIN resident_history rh ON rh.flat_id = f.id AND rh.user_id = f.resident_id
       WHERE f.resident_id IS NOT NULL
@@ -28,4 +30,3 @@ module.exports = {
     // No-op for backfill
   },
 };
-
