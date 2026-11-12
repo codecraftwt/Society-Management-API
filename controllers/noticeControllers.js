@@ -801,25 +801,65 @@ const getNoticeAcknowledgements = async (req, res) => {
 
     const recipients = await User.findAll({
       where: recipientsWhere,
-      attributes: ["id", "name", "email", "phone", "role"],
+      attributes: ["id", "name", "email", "phone", "role", "roles", "resident_type"],
       order: [["name", "ASC"]],
     });
 
     const recipientIds = recipients.map((r) => r.id);
 
-    // Fetch FlatMemberships for flat numbers
+    // Fetch FlatMemberships for flat numbers & roles
     const memberships =
       recipientIds.length > 0
         ? await FlatMembership.findAll({
             where: { user_id: { [Op.in]: recipientIds }, is_current: true },
-            include: [{ model: Flat, attributes: ["flat_number"] }],
+            include: [{ model: Flat, attributes: ["id", "flat_number"] }],
+          })
+        : [];
+
+    const HouseHoldMember = require("../models/HouseHoldMember");
+    const householdMembers =
+      recipientIds.length > 0
+        ? await HouseHoldMember.findAll({
+            where: { user_id: { [Op.in]: recipientIds } },
+            include: [{ model: Flat, attributes: ["id", "flat_number"] }],
+          })
+        : [];
+
+    const directFlats =
+      recipientIds.length > 0
+        ? await Flat.findAll({
+            where: { resident_id: { [Op.in]: recipientIds } },
+            attributes: ["id", "flat_number", "resident_id"],
           })
         : [];
 
     const flatMap = {};
+    const roleTypeMap = {};
+
     memberships.forEach((m) => {
       if (m.Flat?.flat_number && !flatMap[m.user_id]) {
         flatMap[m.user_id] = m.Flat.flat_number;
+      }
+      if (m.role && !roleTypeMap[m.user_id]) {
+        roleTypeMap[m.user_id] = m.role;
+      }
+    });
+
+    householdMembers.forEach((h) => {
+      if (h.Flat?.flat_number && !flatMap[h.user_id]) {
+        flatMap[h.user_id] = h.Flat.flat_number;
+      }
+      if (!roleTypeMap[h.user_id]) {
+        roleTypeMap[h.user_id] = "FAMILY_MEMBER";
+      }
+    });
+
+    directFlats.forEach((f) => {
+      if (f.flat_number && !flatMap[f.resident_id]) {
+        flatMap[f.resident_id] = f.flat_number;
+      }
+      if (!roleTypeMap[f.resident_id]) {
+        roleTypeMap[f.resident_id] = "OWNER";
       }
     });
 
@@ -864,12 +904,38 @@ const getNoticeAcknowledgements = async (req, res) => {
         viewedCount++;
       }
 
+      const membershipRole = roleTypeMap[r.id];
+      let effectiveType = "OWNER";
+      let roleLabel = "Owner";
+
+      if (r.role === "FAMILY_MEMBER" || membershipRole === "FAMILY_MEMBER") {
+        effectiveType = "FAMILY_MEMBER";
+        roleLabel = "Family Member";
+      } else if (membershipRole === "TENANT" || r.resident_type === "TENANT") {
+        effectiveType = "TENANT";
+        roleLabel = "Tenant";
+      } else if (membershipRole === "OWNER" || r.resident_type === "OWNER" || flatMap[r.id]) {
+        effectiveType = "OWNER";
+        roleLabel = "Owner";
+      } else if (r.role === "COMMITTEE_MEMBER") {
+        effectiveType = "COMMITTEE_MEMBER";
+        roleLabel = "Committee Member";
+      } else if (r.role === "SOCIETY_ADMIN") {
+        effectiveType = "SOCIETY_ADMIN";
+        roleLabel = "Society Admin";
+      } else if (r.role === "GUARD") {
+        effectiveType = "GUARD";
+        roleLabel = "Guard";
+      }
+
       return {
         user_id: r.id,
         name: r.name,
         email: r.email,
         phone: r.phone,
         role: r.role,
+        resident_type: effectiveType,
+        role_label: roleLabel,
         flat_number: flatMap[r.id] || "—",
         viewed_at: ack?.viewed_at || null,
         acknowledged_at: ack?.acknowledged_at || null,

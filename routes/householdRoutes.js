@@ -10,6 +10,7 @@ const {
   addHouseholdMember,
   removeHouseholdMember,
   toggleAdminAccess,
+  resetMemberPassword,
   updateHouseholdMember
 } = require("../controllers/householdControllers");
 
@@ -24,7 +25,7 @@ router.get(
 router.post(
   "/add",
   auth,
-  role("RESIDENT"),
+  role("RESIDENT", "FAMILY_MEMBER"),
   attachFlatId,
   addHouseholdMember
 );
@@ -32,7 +33,7 @@ router.post(
 router.delete(
   "/:id",
   auth,
-  role("RESIDENT"),
+  role("RESIDENT", "FAMILY_MEMBER"),
   attachFlatId,
   removeHouseholdMember
 );
@@ -40,13 +41,16 @@ router.delete(
 router.patch(
   "/:id/toggle-admin",
   auth,
-  role("RESIDENT"),
+  role("RESIDENT", "FAMILY_MEMBER"),
   attachFlatId,
   toggleAdminAccess
 );
 
 // Update member (email/phone)
-router.put("/:id", auth, role("RESIDENT"), attachFlatId, updateHouseholdMember);
+router.put("/:id", auth, role("RESIDENT", "FAMILY_MEMBER"), attachFlatId, updateHouseholdMember);
+
+// Reset member password
+router.patch("/:id/reset-password", auth, role("RESIDENT", "FAMILY_MEMBER"), attachFlatId, resetMemberPassword);
 
 
 module.exports = router;

@@ -12,15 +12,15 @@ const {
 
 /* === RAZORPAY === */
 
-router.post("/create-order", auth, role("RESIDENT"), createOrder);
+router.post("/create-order", auth, role("RESIDENT", "FAMILY_MEMBER"), createOrder);
 
-router.post("/verify", auth, role("RESIDENT"), verifyPayment);
+router.post("/verify", auth, role("RESIDENT", "FAMILY_MEMBER"), verifyPayment);
 
 /* === DEMO UPI === */
 
-router.post("/demo-upi", auth, role("RESIDENT"), createDemoUpi);
+router.post("/demo-upi", auth, role("RESIDENT", "FAMILY_MEMBER"), createDemoUpi);
 
-router.post("/demo-verify", auth, role("RESIDENT"), verifyDemoPayment);
+router.post("/demo-verify", auth, role("RESIDENT", "FAMILY_MEMBER"), verifyDemoPayment);
 
 /* Note: the former unauthenticated `GET /debug-bills` endpoint was removed.
    It returned every bill in every society with no authentication, exposing

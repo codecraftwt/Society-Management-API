@@ -245,8 +245,9 @@ async function getAvailablePanels(user) {
   if (roles.includes("SUPER_ADMIN")) panels.push("SUPER_ADMIN");
   if (roles.includes("SOCIETY_ADMIN")) panels.push("SOCIETY_ADMIN");
   if (roles.includes("COMMITTEE_MEMBER")) panels.push("COMMITTEE_MEMBER");
-  if (roles.includes("RESIDENT")) panels.push("RESIDENT");
-  if (roles.includes("FAMILY_MEMBER")) panels.push("FAMILY_MEMBER");
+  if (roles.includes("RESIDENT") || roles.includes("FAMILY_MEMBER")) {
+    panels.push("RESIDENT");
+  }
   if (roles.includes("GUARD")) panels.push("GUARD");
 
   // An admin/committee account can become a resident after a flat is
@@ -632,13 +633,42 @@ exports.login = async (req, res) => {
       }
       return res.status(400).json({
         code: "ACCOUNT_INACTIVE",
-        message: "Account is inactive.",
+        message: "Access denied. Please connect to the admin or owner of the house.",
       });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch)
       return res.status(400).json({ message: "Invalid credentials" });
+
+    // Verify family member still has access granted by the owner
+    const isPrimaryFamilyMember = user.role === "FAMILY_MEMBER" || 
+      (Array.isArray(user.roles) && user.roles.includes("FAMILY_MEMBER") && !user.roles.includes("OWNER") && !user.roles.includes("TENANT") && !user.roles.includes("SOCIETY_ADMIN") && !user.roles.includes("SUPER_ADMIN"));
+
+    if (isPrimaryFamilyMember) {
+      const hhMember = await HouseHoldMember.findOne({
+        where: { user_id: user.id },
+      });
+      if (!hhMember || !hhMember.isAdmin) {
+        return res.status(400).json({
+          code: "ACCOUNT_INACTIVE",
+          message: "Access denied. Please connect to the admin or owner of the house.",
+        });
+      }
+    }
+
+    // Check society membership status for non-superadmin
+    if (user.role !== "SUPER_ADMIN") {
+      const activeSocieties = await UserSociety.findAll({
+        where: { user_id: user.id, membership_status: "ACTIVE" },
+      });
+      if (activeSocieties.length === 0) {
+        return res.status(400).json({
+          code: "ACCOUNT_INACTIVE",
+          message: "Access denied. Please connect to the admin or owner of the house.",
+        });
+      }
+    }
 
     const session = await buildLoginResponse(user);
     return res.status(200).json(session);
@@ -811,6 +841,17 @@ exports.switchRole = async (req, res) => {
       societyRoles = resolveUserRoles(user);
     }
 
+    const isDirectSocAdmin = (String(user.society_id) === String(targetSocietyId) || !targetSocietyId) &&
+      (user.role === "SOCIETY_ADMIN" || (Array.isArray(user.roles) && user.roles.includes("SOCIETY_ADMIN")));
+    if (isDirectSocAdmin && !societyRoles.includes("SOCIETY_ADMIN")) {
+      societyRoles.unshift("SOCIETY_ADMIN");
+    }
+
+    const isResident = await isUserResidentOfSociety(user, targetSocietyId);
+    if (isResident && !societyRoles.includes("RESIDENT")) {
+      societyRoles.push("RESIDENT");
+    }
+
     const scopedUser = {
       ...user.toJSON(),
       society_id: targetSocietyId,
@@ -943,6 +984,17 @@ exports.switchSociety = async (req, res) => {
       societyRoles = ["SUPER_ADMIN"];
     } else {
       societyRoles = resolveUserRoles(user);
+    }
+
+    const isDirectSocAdmin = (String(user.society_id) === String(targetSocietyId) || !targetSocietyId) &&
+      (user.role === "SOCIETY_ADMIN" || (Array.isArray(user.roles) && user.roles.includes("SOCIETY_ADMIN")));
+    if (isDirectSocAdmin && !societyRoles.includes("SOCIETY_ADMIN")) {
+      societyRoles.unshift("SOCIETY_ADMIN");
+    }
+
+    const isResident = await isUserResidentOfSociety(user, targetSocietyId);
+    if (isResident && !societyRoles.includes("RESIDENT")) {
+      societyRoles.push("RESIDENT");
     }
 
     // When changing society, use requestedRole if valid, or default to RESIDENT so user lands on resident panel first

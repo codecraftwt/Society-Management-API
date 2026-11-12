@@ -42,7 +42,7 @@ router.get(
 router.put(
   "/my/:id",
   auth,
-  role("RESIDENT"),
+  role("RESIDENT", "FAMILY_MEMBER"),
   upload.single("photo"),
   updateComplaint
 );
@@ -79,7 +79,7 @@ router.put(
 router.post(
   "/",
   auth,
-  role("RESIDENT"),
+  role("RESIDENT", "FAMILY_MEMBER"),
   upload.single("photo"),
   createComplaint
 );
@@ -88,7 +88,7 @@ router.post(
 router.delete(
   "/:id",
   auth,
-  role("RESIDENT"),
+  role("RESIDENT", "FAMILY_MEMBER"),
   deleteComplaint
 );
 

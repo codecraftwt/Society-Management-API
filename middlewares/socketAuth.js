@@ -92,8 +92,8 @@ async function authenticate(socket, next) {
     }
 
     const user = await User.findByPk(decoded.id);
-    if (!user) {
-      return next(new Error("UNAUTHORIZED: user not found"));
+    if (!user || user.status !== "ACTIVE") {
+      return next(new Error("UNAUTHORIZED: account inactive"));
     }
 
     const globalRoles =

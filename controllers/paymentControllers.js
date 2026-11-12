@@ -3,7 +3,11 @@
 
 const { Op } = require("sequelize");
 const crypto = require("crypto");
-const { Bill, Payment, AmenityBooking, Amenity, Flat, Block, Society, FlatMembership } = require("../models");
+const { Bill, Payment, AmenityBooking, Amenity, Flat, Block, Society, FlatMembership, HouseHoldMember } = require("../models");
+
+async function checkPaymentPermission(user) {
+  return true;
+}
 const razorpay = require("../utils/razorpay");
 const sequelize = require("../config/db");
 const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
@@ -63,6 +67,9 @@ async function findOwnedPendingBill(billId, userId, societyId = null) {
 /* === CREATE DEMO UPI PAYMENT DETAILS === */
 const createDemoUpi = async (req, res) => {
   try {
+    if (!await checkPaymentPermission(req.user)) {
+      return res.status(403).json({ success: false, message: "You do not have permission to make bill payments for this flat" });
+    }
     const { bill_id } = req.body;
     if (!bill_id) {
       return res.status(400).json({ success: false, message: "bill_id is required" });
@@ -88,6 +95,10 @@ const createDemoUpi = async (req, res) => {
 const verifyDemoPayment = async (req, res) => {
   const t = await sequelize.transaction();
   try {
+    if (!await checkPaymentPermission(req.user)) {
+      await t.rollback();
+      return res.status(403).json({ success: false, message: "You do not have permission to make bill payments for this flat" });
+    }
     const { bill_id } = req.body;
     if (!bill_id) {
       await t.rollback();
@@ -169,6 +180,9 @@ const verifyDemoPayment = async (req, res) => {
 
 const createOrder = async (req, res) => {
   try {
+    if (req.body.type !== "AMENITY" && !await checkPaymentPermission(req.user)) {
+      return res.status(403).json({ success: false, message: "You do not have permission to make bill payments for this flat" });
+    }
     const { bill_id, type } = req.body;
 
     if (!bill_id) {

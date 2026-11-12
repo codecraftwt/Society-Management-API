@@ -15,21 +15,21 @@ const {
 router.get(
   "/my-complaints",
   auth,
-  role("RESIDENT"),
+  role("RESIDENT", "FAMILY_MEMBER"),
   getMyComplaints
 );
 
 router.get(
   "/my-visitors",
   auth,
-  role("RESIDENT"),
+  role("RESIDENT", "FAMILY_MEMBER"),
   getMyVisitors
 );
 
 router.get(
   "/my-bills",
   auth,
-  role("RESIDENT"),
+  role("RESIDENT", "FAMILY_MEMBER"),
   getMyBills
 );
 

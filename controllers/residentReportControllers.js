@@ -5,6 +5,7 @@ const Flat = require("../models/Flat");
 const Block = require("../models/Block");
 const FlatMembership = require("../models/FlatMembership");
 const Payment = require("../models/Payment");
+const HouseHoldMember = require("../models/HouseHoldMember");
 const { getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
 
 /* === RESOLVE FLAT IDS ===
@@ -75,6 +76,12 @@ const getMyVisitors = async (req, res) => {
 /* === MY BILLS === */
 const getMyBills = async (req, res) => {
   try {
+    if (req.user?.role === "FAMILY_MEMBER") {
+      const hm = await HouseHoldMember.findOne({ where: { user_id: req.user.id, isAdmin: true } });
+      if (!hm) {
+        return res.status(403).json({ message: "You do not have permission to view bills for this flat" });
+      }
+    }
 
     const myFlatIds = await getMyFlatIds(req.user.id, req.user.society_id);
     if (myFlatIds.length === 0) return res.json([]);

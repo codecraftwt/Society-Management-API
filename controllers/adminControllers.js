@@ -400,6 +400,17 @@ exports.approveResident = async (req, res) => {
         resident_id: resident.id,
         occupancy_status: isTenant ? "RENTED" : "OWNER_OCCUPIED",
       }, { where: { id: flatId }, transaction });
+
+      await ResidentHistory.findOrCreate({
+        where: { flat_id: flatId, user_id: resident.id, is_current: true },
+        defaults: {
+          flat_id: flatId,
+          user_id: resident.id,
+          move_in_date: new Date(),
+          is_current: true,
+        },
+        transaction,
+      });
     }
 
     let ownerUserIdToNotify = null;

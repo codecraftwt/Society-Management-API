@@ -15,10 +15,10 @@ const {
 
 
 // Resident
-router.post("/", auth, role("RESIDENT"), addVehicle);
-router.get("/my", auth, role("RESIDENT"), getMyVehicles);
-router.delete("/:id", auth, role("RESIDENT"), deleteVehicle);
-router.put("/:id", auth, role("RESIDENT"), updateVehicle);
+router.post("/", auth, role("RESIDENT", "FAMILY_MEMBER"), addVehicle);
+router.get("/my", auth, role("RESIDENT", "FAMILY_MEMBER"), getMyVehicles);
+router.delete("/:id", auth, role("RESIDENT", "FAMILY_MEMBER"), deleteVehicle);
+router.put("/:id", auth, role("RESIDENT", "FAMILY_MEMBER"), updateVehicle);
 
 
 // // Guard / Admin

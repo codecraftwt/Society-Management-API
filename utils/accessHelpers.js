@@ -116,7 +116,7 @@ const getUserAuthorizedFlatIds = async (userId, societyId = null) => {
   // 3. Check Household Members
   try {
     const household = await HouseHoldMember.findAll({
-      where: { user_id: userId },
+      where: { user_id: userId, isAdmin: true },
       attributes: ["flat_id"]
     });
     household.forEach((h) => {
@@ -236,7 +236,8 @@ const getFlatAuthorizedUserIds = async (flatId, societyId = null) => {
     const household = await HouseHoldMember.findAll({
       where: {
         flat_id: flatId,
-        user_id: { [Op.ne]: null }
+        user_id: { [Op.ne]: null },
+        isAdmin: true,
       },
       attributes: ["user_id"]
     });
@@ -288,7 +289,7 @@ const getFlatForUser = async (userId) => {
   if (flat) return flat;
 
   const member = await HouseHoldMember.findOne({
-    where: { user_id: userId }
+    where: { user_id: userId, isAdmin: true }
   });
 
   if (member) {

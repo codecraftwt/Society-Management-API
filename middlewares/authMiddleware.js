@@ -3,6 +3,7 @@ const User = require("../models/User");
 const UserSociety = require("../models/UserSociety");
 const UserSocietyRole = require("../models/UserSocietyRole");
 const AccountantAssignment = require("../models/AccountantAssignment");
+const HouseHoldMember = require("../models/HouseHoldMember");
 const { isUserResidentOfSociety } = require("../utils/accessHelpers");
 
 module.exports = async (req, res, next) => {
@@ -27,7 +28,17 @@ module.exports = async (req, res, next) => {
 
     const user = await User.findByPk(decoded.id);
     if (!user) {
-      return res.status(401).json({ message: "Invalid token — user not found" });
+      return res.status(401).json({
+        code: "ACCOUNT_INACTIVE",
+        message: "Access denied. Please connect to the admin or owner of the house.",
+      });
+    }
+
+    if (user.status !== "ACTIVE") {
+      return res.status(401).json({
+        code: "ACCOUNT_INACTIVE",
+        message: "Access denied. Please connect to the admin or owner of the house.",
+      });
     }
 
     // `user.role`/global roles describe the account, but the token's
@@ -64,6 +75,19 @@ module.exports = async (req, res, next) => {
       return next();
     }
 
+    // For FAMILY_MEMBER users, verify their household access is still granted
+    if (user.role === "FAMILY_MEMBER" || tokenActiveRole === "FAMILY_MEMBER") {
+      const hhMember = await HouseHoldMember.findOne({
+        where: { user_id: user.id },
+      });
+      if (!hhMember || !hhMember.isAdmin) {
+        return res.status(401).json({
+          code: "ACCOUNT_INACTIVE",
+          message: "Access denied. Please connect to the admin or owner of the house.",
+        });
+      }
+    }
+
     // Resolve target society ID from token or legacy user.society_id
     let targetSocietyId = decoded.society_id != null ? parseInt(decoded.society_id, 10) : user.society_id;
 
@@ -78,8 +102,9 @@ module.exports = async (req, res, next) => {
 
       if (membership) {
         if (membership.membership_status !== "ACTIVE") {
-          return res.status(403).json({
-            message: `Your membership in this society is currently ${membership.membership_status.toLowerCase()}. Access denied.`,
+          return res.status(401).json({
+            code: "ACCOUNT_INACTIVE",
+            message: "Access denied. Please connect to the admin or owner of the house.",
           });
         }
 
