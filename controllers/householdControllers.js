@@ -235,7 +235,11 @@ exports.addHouseholdMember = async (req, res) => {
     }
 
     let createdUser = null;
-    const isLoginRequested = Boolean(!work && (enable_login === true || enable_login === "true"));
+    // Family members are collected with a required email and password in the
+    // resident form. Always provision their account so granting household
+    // access can actually be used for login and the admin resident directory.
+    // Daily help remains a non-login household record.
+    const isLoginRequested = !work;
 
     if (isLoginRequested) {
       if (!email || !email.trim()) {
