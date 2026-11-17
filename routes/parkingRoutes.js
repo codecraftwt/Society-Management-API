@@ -21,11 +21,12 @@ const {
 } = require("../controllers/parkingControllers");
 
 const role = require("../middlewares/roleMiddleware");
+const enforceRulesAcknowledged = require("../middlewares/enforceRulesAcknowledged");
 
 router.use(verifyToken);
 
 /* ── Resident / shared ── */
-router.post("/",                         requestParking);
+router.post("/",                         enforceRulesAcknowledged, requestParking);
 router.get("/",                          getParkingRequests);
 
 /* ── Admin & Committee allocation ── */

@@ -46,6 +46,7 @@ const expenseRoutes         = require("./routes/expenseRoutes");
 const cleaningStaffRoutes   = require("./routes/cleaningStaffRoutes");
 const guardAttendanceRoutes  = require("./routes/guardAttendanceRoutes");
 const eventRoutes            = require("./routes/eventRoutes");
+const ruleRoutes             = require("./routes/ruleRoutes");
 const app = express();
 
 app.use(cors());
@@ -101,6 +102,7 @@ app.use("/api/expenses",      expenseRoutes);
 app.use("/api/cleaning-staff", cleaningStaffRoutes);
 app.use("/api/guard-attendance", guardAttendanceRoutes);
 app.use("/api/events",            eventRoutes);
+app.use("/api/rules",             ruleRoutes);
 app.use("/uploads",            express.static("uploads"));
 
 app.get("/", (req, res) => {

@@ -195,6 +195,81 @@ beforeAll(async () => {
                 INDEX idx_event_media_event (event_id, sort_order)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
+        // Amenity Rules tables and schema sync for test database
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS amenity_rules (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                society_id INT NOT NULL,
+                title VARCHAR(255) NOT NULL,
+                rule_type ENUM('TEXT', 'IMAGE', 'PDF') NOT NULL DEFAULT 'TEXT',
+                content TEXT NULL,
+                formatted_content MEDIUMTEXT NULL,
+                is_mandatory TINYINT(1) NOT NULL DEFAULT 1,
+                is_active TINYINT(1) NOT NULL DEFAULT 1,
+                created_by_user_id INT NULL DEFAULT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_amenity_rules_society_active (society_id, is_active)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS amenity_rule_attachments (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                rule_id INT NOT NULL,
+                file_name VARCHAR(255) NOT NULL,
+                file_url VARCHAR(1000) NOT NULL,
+                file_type ENUM('PDF', 'IMAGE') NOT NULL,
+                file_size BIGINT NULL DEFAULT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_amenity_rule_attachments_rule (rule_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS amenity_booking_terms_acceptances (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                booking_id INT NOT NULL UNIQUE,
+                amenity_id INT NOT NULL,
+                user_id INT NOT NULL,
+                society_id INT NOT NULL,
+                ruleset_version VARCHAR(64) NOT NULL,
+                rules_snapshot JSON NOT NULL,
+                user_name_snapshot VARCHAR(255) NOT NULL,
+                user_email_snapshot VARCHAR(255) NOT NULL,
+                user_role_snapshot VARCHAR(50) NOT NULL,
+                ip_address VARCHAR(45) NULL DEFAULT NULL,
+                accepted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_amenity_terms_booking (booking_id),
+                INDEX idx_amenity_terms_user (user_id, society_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+
+        const [arCols] = await sequelize.query(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'amenity_rules'"
+        );
+        const arColSet = new Set(arCols.map((r) => r.COLUMN_NAME));
+        if (!arColSet.has("rule_type")) {
+            await sequelize.query("ALTER TABLE amenity_rules ADD COLUMN rule_type ENUM('TEXT', 'IMAGE', 'PDF') NOT NULL DEFAULT 'TEXT' AFTER title");
+        }
+        if (arColSet.has("display_order")) {
+            try { await sequelize.query("ALTER TABLE amenity_rules DROP COLUMN display_order"); } catch (_) {}
+        }
+        if (arColSet.has("category")) {
+            try { await sequelize.query("ALTER TABLE amenity_rules DROP COLUMN category"); } catch (_) {}
+        }
+        try { await sequelize.query("ALTER TABLE amenity_rules MODIFY COLUMN content TEXT NULL"); } catch (_) {}
+
+        const [abCols] = await sequelize.query(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'amenity_bookings'"
+        );
+        const abColSet = new Set(abCols.map((r) => r.COLUMN_NAME));
+        if (!abColSet.has("terms_accepted")) {
+            await sequelize.query("ALTER TABLE amenity_bookings ADD COLUMN terms_accepted TINYINT(1) NOT NULL DEFAULT 0 AFTER status");
+        }
+        if (!abColSet.has("terms_accepted_at")) {
+            await sequelize.query("ALTER TABLE amenity_bookings ADD COLUMN terms_accepted_at DATETIME NULL DEFAULT NULL AFTER terms_accepted");
+        }
     } catch (err) {
         // Table might not exist yet or query failed
     }

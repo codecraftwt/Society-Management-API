@@ -9,6 +9,10 @@ const AccountantAssignment = require("../models/AccountantAssignment");
 const UserSociety = require("../models/UserSociety");
 const UserSocietyRole = require("../models/UserSocietyRole");
 const UserDocuments = require("../models/UserDocuments");
+const Rule = require("../models/Rule");
+const RuleVersion = require("../models/RuleVersion");
+const RuleAcknowledgement = require("../models/RuleAcknowledgement");
+const sequelize = require("../config/db");
 const { resolveSocietyAdminContact } = require("../utils/approvalGuard");
 const notificationService = require("../services/notificationService");
 
@@ -24,6 +28,7 @@ const {
   isValidEmail,
   isValidMobile,
   isValidPersonName,
+  parseSafePositiveInteger,
 } = require("../utils/validation");
 
 /* =====
@@ -317,6 +322,46 @@ async function getResidencyFlags(user, availablePanels) {
     ...(isOutsider ? { is_accountant_outsider: true } : {}),
   };
 }
+
+async function checkPendingMandatoryRules(userId, societyId) {
+  if (!userId || !societyId) return false;
+  try {
+    const activeVersions = await RuleVersion.findAll({
+      where: {
+        society_id: societyId,
+        is_current: true,
+      },
+      include: [
+        {
+          model: Rule,
+          as: "rule",
+          where: { is_active: true },
+          required: true,
+          attributes: ["id"],
+        },
+      ],
+      attributes: ["id"],
+    });
+
+    if (activeVersions.length === 0) return false;
+
+    const versionIds = activeVersions.map((v) => v.id);
+    const acknowledged = await RuleAcknowledgement.findAll({
+      where: {
+        user_id: userId,
+        society_id: societyId,
+        rule_version_id: { [Op.in]: versionIds },
+      },
+      attributes: ["rule_version_id"],
+    });
+
+    const acknowledgedSet = new Set(acknowledged.map((a) => a.rule_version_id));
+    return versionIds.some((id) => !acknowledgedSet.has(id));
+  } catch (err) {
+    console.error("checkPendingMandatoryRules error:", err);
+    return false;
+  }
+}
 function generateOtp() {
   // Real random 6-digit OTP for all environments.
   // In test mode, keep it deterministic so the test suite can log in.
@@ -560,6 +605,9 @@ async function buildLoginResponse(user) {
   const availablePanels = await getAvailablePanels(scopedUser);
   const residencyFlags = await getResidencyFlags(scopedUser, availablePanels);
   const dynamicPermissions = await fetchEffectivePermissions(activeSocietyId, initialRole);
+  const hasPendingRules = residencyFlags.is_society_resident
+    ? await checkPendingMandatoryRules(user.id, activeSocietyId)
+    : false;
 
   return {
     message: "Login successful",
@@ -567,6 +615,7 @@ async function buildLoginResponse(user) {
     availablePanels,
     availableSocieties,
     activeSocietyId,
+    has_pending_rules: hasPendingRules,
     ...residencyFlags,
     user: {
       id: user.id,
@@ -577,6 +626,7 @@ async function buildLoginResponse(user) {
       activeRole: initialRole,
       availablePanels,
       availableSocieties,
+      has_pending_rules: hasPendingRules,
       ...residencyFlags,
       dynamic_permissions: dynamicPermissions,
       permissions: dynamicPermissions,
@@ -796,7 +846,11 @@ exports.verifyRegistrationOtp = async (req, res) => {
       });
     }
 
-    await record.update({ used: true });
+    // Mark OTP as used and extend validity window to 15 minutes for registration completion
+    await record.update({
+      used: true,
+      expires_at: new Date(Date.now() + 15 * 60 * 1000),
+    });
 
     return res.status(200).json({ message: "Email verified successfully", email: cleanEmail });
   } catch (err) {
@@ -1068,18 +1122,28 @@ exports.registerResident = async (req, res) => {
       password,
       society_id,
       flat_id,
+      resident_type,
       occupant_count,
       vehicle_count,
       emergency_contact,
       profile_picture,
       aadhar_card,
       pan_card,
+      accepted_rule_version_ids,
     } = req.body;
 
+    const normalizedResidentType =
+      String(resident_type || "").trim().toUpperCase() === "TENANT" ? "TENANT" : "OWNER";
+
     const cleanPassword = (password || "").trim();
+    const cleanEmail = sanitizeText(email).toLowerCase();
 
     if (!society_id)
       return res.status(400).json({ message: "Society is required" });
+
+    const targetSocId = parseSafePositiveInteger(society_id);
+    if (!targetSocId)
+      return res.status(400).json({ message: "Invalid society ID" });
 
     if (!isValidPersonName(sanitizeText(name))) {
       return res.status(400).json({
@@ -1087,7 +1151,7 @@ exports.registerResident = async (req, res) => {
           "Full name must be at least 2 characters and contain only letters, spaces, dots, apostrophes or hyphens.",
       });
     }
-    if (!isValidEmail(sanitizeText(email))) {
+    if (!isValidEmail(cleanEmail)) {
       return res.status(400).json({ message: "Please enter a valid email address." });
     }
     if (isEmpty(cleanPassword)) {
@@ -1097,166 +1161,12 @@ exports.registerResident = async (req, res) => {
       return res.status(400).json({ message: "Please provide a valid 10-digit Indian mobile number." });
     }
 
-    const UserSociety = require("../models/UserSociety");
-    const UserSocietyRole = require("../models/UserSocietyRole");
-
-    const existing = await User.findOne({ where: { email } });
-
-    if (existing) {
-      if (
-        existing.approval_status === "REJECTED" &&
-        existing.status === "INACTIVE"
-      ) {
-        await notificationService.deleteUserNotifications(existing.id);
-        await existing.destroy();
-      } else {
-        // Multi-society: check if already member of target society
-        const existingMembership = await UserSociety.findOne({
-          where: {
-            user_id: existing.id,
-            society_id,
-            membership_status: { [Op.ne]: "REJECTED" },
-          },
-        });
-
-        if (existingMembership || String(existing.society_id) === String(society_id)) {
-          return res.status(400).json({ message: "User already exists in this society" });
-        }
-
-        // Verify existing password or allow existing account linkage
-        const useExistingAccountFlag = req.body.use_existing_account === true || req.body.is_existing_account === true;
-        const isMatch =
-          useExistingAccountFlag ||
-          cleanPassword === "__LINKED_EXISTING_USER__" ||
-          cleanPassword === existing.password ||
-          (cleanPassword && (await bcrypt.compare(cleanPassword, existing.password)));
-
-        if (!isMatch) {
-          return res.status(400).json({
-            message: "An account with this email already exists in another society. Please enter your existing password to request access to this society.",
-          });
-        }
-
-        const cloudinary = require("../config/cloudinary");
-        if (profile_picture && profile_picture.startsWith("data:") && !existing.profile_picture) {
-          try {
-            const uploadPic = await cloudinary.uploader.upload(profile_picture, {
-              folder: "society/avatars",
-              resource_type: "image",
-            });
-            await existing.update({ profile_picture: uploadPic.secure_url });
-          } catch (e) {
-            console.warn("Existing user profile picture upload warning:", e.message);
-          }
-        }
-
-        if (aadhar_card || pan_card) {
-          let exAadhar = aadhar_card;
-          let exPan = pan_card;
-          if (aadhar_card && aadhar_card.startsWith("data:")) {
-            try {
-              const resA = await cloudinary.uploader.upload(aadhar_card, {
-                folder: `society/user_documents/${existing.id}`,
-                resource_type: "auto",
-              });
-              exAadhar = resA.secure_url;
-            } catch (e) {
-              console.warn("Existing user Aadhaar upload warning:", e.message);
-            }
-          }
-          if (pan_card && pan_card.startsWith("data:")) {
-            try {
-              const resP = await cloudinary.uploader.upload(pan_card, {
-                folder: `society/user_documents/${existing.id}`,
-                resource_type: "auto",
-              });
-              exPan = resP.secure_url;
-            } catch (e) {
-              console.warn("Existing user PAN upload warning:", e.message);
-            }
-          }
-          const [docs] = await UserDocuments.findOrCreate({
-            where: { user_id: existing.id },
-            defaults: {
-              aadhar_url: exAadhar || "PENDING",
-              aadhar_public_id: exAadhar ? `users/${existing.id}/aadhar` : "PENDING",
-              pan_url: exPan || "PENDING",
-              pan_public_id: exPan ? `users/${existing.id}/pan` : "PENDING",
-            },
-          });
-          if (exAadhar && docs.aadhar_url === "PENDING") {
-            await docs.update({ aadhar_url: exAadhar, aadhar_public_id: `users/${existing.id}/aadhar` });
-          }
-          if (exPan && docs.pan_url === "PENDING") {
-            await docs.update({ pan_url: exPan, pan_public_id: `users/${existing.id}/pan` });
-          }
-        }
-
-        const [userSoc] = await UserSociety.findOrCreate({
-          where: { user_id: existing.id, society_id },
-          defaults: {
-            membership_status: "PENDING",
-            occupant_count: occupant_count != null ? Number(occupant_count) : (existing.occupant_count != null ? Number(existing.occupant_count) : 1),
-            vehicle_count: vehicle_count != null ? Number(vehicle_count) : (existing.vehicle_count != null ? Number(existing.vehicle_count) : 0),
-            emergency_contact: emergency_contact || existing.emergency_contact || null,
-            source: "SELF_REGISTER",
-          },
-        });
-
-        await UserSocietyRole.findOrCreate({
-          where: { user_society_id: userSoc.id, role: "RESIDENT" },
-          defaults: { user_society_id: userSoc.id, role: "RESIDENT" },
-        });
-
-        if (flat_id) {
-          const flat = await Flat.findByPk(flat_id);
-          if (flat && !flat.resident_id) {
-            await flat.update({ resident_id: existing.id });
-          }
-        }
-
-        const admin = await User.findOne({
-          where: { society_id, role: "SOCIETY_ADMIN" },
-        });
-
-        if (admin?.id) {
-          await notificationService.sendNotification({
-            societyId,
-            receiverUserId: admin.id,
-            senderUserId: existing.id,
-            receiverRole: "SOCIETY_ADMIN",
-            title: "New Resident Request",
-            message: `${existing.name} requested to join society`,
-            type: "RESIDENT_REQUEST",
-            actionType: "RESIDENT_REQUEST",
-            sourceEventId: `RESIDENT_REQUEST:${existing.id}:${admin.id}`,
-          });
-        }
-
-        return res.status(201).json({
-          message: "Registration Pending Approval",
-          userId: existing.id,
-          reused: true,
-        });
-      }
-    }
-
-    const strongPasswordRegex =
-      /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/;
-    if (!strongPasswordRegex.test(cleanPassword)) {
-      return res.status(400).json({
-        message:
-          "Password must be at least 8 characters and include 1 uppercase, 1 lowercase, 1 number, and 1 special character.",
-      });
-    }
-
-    const hashedPassword = await bcrypt.hash(cleanPassword, 10);
-
+    // Cloudinary uploads handled before database transaction
+    const cloudinary = require("../config/cloudinary");
     let finalProfilePic = profile_picture || null;
     let finalAadhar = aadhar_card || null;
     let finalPan = pan_card || null;
 
-    const cloudinary = require("../config/cloudinary");
     if (profile_picture && profile_picture.startsWith("data:")) {
       try {
         const uploadPic = await cloudinary.uploader.upload(profile_picture, {
@@ -1269,112 +1179,409 @@ exports.registerResident = async (req, res) => {
       }
     }
 
-    const newUser = await User.create({
-      name,
-      email,
-      phone,
-      password: hashedPassword,
-      role: "RESIDENT",
-      roles: ["RESIDENT"],
-      society_id,
-      status: "INACTIVE",
-      approval_status: "PENDING",
-      occupant_count: occupant_count != null ? Number(occupant_count) : 1,
-      vehicle_count: vehicle_count != null ? Number(vehicle_count) : 0,
-      emergency_contact: emergency_contact || null,
-      profile_picture: finalProfilePic,
-    });
-
-    if (aadhar_card && aadhar_card.startsWith("data:")) {
-      try {
-        const uploadAadhar = await cloudinary.uploader.upload(aadhar_card, {
-          folder: `society/user_documents/${newUser.id}`,
-          resource_type: "auto",
-        });
-        finalAadhar = uploadAadhar.secure_url;
-      } catch (e) {
-        console.warn("Aadhaar upload warning:", e.message);
-      }
-    }
-
-    if (pan_card && pan_card.startsWith("data:")) {
-      try {
-        const uploadPan = await cloudinary.uploader.upload(pan_card, {
-          folder: `society/user_documents/${newUser.id}`,
-          resource_type: "auto",
-        });
-        finalPan = uploadPan.secure_url;
-      } catch (e) {
-        console.warn("PAN upload warning:", e.message);
-      }
-    }
-
-    if (finalAadhar || finalPan) {
-      await UserDocuments.create({
-        user_id: newUser.id,
-        aadhar_url: finalAadhar || "PENDING",
-        aadhar_public_id: finalAadhar ? `users/${newUser.id}/aadhar` : "PENDING",
-        pan_url: finalPan || "PENDING",
-        pan_public_id: finalPan ? `users/${newUser.id}/pan` : "PENDING",
-      }).catch((e) => console.warn("UserDocuments create warning:", e.message));
-    }
-
-    const [userSoc] = await UserSociety.findOrCreate({
-      where: { user_id: newUser.id, society_id },
-      defaults: {
-        membership_status: "PENDING",
-        occupant_count: occupant_count != null ? Number(occupant_count) : 1,
-        vehicle_count: vehicle_count != null ? Number(vehicle_count) : 0,
-        emergency_contact: emergency_contact || null,
-        source: "SELF_REGISTER",
-      },
-    });
-
-    await UserSocietyRole.findOrCreate({
-      where: { user_society_id: userSoc.id, role: "RESIDENT" },
-      defaults: { user_society_id: userSoc.id, role: "RESIDENT" },
-    });
-
-    // ✅ Run flat update + household lookup in parallel
-    await Promise.all([
-      flat_id
-        ? Flat.findByPk(flat_id).then((flat) => {
-            if (flat && !flat.resident_id)
-              return flat.update({ resident_id: newUser.id });
-          })
-        : Promise.resolve(),
-      phone
-        ? HouseHoldMember.findOne({ where: { phone } }).then((rec) => {
-            if (rec) return rec.update({ user_id: newUser.id });
-          })
-        : Promise.resolve(),
-    ]);
-
-    const admin = await User.findOne({
-      where: { society_id, role: "SOCIETY_ADMIN" },
-    });
-
-    if (admin?.id) {
-      await notificationService.sendNotification({
-        societyId: newUser.society_id || society_id,
-        receiverUserId: admin.id,
-        senderUserId: newUser.id || null,
-        receiverRole: "SOCIETY_ADMIN",
-        title: "New Resident Request",
-        message: `${name} requested to join society`,
-        type: "RESIDENT_REQUEST",
-        actionType: "RESIDENT_REQUEST",
-        sourceEventId: `RESIDENT_REQUEST:${newUser.id || name}:${admin.id}`,
+    // Begin managed transaction
+    const t = await sequelize.transaction();
+    try {
+      // 1. Lock and verify OTP (look up the verified OTP record)
+      const otpRecord = await OtpVerification.findOne({
+        where: {
+          email: cleanEmail,
+          used: true,
+        },
+        order: [["id", "DESC"]],
+        lock: t.LOCK.UPDATE,
+        transaction: t,
       });
-    }
 
-    return res.status(201).json({
-      message: "Registration Pending Approval",
-      userId: newUser.id,
-    });
+      if (!otpRecord) {
+        await t.rollback();
+        return res.status(400).json({
+          message: "OTP verification required or session expired. Please verify your email.",
+        });
+      }
+
+      // Check session validity in JavaScript to avoid MySQL timezone mismatches (allow 30 minutes)
+      const expiresAtMs = otpRecord.expires_at ? new Date(otpRecord.expires_at).getTime() : 0;
+      const createdAtMs = otpRecord.created_at ? new Date(otpRecord.created_at).getTime() : 0;
+      const latestTimestamp = Math.max(expiresAtMs, createdAtMs);
+      if (latestTimestamp > 0 && Date.now() - latestTimestamp > 30 * 60 * 1000) {
+        await t.rollback();
+        return res.status(400).json({
+          message: "OTP verification session expired. Please verify your email.",
+        });
+      }
+
+      // 2. Lock active society rules in ascending order to prevent deadlocks
+      const activeRules = await Rule.findAll({
+        where: { society_id: targetSocId, is_active: true },
+        order: [["id", "ASC"]],
+        lock: t.LOCK.SHARE,
+        transaction: t,
+      });
+
+      const ruleIds = activeRules.map((r) => r.id);
+      let currentVersions = [];
+      if (ruleIds.length > 0) {
+        currentVersions = await RuleVersion.findAll({
+          where: {
+            society_id: targetSocId,
+            rule_id: { [Op.in]: ruleIds },
+            is_current: true,
+          },
+          transaction: t,
+        });
+      }
+
+      const mandatoryVersions = currentVersions.filter((v) => v.is_mandatory);
+      const submittedVersionIds = Array.isArray(accepted_rule_version_ids)
+        ? accepted_rule_version_ids.map(Number).filter((n) => Number.isSafeInteger(n) && n > 0)
+        : [];
+
+      // Every mandatory version must be in submittedVersionIds
+      const missingMandatory = mandatoryVersions.filter(
+        (mv) => !submittedVersionIds.includes(mv.id)
+      );
+      if (missingMandatory.length > 0) {
+        await t.rollback();
+        return res.status(409).json({
+          code: "MANDATORY_RULES_MISMATCH",
+          message: "Mandatory society rules require your review and acceptance before registering.",
+          missing_version_ids: missingMandatory.map((v) => v.id),
+        });
+      }
+
+      // Every submitted version must belong to a current active rule of this society
+      const validVersionMap = new Map(currentVersions.map((v) => [v.id, v]));
+      for (const svId of submittedVersionIds) {
+        if (!validVersionMap.has(svId)) {
+          await t.rollback();
+          return res.status(400).json({
+            message: `Invalid or outdated rule version ID: ${svId}`,
+          });
+        }
+      }
+
+      const existing = await User.findOne({
+        where: { email: cleanEmail },
+        lock: t.LOCK.UPDATE,
+        transaction: t,
+      });
+
+      let targetUser = null;
+      let isReusedAccount = false;
+
+      if (existing) {
+        if (
+          existing.approval_status === "REJECTED" &&
+          existing.status === "INACTIVE"
+        ) {
+          await notificationService.deleteUserNotifications(existing.id);
+          await existing.destroy({ transaction: t });
+        } else {
+          // Multi-society: check if already member of target society
+          const existingMembership = await UserSociety.findOne({
+            where: {
+              user_id: existing.id,
+              society_id: targetSocId,
+              membership_status: { [Op.ne]: "REJECTED" },
+            },
+            transaction: t,
+          });
+
+          if (existingMembership || String(existing.society_id) === String(targetSocId)) {
+            await t.rollback();
+            return res.status(400).json({ message: "User already exists in this society" });
+          }
+
+          // Verify existing password or allow existing account linkage
+          const useExistingAccountFlag =
+            req.body.use_existing_account === true || req.body.is_existing_account === true;
+          const isMatch =
+            useExistingAccountFlag ||
+            cleanPassword === "__LINKED_EXISTING_USER__" ||
+            cleanPassword === existing.password ||
+            (cleanPassword && (await bcrypt.compare(cleanPassword, existing.password)));
+
+          if (!isMatch) {
+            await t.rollback();
+            return res.status(400).json({
+              message:
+                "An account with this email already exists in another society. Please enter your existing password to request access to this society.",
+            });
+          }
+
+          if (finalProfilePic && !existing.profile_picture) {
+            await existing.update({ profile_picture: finalProfilePic }, { transaction: t });
+          }
+
+          if (aadhar_card || pan_card) {
+            let exAadhar = aadhar_card;
+            let exPan = pan_card;
+            if (aadhar_card && aadhar_card.startsWith("data:")) {
+              try {
+                const resA = await cloudinary.uploader.upload(aadhar_card, {
+                  folder: `society/user_documents/${existing.id}`,
+                  resource_type: "auto",
+                });
+                exAadhar = resA.secure_url;
+              } catch (e) {
+                console.warn("Existing user Aadhaar upload warning:", e.message);
+              }
+            }
+            if (pan_card && pan_card.startsWith("data:")) {
+              try {
+                const resP = await cloudinary.uploader.upload(pan_card, {
+                  folder: `society/user_documents/${existing.id}`,
+                  resource_type: "auto",
+                });
+                exPan = resP.secure_url;
+              } catch (e) {
+                console.warn("Existing user PAN upload warning:", e.message);
+              }
+            }
+
+            const [docs] = await UserDocuments.findOrCreate({
+              where: { user_id: existing.id },
+              defaults: {
+                aadhar_url: exAadhar || "PENDING",
+                aadhar_public_id: exAadhar ? `users/${existing.id}/aadhar` : "PENDING",
+                pan_url: exPan || "PENDING",
+                pan_public_id: exPan ? `users/${existing.id}/pan` : "PENDING",
+              },
+              transaction: t,
+            });
+            if (exAadhar && docs.aadhar_url === "PENDING") {
+              await docs.update(
+                { aadhar_url: exAadhar, aadhar_public_id: `users/${existing.id}/aadhar` },
+                { transaction: t }
+              );
+            }
+            if (exPan && docs.pan_url === "PENDING") {
+              await docs.update(
+                { pan_url: exPan, pan_public_id: `users/${existing.id}/pan` },
+                { transaction: t }
+              );
+            }
+          }
+
+          if (!existing.resident_type) {
+            await existing.update({ resident_type: normalizedResidentType }, { transaction: t });
+          }
+
+          const [userSoc] = await UserSociety.findOrCreate({
+            where: { user_id: existing.id, society_id: targetSocId },
+            defaults: {
+              membership_status: "PENDING",
+              resident_type: normalizedResidentType,
+              occupant_count:
+                occupant_count != null
+                  ? Number(occupant_count)
+                  : existing.occupant_count != null
+                  ? Number(existing.occupant_count)
+                  : 1,
+              vehicle_count:
+                vehicle_count != null
+                  ? Number(vehicle_count)
+                  : existing.vehicle_count != null
+                  ? Number(existing.vehicle_count)
+                  : 0,
+              emergency_contact: emergency_contact || existing.emergency_contact || null,
+              source: "SELF_REGISTER",
+            },
+            transaction: t,
+          });
+
+          if (!userSoc.resident_type) {
+            await userSoc.update({ resident_type: normalizedResidentType }, { transaction: t });
+          }
+
+          await UserSocietyRole.findOrCreate({
+            where: { user_society_id: userSoc.id, role: "RESIDENT" },
+            defaults: { user_society_id: userSoc.id, role: "RESIDENT" },
+            transaction: t,
+          });
+
+          if (flat_id) {
+            const flat = await Flat.findByPk(flat_id, { transaction: t });
+            if (flat && !flat.resident_id) {
+              await flat.update({ resident_id: existing.id }, { transaction: t });
+            }
+          }
+
+          targetUser = existing;
+          isReusedAccount = true;
+        }
+      }
+
+      if (!targetUser) {
+        const strongPasswordRegex =
+          /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/;
+        if (!strongPasswordRegex.test(cleanPassword)) {
+          await t.rollback();
+          return res.status(400).json({
+            message:
+              "Password must be at least 8 characters and include 1 uppercase, 1 lowercase, 1 number, and 1 special character.",
+          });
+        }
+
+        const hashedPassword = await bcrypt.hash(cleanPassword, 10);
+
+        const newUser = await User.create(
+          {
+            name: sanitizeText(name),
+            email: cleanEmail,
+            phone: phone || null,
+            password: hashedPassword,
+            role: "RESIDENT",
+            roles: ["RESIDENT"],
+            resident_type: normalizedResidentType,
+            society_id: targetSocId,
+            status: "INACTIVE",
+            approval_status: "PENDING",
+            occupant_count: occupant_count != null ? Number(occupant_count) : 1,
+            vehicle_count: vehicle_count != null ? Number(vehicle_count) : 0,
+            emergency_contact: emergency_contact || null,
+            profile_picture: finalProfilePic,
+          },
+          { transaction: t }
+        );
+
+        if (aadhar_card && aadhar_card.startsWith("data:")) {
+          try {
+            const uploadAadhar = await cloudinary.uploader.upload(aadhar_card, {
+              folder: `society/user_documents/${newUser.id}`,
+              resource_type: "auto",
+            });
+            finalAadhar = uploadAadhar.secure_url;
+          } catch (e) {
+            console.warn("Aadhaar upload warning:", e.message);
+          }
+        }
+
+        if (pan_card && pan_card.startsWith("data:")) {
+          try {
+            const uploadPan = await cloudinary.uploader.upload(pan_card, {
+              folder: `society/user_documents/${newUser.id}`,
+              resource_type: "auto",
+            });
+            finalPan = uploadPan.secure_url;
+          } catch (e) {
+            console.warn("PAN upload warning:", e.message);
+          }
+        }
+
+        if (finalAadhar || finalPan) {
+          await UserDocuments.create(
+            {
+              user_id: newUser.id,
+              aadhar_url: finalAadhar || "PENDING",
+              aadhar_public_id: finalAadhar ? `users/${newUser.id}/aadhar` : "PENDING",
+              pan_url: finalPan || "PENDING",
+              pan_public_id: finalPan ? `users/${newUser.id}/pan` : "PENDING",
+            },
+            { transaction: t }
+          );
+        }
+
+        const [userSoc] = await UserSociety.findOrCreate({
+          where: { user_id: newUser.id, society_id: targetSocId },
+          defaults: {
+            membership_status: "PENDING",
+            resident_type: normalizedResidentType,
+            occupant_count: occupant_count != null ? Number(occupant_count) : 1,
+            vehicle_count: vehicle_count != null ? Number(vehicle_count) : 0,
+            emergency_contact: emergency_contact || null,
+            source: "SELF_REGISTER",
+          },
+          transaction: t,
+        });
+
+        await UserSocietyRole.findOrCreate({
+          where: { user_society_id: userSoc.id, role: "RESIDENT" },
+          defaults: { user_society_id: userSoc.id, role: "RESIDENT" },
+          transaction: t,
+        });
+
+        if (flat_id) {
+          const flat = await Flat.findByPk(flat_id, { transaction: t });
+          if (flat && !flat.resident_id) {
+            await flat.update({ resident_id: newUser.id }, { transaction: t });
+          }
+        }
+
+        if (phone) {
+          const hhMember = await HouseHoldMember.findOne({
+            where: { phone },
+            transaction: t,
+          });
+          if (hhMember) {
+            await hhMember.update({ user_id: newUser.id }, { transaction: t });
+          }
+        }
+
+        targetUser = newUser;
+      }
+
+      // 3. Save rule acknowledgements for this user
+      if (submittedVersionIds.length > 0 && targetUser) {
+        const ackRows = submittedVersionIds.map((vId) => {
+          const v = validVersionMap.get(vId);
+          return {
+            rule_id: v.rule_id,
+            rule_version_id: v.id,
+            user_id: targetUser.id,
+            user_name_snapshot: targetUser.name,
+            user_email_snapshot: targetUser.email,
+            society_id: targetSocId,
+            source: "REGISTRATION",
+            acknowledged_at: new Date(),
+          };
+        });
+        await RuleAcknowledgement.bulkCreate(ackRows, {
+          transaction: t,
+          ignoreDuplicates: true,
+        });
+      }
+
+      // 4. Burn the OTP record inside the transaction
+      await otpRecord.destroy({ transaction: t });
+
+      // 5. Commit database changes
+      await t.commit();
+
+      // 6. Notify admin after successful commit
+      const admin = await User.findOne({
+        where: { society_id: targetSocId, role: "SOCIETY_ADMIN" },
+      });
+
+      if (admin?.id) {
+        notificationService
+          .sendNotification({
+            societyId: targetSocId,
+            receiverUserId: admin.id,
+            senderUserId: targetUser.id || null,
+            receiverRole: "SOCIETY_ADMIN",
+            title: "New Resident Request",
+            message: `${targetUser.name} requested to join society`,
+            type: "RESIDENT_REQUEST",
+            actionType: "RESIDENT_REQUEST",
+            sourceEventId: `RESIDENT_REQUEST:${targetUser.id || targetUser.name}:${admin.id}`,
+          })
+          .catch((e) => console.warn("Admin notification warning:", e.message));
+      }
+
+      return res.status(201).json({
+        message: "Registration Pending Approval",
+        userId: targetUser.id,
+        reused: isReusedAccount,
+      });
+    } catch (err) {
+      await t.rollback();
+      throw err;
+    }
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: err.message });
+    console.error("registerResident error:", err);
+    return res.status(500).json({ message: err.message || "Registration failed" });
   }
 };
 

@@ -43,6 +43,10 @@ const createParkingSlots = async (req, res) => {
     if (!cleanPrefix || !start_number || !count || !vehicle_type) {
       return res.status(400).json({ message: "All fields are required" });
     }
+    const normalizedPrefix = cleanPrefix.replace(/[-_\s]+$/, "");
+    if (!normalizedPrefix) {
+      return res.status(400).json({ message: "A valid slot prefix is required" });
+    }
     if (!["CAR", "BIKE"].includes(vehicle_type)) {
       return res.status(400).json({ message: "Vehicle type must be CAR or BIKE" });
     }
@@ -60,7 +64,7 @@ const createParkingSlots = async (req, res) => {
     const slotsToCreate = [];
 
     for (let i = 0; i < count; i++) {
-      const slotNumber = `${cleanPrefix}-${startNum + i}`;
+      const slotNumber = `${normalizedPrefix}-${startNum + i}`;
 
       const existing = await ParkingSlot.findOne({
         where: {

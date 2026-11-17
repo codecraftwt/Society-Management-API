@@ -4,6 +4,7 @@ const router = express.Router();
 const auth = require("../middlewares/authMiddleware");
 const role = require("../middlewares/roleMiddleware");
 const attachFlatId = require("../middlewares/flatAccessMiddleware");
+const enforceRulesAcknowledged = require("../middlewares/enforceRulesAcknowledged");
 
 const {
   getMyHousehold,
@@ -26,6 +27,7 @@ router.post(
   "/add",
   auth,
   role("RESIDENT", "FAMILY_MEMBER"),
+  enforceRulesAcknowledged,
   attachFlatId,
   addHouseholdMember
 );

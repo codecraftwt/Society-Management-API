@@ -301,6 +301,9 @@ exports.approveResident = async (req, res) => {
     if (!isSocietyAdmin) {
       resident.role           = "RESIDENT";
     }
+    if (!resident.resident_type) {
+      resident.resident_type = userSocTarget?.resident_type || "OWNER";
+    }
     resident.rejection_reason = null;
     resident.approved_by_user_id = req.user.id;
     resident.approved_by_name = req.user.name || (callerRole === "COMMITTEE_MEMBER" ? "Committee Member" : "Society Admin");
@@ -310,7 +313,11 @@ exports.approveResident = async (req, res) => {
 
     // 1b. Ensure Multi-Society membership is active for targetSocietyId
     if (userSocTarget) {
-      await userSocTarget.update({ membership_status: "ACTIVE" }, { transaction });
+      const updateData = { membership_status: "ACTIVE" };
+      if (!userSocTarget.resident_type) {
+        updateData.resident_type = resident.resident_type || "OWNER";
+      }
+      await userSocTarget.update(updateData, { transaction });
       await UserSocietyRole.findOrCreate({
         where: { user_society_id: userSocTarget.id, role: "RESIDENT" },
         defaults: { user_society_id: userSocTarget.id, role: "RESIDENT" },

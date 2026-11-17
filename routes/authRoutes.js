@@ -14,6 +14,11 @@ const {
   checkEmailAvailability,
 } = require("../controllers/authControllers");
 
+const {
+  getRegistrationRules,
+  streamRegistrationDocument,
+} = require("../controllers/ruleControllers");
+
 const auth = require("../middlewares/authMiddleware");
 
 /* Public routes */
@@ -24,6 +29,8 @@ router.get("/check-email",        checkEmailAvailability);
 router.post("/check-email",       checkEmailAvailability);
 router.post("/register",          registerResident);
 router.get("/approval-status/:id", checkApprovalStatus);
+router.get("/registration-rules", getRegistrationRules);
+router.get("/registration-rules/:versionId/document", streamRegistrationDocument);
 
 /* Protected — requires a valid access token */
 router.post("/switch-role", auth, switchRole);

@@ -3,6 +3,7 @@ const router = express.Router();
 
 const auth = require("../middlewares/authMiddleware");
 const role = require("../middlewares/roleMiddleware");
+const enforceRulesAcknowledged = require("../middlewares/enforceRulesAcknowledged");
 
 const {
   addVehicle,
@@ -15,7 +16,7 @@ const {
 
 
 // Resident
-router.post("/", auth, role("RESIDENT", "FAMILY_MEMBER"), addVehicle);
+router.post("/", auth, role("RESIDENT", "FAMILY_MEMBER"), enforceRulesAcknowledged, addVehicle);
 router.get("/my", auth, role("RESIDENT", "FAMILY_MEMBER"), getMyVehicles);
 router.delete("/:id", auth, role("RESIDENT", "FAMILY_MEMBER"), deleteVehicle);
 router.put("/:id", auth, role("RESIDENT", "FAMILY_MEMBER"), updateVehicle);

@@ -3,6 +3,9 @@
 const {
   Amenity,
   AmenityBooking,
+  AmenityRule,
+  AmenityRuleAttachment,
+  AmenityBookingTermsAcceptance,
   User,
   Flat,
   FlatMembership,
@@ -17,6 +20,7 @@ const { Op }                   = require("sequelize");
 const { sendPushNotification } = require("../utils/pushNotification");
 const { groupAmenityBookings } = require("../utils/groupAmenityBookings");
 const { createLedgerEntry, reverseLedgerEntry } = require("../utils/ledgerService");
+const { computeRulesetVersion } = require("./amenityRulesController");
 
 /* ─── Demo UPI payment helper ─── */
 function buildUpiPaymentData(amenity, bookingId, totalAmount, allBookingIds) {
@@ -354,8 +358,15 @@ exports.createBooking = async (req, res) => {
       }
 
       const dates = [...new Set(slotList.map((s) => s.date))].sort();
+      if (dates.length > 1) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Slot-based amenities can only be booked for a single day. You can select multiple slots on that day.",
+        });
+      }
       fromDate = dates[0];
-      toDate   = dates[dates.length - 1];
+      toDate   = dates[0];
 
       /* Compute end_time for each slot */
       slotList = slotList.map((s) => ({
@@ -449,6 +460,56 @@ exports.createBooking = async (req, res) => {
       }
     }
 
+    /* ─── Validate Amenities Rules & Terms Acceptance ─── */
+    const activeRules = await AmenityRule.findAll({
+      where: { society_id: societyId, is_active: true },
+      include: [{ model: AmenityRuleAttachment, as: "attachments" }],
+      order: [["created_at", "ASC"]],
+      transaction: t,
+    });
+
+    const hasActiveRules = activeRules.length > 0;
+    const currentRulesetVersion = hasActiveRules ? computeRulesetVersion(activeRules) : null;
+    let rulesSnapshot = null;
+
+    if (hasActiveRules) {
+      const acceptedVersion = req.body.accepted_ruleset_version;
+      if (!acceptedVersion) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          code: "AMENITY_RULES_ACCEPTANCE_REQUIRED",
+          message: "You must review and accept the society amenities rules before submitting a booking request.",
+          current_ruleset_version: currentRulesetVersion,
+        });
+      }
+      if (acceptedVersion !== currentRulesetVersion) {
+        await t.rollback();
+        return res.status(409).json({
+          success: false,
+          code: "AMENITY_RULES_VERSION_OUTDATED",
+          message: "Amenities rules have been updated by the administration. Please review the updated rules before proceeding.",
+          current_ruleset_version: currentRulesetVersion,
+        });
+      }
+
+      rulesSnapshot = activeRules.map((r) => ({
+        id: r.id,
+        title: r.title,
+        rule_type: r.rule_type,
+        content: r.content,
+        formatted_content: r.formatted_content,
+        is_mandatory: r.is_mandatory,
+        attachments: (r.attachments || []).map((a) => ({
+          id: a.id,
+          file_name: a.file_name,
+          file_url: a.file_url,
+          file_type: a.file_type,
+          file_size: a.file_size,
+        })),
+      }));
+    }
+
     /* ════════════════════════════
        FREE AMENITY
     ════════════════════════════ */
@@ -469,8 +530,29 @@ exports.createBooking = async (req, res) => {
         start_time:     startTimeVal,
         end_time:       endTime,
         status:         bookingStatus,
-        payment_status: "NA", occupancy_category: occupancyCategory, rate_per_hour_snapshot: 0, amount: 0,
+        payment_status: "NA",
+        occupancy_category: occupancyCategory,
+        rate_per_hour_snapshot: 0,
+        amount: 0,
+        terms_accepted: hasActiveRules,
+        terms_accepted_at: hasActiveRules ? new Date() : null,
       }, { transaction: t });
+
+      if (hasActiveRules && rulesSnapshot) {
+        await AmenityBookingTermsAcceptance.create({
+          booking_id: row.id,
+          amenity_id: amenityId,
+          user_id: userId,
+          society_id: societyId,
+          ruleset_version: currentRulesetVersion,
+          rules_snapshot: rulesSnapshot,
+          user_name_snapshot: userName || req.user.name || "Resident",
+          user_email_snapshot: req.user.email || "",
+          user_role_snapshot: occupancyCategory,
+          ip_address: req.ip || req.connection?.remoteAddress || null,
+          accepted_at: new Date(),
+        }, { transaction: t });
+      }
 
       await t.commit();
 
@@ -510,8 +592,28 @@ exports.createBooking = async (req, res) => {
       status:             "PAYMENT_PENDING",
       payment_status:     "PENDING",
       payment_expires_at: paymentExpiry,
-      occupancy_category: occupancyCategory, rate_per_hour_snapshot: applicableRate, amount: totalAmount,
+      occupancy_category: occupancyCategory,
+      rate_per_hour_snapshot: applicableRate,
+      amount: totalAmount,
+      terms_accepted: hasActiveRules,
+      terms_accepted_at: hasActiveRules ? new Date() : null,
     }, { transaction: t });
+
+    if (hasActiveRules && rulesSnapshot) {
+      await AmenityBookingTermsAcceptance.create({
+        booking_id: row.id,
+        amenity_id: amenityId,
+        user_id: userId,
+        society_id: societyId,
+        ruleset_version: currentRulesetVersion,
+        rules_snapshot: rulesSnapshot,
+        user_name_snapshot: userName || req.user.name || "Resident",
+        user_email_snapshot: req.user.email || "",
+        user_role_snapshot: occupancyCategory,
+        ip_address: req.ip || req.connection?.remoteAddress || null,
+        accepted_at: new Date(),
+      }, { transaction: t });
+    }
 
     await t.commit();
 
@@ -602,6 +704,19 @@ exports.verifyPayment = async (req, res) => {
 
     /* 5. Confirm + record Payment & Ledger (one per booking) */
     for (const b of pending) {
+      if (b.terms_accepted) {
+        const acceptance = await AmenityBookingTermsAcceptance.findOne({
+          where: { booking_id: b.id },
+          transaction: t,
+        });
+        if (!acceptance) {
+          await t.rollback();
+          return res.status(403).json({
+            success: false,
+            message: "Terms acceptance record missing for this booking.",
+          });
+        }
+      }
       const amt = bookingAmount(amenity, b);
       await b.update({
         status:             nextStatus,

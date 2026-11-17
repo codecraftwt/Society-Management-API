@@ -88,6 +88,14 @@ const isValidVehicleNumber = (value) => {
   );
 };
 
+const parseSafePositiveInteger = (val) => {
+  if (val === null || val === undefined || val === '') return null;
+  const raw = Array.isArray(val) ? val[0] : val;
+  const num = Number(raw);
+  if (!Number.isSafeInteger(num) || num <= 0) return null;
+  return num;
+};
+
 /**
  * Collect the first missing/invalid required field.
  * @param {object} body - request body
@@ -113,6 +121,7 @@ module.exports = {
   isValidPassword: (p) => typeof p === 'string' && PASSWORD_REGEX.test(p),
   isPositiveNumber,
   isNonNegativeNumber,
+  parseSafePositiveInteger,
   isValidISODate,
   isValidVehicleNumber,
   findFirstError,

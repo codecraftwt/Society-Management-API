@@ -21,6 +21,9 @@ const Parcel = require("./Parcel");
 const ParkingSlot = require("./ParkingSlot");
 const Amenity = require("./Amenity");
 const AmenityBooking = require("./AmenityBooking");
+const AmenityRule = require("./AmenityRule");
+const AmenityRuleAttachment = require("./AmenityRuleAttachment");
+const AmenityBookingTermsAcceptance = require("./AmenityBookingTermsAcceptance");
 const GuardLog = require("./GuardLog");
 const UserSetting = require("./UserSetting");
 const ComplaintComment = require("./ComplaintComment");
@@ -46,6 +49,9 @@ const EventMedia = require("./EventMedia");
 const UserSociety = require("./UserSociety");
 const UserSocietyRole = require("./UserSocietyRole");
 const SocietyInvite = require("./SocietyInvite");
+const Rule = require("./Rule");
+const RuleVersion = require("./RuleVersion");
+const RuleAcknowledgement = require("./RuleAcknowledgement");
 
 
 
@@ -560,6 +566,45 @@ EventMedia.belongsTo(Event, { foreignKey: "event_id", as: "event" });
 Event.belongsTo(User, { foreignKey: "created_by_user_id", as: "creator" });
 User.hasMany(Event, { foreignKey: "created_by_user_id", as: "createdEvents" });
 
+// Rules & Regulations Associations
+Society.hasMany(Rule, { foreignKey: "society_id", as: "rules" });
+Rule.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
+Rule.hasMany(RuleVersion, { foreignKey: "rule_id", as: "versions" });
+RuleVersion.belongsTo(Rule, { foreignKey: "rule_id", as: "rule" });
+
+RuleVersion.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+RuleVersion.belongsTo(User, { foreignKey: "published_by_user_id", as: "publisher" });
+
+Rule.hasMany(RuleAcknowledgement, { foreignKey: "rule_id", as: "acknowledgements" });
+RuleAcknowledgement.belongsTo(Rule, { foreignKey: "rule_id", as: "rule" });
+
+RuleVersion.hasMany(RuleAcknowledgement, { foreignKey: "rule_version_id", as: "acknowledgements" });
+RuleAcknowledgement.belongsTo(RuleVersion, { foreignKey: "rule_version_id", as: "version" });
+
+User.hasMany(RuleAcknowledgement, { foreignKey: "user_id", as: "rule_acknowledgements" });
+RuleAcknowledgement.belongsTo(User, { foreignKey: "user_id", as: "user" });
+
+Society.hasMany(RuleAcknowledgement, { foreignKey: "society_id", as: "rule_acknowledgements" });
+RuleAcknowledgement.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
+// Amenity Rules & Terms Associations
+Society.hasMany(AmenityRule, { foreignKey: "society_id", as: "amenityRules" });
+AmenityRule.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
+AmenityRule.belongsTo(User, { foreignKey: "created_by_user_id", as: "creator" });
+User.hasMany(AmenityRule, { foreignKey: "created_by_user_id", as: "createdAmenityRules" });
+
+AmenityRule.hasMany(AmenityRuleAttachment, { foreignKey: "rule_id", as: "attachments" });
+AmenityRuleAttachment.belongsTo(AmenityRule, { foreignKey: "rule_id", as: "rule" });
+
+AmenityBooking.hasOne(AmenityBookingTermsAcceptance, { foreignKey: "booking_id", as: "termsAcceptance" });
+AmenityBookingTermsAcceptance.belongsTo(AmenityBooking, { foreignKey: "booking_id", as: "booking" });
+
+AmenityBookingTermsAcceptance.belongsTo(Amenity, { foreignKey: "amenity_id", as: "amenity" });
+AmenityBookingTermsAcceptance.belongsTo(User, { foreignKey: "user_id", as: "user" });
+AmenityBookingTermsAcceptance.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
 module.exports = {
   sequelize,
   User,
@@ -608,4 +653,10 @@ module.exports = {
   UserSociety,
   UserSocietyRole,
   SocietyInvite,
+  Rule,
+  RuleVersion,
+  RuleAcknowledgement,
+  AmenityRule,
+  AmenityRuleAttachment,
+  AmenityBookingTermsAcceptance,
 };

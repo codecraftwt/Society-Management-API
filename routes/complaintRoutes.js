@@ -7,6 +7,7 @@ const role    = require("../middlewares/roleMiddleware");
 const upload  = require("../middlewares/uploadComplaint");
 const uploadAttachment = require("../middlewares/uploadCommentAttachment");
 const { checkPermission } = require("../middlewares/permissionMiddleware");
+const enforceRulesAcknowledged = require("../middlewares/enforceRulesAcknowledged");
 
 const {
   getComplaints,
@@ -80,6 +81,7 @@ router.post(
   "/",
   auth,
   role("RESIDENT", "FAMILY_MEMBER"),
+  enforceRulesAcknowledged,
   upload.single("photo"),
   createComplaint
 );

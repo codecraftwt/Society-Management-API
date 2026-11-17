@@ -1,6 +1,3 @@
-
-
-
 const { DataTypes } = require("sequelize");
 const sequelize = require("../config/db");
 
@@ -109,6 +106,18 @@ const AmenityBooking = sequelize.define(
     payment_status: {
       type: DataTypes.ENUM("PENDING", "PAID", "FAILED", "NA"),
       defaultValue: "NA",
+    },
+
+    terms_accepted: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
+
+    terms_accepted_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      defaultValue: null,
     },
 
     /* Razorpay integration fields */
