@@ -1,5 +1,6 @@
-const { Rule, RuleVersion, RuleAcknowledgement, Society, User, Flat, FlatMembership, UserSociety, sequelize } = require("../models");
+const { Rule, RuleVersion, RuleAcknowledgement, Society, User, Flat, FlatMembership, UserSociety, Block, HouseHoldMember, sequelize } = require("../models");
 const { Op } = require("sequelize");
+const { getSocietyMemberUserIds } = require("../utils/accessHelpers");
 const notificationService = require("../services/notificationService");
 const https = require("https");
 const http = require("http");
@@ -757,25 +758,6 @@ exports.getRuleAcknowledgements = async (req, res) => {
           model: User,
           as: "user",
           attributes: ["id", "name", "email", "phone", "role", "resident_type"],
-          include: [
-            {
-              model: Flat,
-              attributes: ["id", "flat_number"],
-              required: false,
-            },
-            {
-              model: FlatMembership,
-              attributes: ["id", "flat_id", "role"],
-              required: false,
-              include: [{ model: Flat, attributes: ["id", "flat_number"], required: false }],
-            },
-            {
-              model: UserSociety,
-              as: "memberships",
-              attributes: ["id", "resident_type", "society_id"],
-              required: false,
-            },
-          ],
         },
       ],
       order: [["acknowledged_at", "DESC"]],
@@ -792,56 +774,187 @@ exports.getRuleAcknowledgements = async (req, res) => {
     }
 
     // 3. Fetch all eligible residents in the society
+    // Audience resolved from real society membership so multi-society residents are included
+    let societyMemberIds = [];
+    try {
+      if (typeof getSocietyMemberUserIds === "function") {
+        societyMemberIds = await getSocietyMemberUserIds(rule.society_id);
+      }
+    } catch (e) {
+      console.warn("getSocietyMemberUserIds fallback:", e.message);
+    }
+
     const eligibleResidents = await User.findAll({
       where: {
-        society_id: rule.society_id,
         status: "ACTIVE",
         [Op.or]: [
-          { role: { [Op.in]: ["RESIDENT", "FAMILY_MEMBER"] } },
-          { resident_type: { [Op.in]: ["OWNER", "TENANT"] } },
+          { society_id: rule.society_id },
+          ...(societyMemberIds.length > 0 ? [{ id: { [Op.in]: societyMemberIds } }] : []),
+        ],
+        [Op.and]: [
+          {
+            [Op.or]: [
+              { role: { [Op.in]: ["RESIDENT", "FAMILY_MEMBER"] } },
+              { resident_type: { [Op.in]: ["OWNER", "TENANT"] } },
+            ],
+          },
         ],
       },
       attributes: ["id", "name", "email", "phone", "role", "resident_type"],
-      include: [
-        {
-          model: Flat,
-          attributes: ["id", "flat_number"],
-          required: false,
-        },
-        {
-          model: FlatMembership,
-          attributes: ["id", "flat_id", "role"],
-          required: false,
-          include: [{ model: Flat, attributes: ["id", "flat_number"], required: false }],
-        },
-        {
-          model: UserSociety,
-          as: "memberships",
-          attributes: ["id", "resident_type", "society_id"],
-          required: false,
-        },
-      ],
       order: [["name", "ASC"]],
     });
 
-    // 4. Combine eligible residents with acknowledgement status
+    // 4. Collect all distinct user IDs that need society-scoped flat & role resolution
+    const allUserIds = Array.from(new Set([
+      ...eligibleResidents.map((r) => r.id),
+      ...acknowledgements.map((a) => a.user_id),
+    ])).filter(Boolean);
+
+    // Query active FlatMemberships strictly belonging to rule.society_id
+    const activeMemberships = allUserIds.length > 0
+      ? await FlatMembership.findAll({
+          where: {
+            user_id: { [Op.in]: allUserIds },
+            is_current: true,
+          },
+          include: [
+            {
+              model: Flat,
+              attributes: ["id", "flat_number", "block_id", "floor_id"],
+              required: true,
+              include: [
+                {
+                  model: Block,
+                  attributes: ["id", "name", "society_id"],
+                  where: { society_id: rule.society_id },
+                  required: true,
+                },
+              ],
+            },
+          ],
+          order: [["updatedAt", "DESC"], ["id", "DESC"]],
+        })
+      : [];
+
+    // Query HouseholdMembers (family members) strictly in rule.society_id
+    const householdMembers = allUserIds.length > 0
+      ? await HouseHoldMember.findAll({
+          where: { user_id: { [Op.in]: allUserIds } },
+          attributes: ["id", "user_id", "flat_id"],
+          include: [
+            {
+              model: Flat,
+              attributes: ["id", "flat_number", "block_id"],
+              required: true,
+              include: [
+                {
+                  model: Block,
+                  attributes: ["id", "name", "society_id"],
+                  where: { society_id: rule.society_id },
+                  required: true,
+                },
+              ],
+            },
+          ],
+        })
+      : [];
+
+    // Query direct flats (fallback for direct assignment via Flat.resident_id)
+    const directFlats = allUserIds.length > 0
+      ? await Flat.findAll({
+          where: {
+            resident_id: { [Op.in]: allUserIds },
+          },
+          attributes: ["id", "flat_number", "resident_id", "block_id"],
+          include: [
+            {
+              model: Block,
+              attributes: ["id", "name", "society_id"],
+              where: { society_id: rule.society_id },
+              required: true,
+            },
+          ],
+        })
+      : [];
+
+    // Query UserSociety memberships for this society
+    const userSocieties = allUserIds.length > 0
+      ? await UserSociety.findAll({
+          where: {
+            user_id: { [Op.in]: allUserIds },
+            society_id: rule.society_id,
+          },
+          attributes: ["id", "user_id", "resident_type", "roles"],
+        })
+      : [];
+
+    // Build society-specific flat and role maps
+    const userFlatMap = new Map();
+    const userRoleTypeMap = new Map();
+
+    for (const m of activeMemberships) {
+      if (!userFlatMap.has(m.user_id)) {
+        userFlatMap.set(m.user_id, new Set());
+      }
+      if (m.Flat?.flat_number) {
+        userFlatMap.get(m.user_id).add(m.Flat.flat_number);
+      }
+      if (m.role && !userRoleTypeMap.has(m.user_id)) {
+        userRoleTypeMap.set(m.user_id, m.role);
+      }
+    }
+
+    for (const h of householdMembers) {
+      if (!userFlatMap.has(h.user_id)) {
+        userFlatMap.set(h.user_id, new Set());
+      }
+      if (h.Flat?.flat_number) {
+        userFlatMap.get(h.user_id).add(h.Flat.flat_number);
+      }
+      if (!userRoleTypeMap.has(h.user_id)) {
+        userRoleTypeMap.set(h.user_id, "FAMILY_MEMBER");
+      }
+    }
+
+    for (const df of directFlats) {
+      if (!userFlatMap.has(df.resident_id)) {
+        userFlatMap.set(df.resident_id, new Set());
+      }
+      if (df.flat_number) {
+        userFlatMap.get(df.resident_id).add(df.flat_number);
+      }
+      if (!userRoleTypeMap.has(df.resident_id)) {
+        userRoleTypeMap.set(df.resident_id, "OWNER");
+      }
+    }
+
+    const userSocietyMap = new Map();
+    for (const us of userSocieties) {
+      userSocietyMap.set(us.user_id, us);
+    }
+
+    const resolveResidentInfo = (userObj) => {
+      const flatsSet = userFlatMap.get(userObj.id);
+      const flatNum = flatsSet && flatsSet.size > 0 ? Array.from(flatsSet).join(", ") : null;
+
+      const effectiveType =
+        userRoleTypeMap.get(userObj.id) ||
+        (userObj.resident_type && userObj.resident_type !== "RESIDENT" ? userObj.resident_type : null) ||
+        userSocietyMap.get(userObj.id)?.resident_type ||
+        (userObj.role === "RESIDENT" ? "OWNER" : userObj.role) ||
+        "OWNER";
+
+      return { flatNum, effectiveType };
+    };
+
+    // 5. Combine eligible residents with acknowledgement status
     const records = [];
     const seenUserIds = new Set();
 
     for (const resident of eligibleResidents) {
       seenUserIds.add(resident.id);
       const ack = ackMapByUserId.get(resident.id);
-      const flatNum =
-        resident.Flat?.flat_number ||
-        resident.FlatMemberships?.[0]?.Flat?.flat_number ||
-        null;
-
-      const effectiveType =
-        (resident.resident_type && resident.resident_type !== "RESIDENT")
-          ? resident.resident_type
-          : (resident.memberships?.find((us) => String(us.society_id) === String(rule.society_id))?.resident_type ||
-             resident.FlatMemberships?.[0]?.role ||
-             "OWNER");
+      const { flatNum, effectiveType } = resolveResidentInfo(resident);
 
       records.push({
         user_id: resident.id,
@@ -864,16 +977,15 @@ exports.getRuleAcknowledgements = async (req, res) => {
     for (const ack of acknowledgements) {
       if (!seenUserIds.has(ack.user_id)) {
         seenUserIds.add(ack.user_id);
-        const fallbackFlat =
-          ack.user?.Flat?.flat_number ||
-          ack.user?.FlatMemberships?.[0]?.Flat?.flat_number ||
-          null;
-        const fallbackType =
-          (ack.user?.resident_type && ack.user.resident_type !== "RESIDENT")
-            ? ack.user.resident_type
-            : (ack.user?.memberships?.find((us) => String(us.society_id) === String(rule.society_id))?.resident_type ||
-               ack.user?.FlatMemberships?.[0]?.role ||
-               "OWNER");
+        const userObj = ack.user || {
+          id: ack.user_id,
+          name: ack.user_name_snapshot,
+          email: ack.user_email_snapshot,
+          phone: null,
+          role: "RESIDENT",
+          resident_type: "OWNER",
+        };
+        const { flatNum, effectiveType } = resolveResidentInfo(userObj);
 
         records.push({
           user_id: ack.user_id,
@@ -881,8 +993,8 @@ exports.getRuleAcknowledgements = async (req, res) => {
           user_email: ack.user ? ack.user.email : ack.user_email_snapshot,
           phone: ack.user ? ack.user.phone : null,
           role: ack.user ? ack.user.role : "RESIDENT",
-          resident_type: fallbackType,
-          flat_number: fallbackFlat,
+          resident_type: effectiveType,
+          flat_number: flatNum,
           status: "ACKNOWLEDGED",
           acknowledged_at: ack.acknowledged_at,
           rule_version_id: ack.rule_version_id,
