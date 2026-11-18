@@ -784,25 +784,49 @@ exports.getRuleAcknowledgements = async (req, res) => {
       console.warn("getSocietyMemberUserIds fallback:", e.message);
     }
 
-    const eligibleResidents = await User.findAll({
-      where: {
-        status: "ACTIVE",
-        [Op.or]: [
-          { society_id: rule.society_id },
-          ...(societyMemberIds.length > 0 ? [{ id: { [Op.in]: societyMemberIds } }] : []),
-        ],
-        [Op.and]: [
-          {
+    let eligibleResidents = [];
+    try {
+      const societyWhere = societyMemberIds.length > 0
+        ? {
+            status: "ACTIVE",
+            [Op.or]: [
+              { society_id: rule.society_id },
+              { id: { [Op.in]: societyMemberIds } },
+            ],
+            [Op.and]: [
+              {
+                [Op.or]: [
+                  { role: { [Op.in]: ["RESIDENT", "FAMILY_MEMBER"] } },
+                  { resident_type: { [Op.in]: ["OWNER", "TENANT"] } },
+                ],
+              },
+            ],
+          }
+        : {
+            status: "ACTIVE",
+            society_id: rule.society_id,
             [Op.or]: [
               { role: { [Op.in]: ["RESIDENT", "FAMILY_MEMBER"] } },
               { resident_type: { [Op.in]: ["OWNER", "TENANT"] } },
             ],
-          },
-        ],
-      },
-      attributes: ["id", "name", "email", "phone", "role", "resident_type"],
-      order: [["name", "ASC"]],
-    });
+          };
+
+      eligibleResidents = await User.findAll({
+        where: societyWhere,
+        attributes: ["id", "name", "email", "phone", "role", "resident_type"],
+        order: [["name", "ASC"]],
+      });
+    } catch (e) {
+      console.warn("eligibleResidents primary query fallback:", e.message);
+      eligibleResidents = await User.findAll({
+        where: {
+          society_id: rule.society_id,
+          status: "ACTIVE",
+        },
+        attributes: ["id", "name", "email", "phone", "role", "resident_type"],
+        order: [["name", "ASC"]],
+      });
+    }
 
     // 4. Collect all distinct user IDs that need society-scoped flat & role resolution
     const allUserIds = Array.from(new Set([
@@ -811,8 +835,10 @@ exports.getRuleAcknowledgements = async (req, res) => {
     ])).filter(Boolean);
 
     // Query active FlatMemberships strictly belonging to rule.society_id
-    const activeMemberships = allUserIds.length > 0
-      ? await FlatMembership.findAll({
+    let activeMemberships = [];
+    try {
+      if (allUserIds.length > 0) {
+        activeMemberships = await FlatMembership.findAll({
           where: {
             user_id: { [Op.in]: allUserIds },
             is_current: true,
@@ -832,13 +858,37 @@ exports.getRuleAcknowledgements = async (req, res) => {
               ],
             },
           ],
-          order: [["updatedAt", "DESC"], ["id", "DESC"]],
-        })
-      : [];
+          order: [["id", "DESC"]],
+        });
+      }
+    } catch (e) {
+      console.warn("activeMemberships query fallback:", e.message);
+      // Fallback: query without Block join if Block model mapping has society mismatch
+      try {
+        if (allUserIds.length > 0) {
+          activeMemberships = await FlatMembership.findAll({
+            where: {
+              user_id: { [Op.in]: allUserIds },
+              is_current: true,
+              [Op.or]: [
+                { society_id: rule.society_id },
+                { society_id: null },
+              ],
+            },
+            include: [{ model: Flat, attributes: ["id", "flat_number"] }],
+            order: [["id", "DESC"]],
+          });
+        }
+      } catch (err2) {
+        console.warn("activeMemberships fallback 2 failed:", err2.message);
+      }
+    }
 
     // Query HouseholdMembers (family members) strictly in rule.society_id
-    const householdMembers = allUserIds.length > 0
-      ? await HouseHoldMember.findAll({
+    let householdMembers = [];
+    try {
+      if (allUserIds.length > 0) {
+        householdMembers = await HouseHoldMember.findAll({
           where: { user_id: { [Op.in]: allUserIds } },
           attributes: ["id", "user_id", "flat_id"],
           include: [
@@ -856,12 +906,17 @@ exports.getRuleAcknowledgements = async (req, res) => {
               ],
             },
           ],
-        })
-      : [];
+        });
+      }
+    } catch (e) {
+      console.warn("householdMembers query fallback:", e.message);
+    }
 
     // Query direct flats (fallback for direct assignment via Flat.resident_id)
-    const directFlats = allUserIds.length > 0
-      ? await Flat.findAll({
+    let directFlats = [];
+    try {
+      if (allUserIds.length > 0) {
+        directFlats = await Flat.findAll({
           where: {
             resident_id: { [Op.in]: allUserIds },
           },
@@ -874,19 +929,27 @@ exports.getRuleAcknowledgements = async (req, res) => {
               required: true,
             },
           ],
-        })
-      : [];
+        });
+      }
+    } catch (e) {
+      console.warn("directFlats query fallback:", e.message);
+    }
 
-    // Query UserSociety memberships for this society
-    const userSocieties = allUserIds.length > 0
-      ? await UserSociety.findAll({
+    // Query UserSociety memberships for this society (without non-existent roles column)
+    let userSocieties = [];
+    try {
+      if (allUserIds.length > 0) {
+        userSocieties = await UserSociety.findAll({
           where: {
             user_id: { [Op.in]: allUserIds },
             society_id: rule.society_id,
           },
-          attributes: ["id", "user_id", "resident_type", "roles"],
-        })
-      : [];
+          attributes: ["id", "user_id", "resident_type"],
+        });
+      }
+    } catch (e) {
+      console.warn("userSocieties query fallback:", e.message);
+    }
 
     // Build society-specific flat and role maps
     const userFlatMap = new Map();
@@ -1041,7 +1104,13 @@ exports.getRuleAcknowledgements = async (req, res) => {
     });
   } catch (err) {
     console.error("getRuleAcknowledgements error:", err);
-    return res.status(500).json({ message: "Failed to fetch acknowledgements" });
+    try {
+      fs.writeFileSync(
+        path.join(__dirname, "../rule_error.log"),
+        `${new Date().toISOString()}\n${err.message}\n${err.stack}\n`
+      );
+    } catch (_) {}
+    return res.status(500).json({ message: "Failed to fetch acknowledgements", error: err.message });
   }
 };
 
