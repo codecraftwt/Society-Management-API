@@ -2123,20 +2123,39 @@ const createGuard = async (req, res) => {
 
 
     const hashed = await bcrypt.hash(password, 8);
+    const targetSocietyId = req.body.society_id || req.user.society_id;
 
     const guard = await User.create({
+      name,
+      email,
+      password: hashed,
+      role: "GUARD",
+      roles: ["GUARD"],
+      society_id: targetSocietyId,
+      status: "ACTIVE",
+      approval_status: "APPROVED",
+      profile_picture: req.file ? readUploadedProfilePicture(req.file)?.url || null : null,
+      profile_picture_public_id: req.file ? readUploadedProfilePicture(req.file)?.publicId || null : null,
+    });
 
-        name, email, password: hashed,
-
-        role: "GUARD", roles: ["GUARD"],
-
-        society_id: req.body.society_id || req.user.society_id,
-
-        profile_picture: req.file ? readUploadedProfilePicture(req.file)?.url || null : null,
-
-        profile_picture_public_id: req.file ? readUploadedProfilePicture(req.file)?.publicId || null : null,
-
+    if (targetSocietyId) {
+      const [userSoc] = await UserSociety.findOrCreate({
+        where: { user_id: guard.id, society_id: targetSocietyId },
+        defaults: {
+          user_id: guard.id,
+          society_id: targetSocietyId,
+          membership_status: "ACTIVE",
+          is_default: true,
+        },
       });
+      await UserSocietyRole.findOrCreate({
+        where: { user_society_id: userSoc.id, role: "GUARD" },
+        defaults: {
+          user_society_id: userSoc.id,
+          role: "GUARD",
+        },
+      });
+    }
 
     res.status(200).json(guard);
 
@@ -2301,18 +2320,39 @@ const updateGuard = async (req, res) => {
     }
 
     if (req.file) {
-
       const photoData = readUploadedProfilePicture(req.file);
-
       if (photoData?.url) updateData.profile_picture = photoData.url;
-
       if (photoData?.publicId) updateData.profile_picture_public_id = photoData.publicId;
-
     }
 
-
+    // Ensure guard account is active and approved directly
+    updateData.status = "ACTIVE";
+    updateData.approval_status = "APPROVED";
 
     await guard.update(updateData);
+
+    const targetSocId = guard.society_id;
+    if (targetSocId) {
+      const [userSoc] = await UserSociety.findOrCreate({
+        where: { user_id: guard.id, society_id: targetSocId },
+        defaults: {
+          user_id: guard.id,
+          society_id: targetSocId,
+          membership_status: "ACTIVE",
+          is_default: true,
+        },
+      });
+      if (userSoc.membership_status !== "ACTIVE") {
+        await userSoc.update({ membership_status: "ACTIVE" });
+      }
+      await UserSocietyRole.findOrCreate({
+        where: { user_society_id: userSoc.id, role: "GUARD" },
+        defaults: {
+          user_society_id: userSoc.id,
+          role: "GUARD",
+        },
+      });
+    }
 
     res.status(200).json(guard);
 

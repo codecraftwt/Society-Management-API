@@ -657,7 +657,21 @@ exports.login = async (req, res) => {
     });
 
     if (!user) return res.status(400).json({ message: "User not found" });
-    if (user.status !== "ACTIVE") {
+
+    const userRoles = resolveUserRoles(user);
+    const isGuard = user.role === "GUARD" || userRoles.includes("GUARD");
+    const isAccountant = user.role === "ACCOUNTANT" || userRoles.includes("ACCOUNTANT");
+    const isSuperAdmin = user.role === "SUPER_ADMIN" || userRoles.includes("SUPER_ADMIN");
+    const isSocAdmin = user.role === "SOCIETY_ADMIN" || userRoles.includes("SOCIETY_ADMIN");
+
+    // Security Guards are staff created directly by the admin and activate immediately
+    if (isGuard) {
+      if (user.status !== "ACTIVE" || user.approval_status !== "APPROVED") {
+        user.status = "ACTIVE";
+        user.approval_status = "APPROVED";
+        await user.save();
+      }
+    } else if (user.status !== "ACTIVE") {
       const appStatus = (user.approval_status || "").toUpperCase();
       // Machine-readable codes so the client can branch on account state
       // instead of pattern-matching the message text.
@@ -692,8 +706,8 @@ exports.login = async (req, res) => {
       return res.status(400).json({ message: "Invalid credentials" });
 
     // Verify family member still has access granted by the owner
-    const isPrimaryFamilyMember = user.role === "FAMILY_MEMBER" || 
-      (Array.isArray(user.roles) && user.roles.includes("FAMILY_MEMBER") && !user.roles.includes("OWNER") && !user.roles.includes("TENANT") && !user.roles.includes("SOCIETY_ADMIN") && !user.roles.includes("SUPER_ADMIN"));
+    const isPrimaryFamilyMember = !isGuard && !isAccountant && !isSocAdmin && !isSuperAdmin && (user.role === "FAMILY_MEMBER" || 
+      (Array.isArray(user.roles) && user.roles.includes("FAMILY_MEMBER") && !user.roles.includes("OWNER") && !user.roles.includes("TENANT")));
 
     if (isPrimaryFamilyMember) {
       const hhMember = await HouseHoldMember.findOne({
@@ -707,16 +721,76 @@ exports.login = async (req, res) => {
       }
     }
 
-    // Check society membership status for non-superadmin
-    if (user.role !== "SUPER_ADMIN") {
-      const activeSocieties = await UserSociety.findAll({
-        where: { user_id: user.id, membership_status: "ACTIVE" },
-      });
-      if (activeSocieties.length === 0) {
-        return res.status(400).json({
-          code: "ACCOUNT_INACTIVE",
-          message: "Access denied. Please connect to the admin or owner of the house.",
+    // Check society membership status for roles
+    if (!isSuperAdmin) {
+      if (isGuard) {
+        if (!user.society_id) {
+          return res.status(400).json({
+            code: "ACCOUNT_INACTIVE",
+            message: "Guard is not assigned to any society. Please contact the administrator.",
+          });
+        }
+        // Ensure UserSociety & UserSocietyRole exist with ACTIVE status for the guard
+        const [userSoc] = await UserSociety.findOrCreate({
+          where: { user_id: user.id, society_id: user.society_id },
+          defaults: {
+            user_id: user.id,
+            society_id: user.society_id,
+            membership_status: "ACTIVE",
+            is_default: true,
+          },
         });
+        if (userSoc.membership_status !== "ACTIVE") {
+          await userSoc.update({ membership_status: "ACTIVE" });
+        }
+        await UserSocietyRole.findOrCreate({
+          where: { user_society_id: userSoc.id, role: "GUARD" },
+          defaults: {
+            user_society_id: userSoc.id,
+            role: "GUARD",
+          },
+        });
+      } else if (isAccountant) {
+        const assignment = await AccountantAssignment.findOne({
+          where: { user_id: user.id, status: "ACTIVE" },
+        });
+        if (!assignment && !user.society_id) {
+          return res.status(400).json({
+            code: "ACCOUNT_INACTIVE",
+            message: "Accountant has no active society assignment. Please contact the administrator.",
+          });
+        }
+      } else if (isSocAdmin && user.society_id) {
+        const [userSoc] = await UserSociety.findOrCreate({
+          where: { user_id: user.id, society_id: user.society_id },
+          defaults: {
+            user_id: user.id,
+            society_id: user.society_id,
+            membership_status: "ACTIVE",
+            is_default: true,
+          },
+        });
+        if (userSoc.membership_status !== "ACTIVE") {
+          await userSoc.update({ membership_status: "ACTIVE" });
+        }
+        await UserSocietyRole.findOrCreate({
+          where: { user_society_id: userSoc.id, role: "SOCIETY_ADMIN" },
+          defaults: {
+            user_society_id: userSoc.id,
+            role: "SOCIETY_ADMIN",
+          },
+        });
+      } else {
+        // Residential roles (Owner, Tenant, Family Member)
+        const activeSocieties = await UserSociety.findAll({
+          where: { user_id: user.id, membership_status: "ACTIVE" },
+        });
+        if (activeSocieties.length === 0) {
+          return res.status(400).json({
+            code: "ACCOUNT_INACTIVE",
+            message: "Access denied. Please connect to the admin or owner of the house.",
+          });
+        }
       }
     }
 

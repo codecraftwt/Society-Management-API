@@ -34,11 +34,19 @@ module.exports = async (req, res, next) => {
       });
     }
 
+    const isGuardUser = user.role === "GUARD" || (user.roles && (Array.isArray(user.roles) ? user.roles.includes("GUARD") : String(user.roles).includes("GUARD")));
+
     if (user.status !== "ACTIVE") {
-      return res.status(401).json({
-        code: "ACCOUNT_INACTIVE",
-        message: "Access denied. Please connect to the admin or owner of the house.",
-      });
+      if (isGuardUser) {
+        user.status = "ACTIVE";
+        user.approval_status = "APPROVED";
+        await user.save();
+      } else {
+        return res.status(401).json({
+          code: "ACCOUNT_INACTIVE",
+          message: "Access denied. Please connect to the admin or owner of the house.",
+        });
+      }
     }
 
     // `user.role`/global roles describe the account, but the token's
@@ -115,6 +123,11 @@ module.exports = async (req, res, next) => {
 
         if (roleRows && roleRows.length > 0) {
           roles = roleRows.map((r) => r.role);
+        }
+
+        // Guard role safeguard: ensure GUARD is never stripped if user is a guard
+        if ((user.role === "GUARD" || globalRoles.includes("GUARD")) && !roles.includes("GUARD")) {
+          roles = [...roles, "GUARD"];
         }
 
         // Accountant is assigned per society and may not have a matching
