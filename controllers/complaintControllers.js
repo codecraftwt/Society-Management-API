@@ -11,6 +11,7 @@ const { sendPushNotification } = require("../utils/pushNotification");
 const { Op } = require("sequelize");
 const notificationService = require("../services/notificationService");
 const FlatMembership = require("../models/FlatMembership");
+const { getOccupancyContextForFlats } = require("../utils/flatOccupancy");
 const {
   getUserAuthorizedFlatIds,
   isUserAuthorizedForFlat,
@@ -407,29 +408,51 @@ const updateStatus = async (req, res) => {
 
     let targetFlatId = flat_id;
 
-    // If the user is a TENANT, auto-fetch their assigned flat strictly in this society
-    if (user.resident_type === "TENANT" || !targetFlatId) {
+    if (!targetFlatId) {
+      // Auto-fetch active flat in this society
       const membership = await FlatMembership.findOne({
         where: { user_id: user.id, is_current: true, society_id: user.society_id }
       });
-      
-      if (!membership) {
+      if (membership) {
+        targetFlatId = membership.flat_id;
+      } else {
+        const legacyFlat = await Flat.findOne({
+          where: { resident_id: user.id },
+          include: [{ model: Block, where: { society_id: user.society_id }, required: true }]
+        });
+        if (legacyFlat) {
+          targetFlatId = legacyFlat.id;
+        }
+      }
+      if (!targetFlatId) {
         return res.status(400).json({ message: "No active flat assigned to this user in this society." });
       }
-      targetFlatId = membership.flat_id;
-    } else if (user.resident_type === "OWNER") {
+    } else {
       const isAuth = await isUserAuthorizedForFlat(user.id, targetFlatId, user.society_id);
       if (!isAuth) {
         return res.status(403).json({ message: "You are not authorized for the selected flat in this society." });
       }
-      const flat = await Flat.findByPk(targetFlatId);
-      if (flat && flat.occupancy_status === "RENTED") {
-        return res.status(400).json({ message: "Owners cannot raise complaints for units that are currently rented to a tenant." });
-      }
     }
 
-    const photoUrl = req.file ? (req.file.path || req.file.secure_url || req.file.url) : null;
-    const photoPublicId = req.file ? req.file.filename : null;
+    // Verify whether this flat is rented to a tenant and if caller is an owner
+    const occMap = await getOccupancyContextForFlats([targetFlatId]);
+    const occ = occMap.get(Number(targetFlatId));
+    const flat = await Flat.findByPk(targetFlatId);
+
+    const isFlatRented = Boolean(occ?.activeTenant) || occ?.occupancyStatus === "RENTED" || String(flat?.occupancy_status || "").toUpperCase() === "RENTED";
+
+    // Caller is the tenant for this flat if activeTenant's user_id matches user.id
+    const isCallerTheTenant = occ?.activeTenant && (
+      Number(occ.activeTenant.user_id) === Number(user.id) ||
+      Number(occ.activeTenant.User?.id) === Number(user.id)
+    );
+
+    // If the flat is rented and the caller is NOT the tenant (e.g. caller is owner or landlord):
+    if (isFlatRented && !isCallerTheTenant) {
+      return res.status(400).json({
+        message: "Owners cannot raise complaints for units that are currently rented to a tenant. The tenant must raise complaints for this unit."
+      });
+    }
 
     // Create the complaint
     const complaint = await Complaint.create({

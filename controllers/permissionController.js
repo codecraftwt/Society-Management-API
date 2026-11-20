@@ -37,6 +37,7 @@ const ALL_MODULE_ACTIONS = {
   // over the ability to rewrite payroll or attendance history.
   cleaning_staff: ["view", "create", "edit", "status", "create_passes", "edit_passes", "edit_attendance", "scan"],
   events: ["view", "create", "edit", "delete"],
+  rules: ["view", "create", "edit", "delete"],
 };
 
 // Default baseline section enablement per role
@@ -68,6 +69,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     financial_audit_log: true,
     cleaning_staff: true,
     events: true,
+    rules: true,
   },
   ACCOUNTANT: {
     dashboard: true,

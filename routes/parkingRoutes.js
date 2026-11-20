@@ -17,7 +17,9 @@ const {
   adminAssignResidentSlot,
   getUnassignedResidentVehicles,
   adminRejectResidentSlot,
-  adminCancelVehicleRequest
+  adminCancelVehicleRequest,
+  updateParkingRequest,
+  deleteParkingRequest,
 } = require("../controllers/parkingControllers");
 
 const role = require("../middlewares/roleMiddleware");
@@ -56,6 +58,8 @@ router.post("/resident-entry",           createResidentParking);
 
 /* ── Detail view (must stay AFTER all static GET routes) ── */
 router.get("/:id",                       getParkingRequestById);
+router.put("/:id",                       updateParkingRequest);
+router.delete("/:id",                    deleteParkingRequest);
 
 /* ── Guard: visitor flow ── */
 router.put("/:id/assign",               assignParkingSlot);

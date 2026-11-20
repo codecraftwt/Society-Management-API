@@ -5489,12 +5489,13 @@ const getMyFlat = async (req, res) => {
         const tenantM = ctx.activeTenant;
 
         flat.tenant = tenantM && tenantM.User
-
-          ? { id: tenantM.User.id, name: tenantM.User.name, email: tenantM.User.email, approval_status: tenantM.User.approval_status }
-
+          ? { id: tenantM.User.id, name: tenantM.User.name, email: tenantM.User.email, phone: tenantM.User.phone, approval_status: tenantM.User.approval_status }
           : null;
-
         flat.occupancy_status = ctx.occupancyStatus;
+        const isOwnerRole = String(flat.role || "").toUpperCase() === "OWNER";
+        const isRented = Boolean(flat.tenant) || String(flat.occupancy_status || "").toUpperCase() === "RENTED";
+        flat.is_rented = isOwnerRole && isRented;
+        flat.has_tenant = Boolean(flat.tenant);
 
       }
 
@@ -5740,6 +5741,18 @@ const appointResidentAccountant = async (req, res) => {
 
 
 
+    // Rule: Cannot be Tenant (only primary Owners / Resident Owners are eligible)
+    const isTenantUser =
+      resident.resident_type === "TENANT" ||
+      (await FlatMembership.findOne({
+        where: { user_id: resident.id, role: "TENANT", is_current: true },
+      }));
+    if (isTenantUser) {
+      return res.status(400).json({
+        message: "Tenants cannot be appointed as an Accountant. Only resident flat owners are eligible.",
+      });
+    }
+
     // Rule: Cannot be Admin
 
     if (roles.includes("SOCIETY_ADMIN") || roles.includes("SUPER_ADMIN")) {
@@ -5956,10 +5969,13 @@ const getEligibleAccountantResidents = async (req, res) => {
 
 
 
+    const tenantUserIds = new Set();
     const flatMap = new Map();
 
     memberships.forEach((m) => {
-
+      if (m.role === "TENANT") {
+        tenantUserIds.add(m.user_id);
+      }
       if (m.Flat && !flatMap.has(m.user_id)) {
 
         flatMap.set(m.user_id, {
@@ -6027,10 +6043,9 @@ const getEligibleAccountantResidents = async (req, res) => {
       const isCommittee = rList.includes("COMMITTEE_MEMBER") || u.role === "COMMITTEE_MEMBER";
 
       const isAccountant = rList.includes("ACCOUNTANT") || u.role === "ACCOUNTANT" || activeAccountantUserIds.has(u.id);
+      const isTenant = u.resident_type === "TENANT" || tenantUserIds.has(u.id);
 
-
-
-      return isRes && !isAdmin && !isCommittee && !isAccountant;
+      return isRes && !isAdmin && !isCommittee && !isAccountant && !isTenant;
 
     });
 

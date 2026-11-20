@@ -383,6 +383,24 @@ const verifyGatePass = async (req, res) => {
     });
 
     if (!approval) {
+      // ✅ Check if this is a Cleaning Staff gate pass
+      try {
+        const CleaningStaffPass = require("../models/CleaningStaffPass");
+        const cleaningPass = await CleaningStaffPass.findOne({
+          where: {
+            pass_code: code,
+            society_id: req.user.society_id,
+          },
+        });
+
+        if (cleaningPass) {
+          const { scanCleaningStaffPass } = require("./cleaningStaffControllers");
+          return scanCleaningStaffPass(req, res);
+        }
+      } catch (staffErr) {
+        console.error("Cleaning staff pass verify check error:", staffErr);
+      }
+
       // ✅ Pass may already be flagged EXPIRED earlier — give guard a clear reason
       const expiredPass = await VisitorPreApproval.findOne({
         where: {

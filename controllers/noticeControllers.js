@@ -15,7 +15,36 @@ const {
   getFlatAuthorizedUserIds,
   isUserAuthorizedForFlat,
   getSocietyMemberUserIds,
+  isUserResidentOfSociety,
 } = require("../utils/accessHelpers");
+
+const isUserAuthorizedForSociety = async (user, societyId, headerSocId) => {
+  if (!user || !societyId) return false;
+  const callerRole = String(user.activeRole || user.role || "").toUpperCase();
+  if (callerRole === "SUPER_ADMIN") return true;
+
+  if (String(user.society_id) === String(societyId)) return true;
+  if (headerSocId && String(headerSocId) === String(societyId)) return true;
+
+  try {
+    const isResident = await isUserResidentOfSociety(user, Number(societyId));
+    if (isResident) return true;
+  } catch (_) { }
+
+  try {
+    const UserSociety = require("../models/UserSociety");
+    const us = await UserSociety.findOne({
+      where: {
+        user_id: user.id,
+        society_id: Number(societyId),
+        membership_status: "ACTIVE",
+      },
+    });
+    if (us) return true;
+  } catch (_) { }
+
+  return false;
+};
 
 /* ════════════════════════════════════════
    CREATE NOTICE
@@ -43,8 +72,8 @@ const createNotice = async (req, res) => {
     const targetSocietyId = society_id
       ? parseInt(society_id, 10)
       : req.headers["x-society-id"]
-      ? parseInt(req.headers["x-society-id"], 10)
-      : req.user.society_id;
+        ? parseInt(req.headers["x-society-id"], 10)
+        : req.user.society_id;
 
     if (!targetSocietyId || isNaN(targetSocietyId)) {
       return res
@@ -118,134 +147,143 @@ const createNotice = async (req, res) => {
       ],
     });
 
-    // ── Targeted Notifications & Socket.IO ──
-    if (finalTargetType === "FLAT") {
-      // 1. Resolve authorized users of this specific flat
-      const targetUserIds = await getFlatAuthorizedUserIds(
-        finalTargetFlatId,
-        targetSocietyId
-      );
-      const recipientUserIds = targetUserIds.filter((id) => id !== req.user.id);
+    // ── Immediate Success Response (Unblocks Frontend Instantly) ──
+    res.status(200).json(fullNotice || notice);
 
-      // Emit to targeted user rooms only
-      if (global.io) {
-        for (const uid of targetUserIds) {
-          global.io.to(`user_${uid}`).emit("notice_created", fullNotice || notice);
-        }
-        // Also emit to society admin room so admins see it on their panel
-        global.io
-          .to(`society_${targetSocietyId}_admins`)
-          .emit("notice_created", fullNotice || notice);
-      }
+    // ── Targeted Notifications & Socket.IO (Asynchronous Non-Blocking) ──
+    setImmediate(async () => {
+      try {
+        if (finalTargetType === "FLAT") {
+          // 1. Resolve authorized users of this specific flat
+          const targetUserIds = await getFlatAuthorizedUserIds(
+            finalTargetFlatId,
+            targetSocietyId
+          );
+          const recipientUserIds = targetUserIds.filter((id) => id !== req.user.id);
 
-      if (recipientUserIds.length > 0) {
-        const recipients = await User.findAll({
-          where: {
-            id: { [Op.in]: recipientUserIds },
-            status: "ACTIVE",
-          },
-          attributes: ["id", "fcm_token"],
-        });
-
-        const allSettings = await UserSetting.findAll({
-          where: { user_id: recipientUserIds },
-          attributes: ["user_id", "notice_updates"],
-        });
-        const settingsMap = Object.fromEntries(
-          allSettings.map((s) => [s.user_id, s])
-        );
-
-        for (const recipient of recipients) {
-          const settings = settingsMap[recipient.id];
-          if (!settings || settings.notice_updates === true) {
-            await notificationService.sendNotification({
-              societyId: targetSocietyId,
-              receiverUserId: recipient.id,
-              senderUserId: req.user.id,
-              receiverRole: "RESIDENT",
-              title: "Flat Notice",
-              message: `📢 Notice for your flat: "${title}"`,
-              type: "NOTICE",
-              actionType: "VIEW_NOTICE",
-              actionRoute: "/resident/notices",
-              fcmToken: recipient.fcm_token,
-              sourceEventId: `NOTICE:${notice.id}:${recipient.id}`,
-              extraData: {
-                route: "/resident/notices",
-                noticeId: notice.id.toString(),
-              },
-            });
+          // Emit to targeted user rooms only
+          if (global.io) {
+            for (const uid of targetUserIds) {
+              global.io.to(`user_${uid}`).emit("notice_created", fullNotice || notice);
+              global.io.to(`user_${uid}`).emit("noticeCreated", fullNotice || notice);
+            }
+            // Also emit to society admin room so admins see it on their panel
+            global.io
+              .to(`society_${targetSocietyId}_admins`)
+              .emit("notice_created", fullNotice || notice);
+            global.io
+              .to(`society_${targetSocietyId}_admins`)
+              .emit("noticeCreated", fullNotice || notice);
           }
-        }
-      }
-    } else {
-      // Society-wide notice: broadcast to society room
-      if (global.io) {
-        global.io
-          .to(`society_${targetSocietyId}`)
-          .emit("notice_created", fullNotice || notice);
-      }
 
-      // Fetch all eligible society residents.
-      //
-      // Resolved from society membership rather than `users.society_id`,
-      // which only holds a user's PRIMARY society. Multi-society residents
-      // were therefore never notified about society-wide notices.
-      const societyMemberIds = await getSocietyMemberUserIds(targetSocietyId);
-      const residentIds = societyMemberIds.filter((id) => id !== req.user.id);
-
-      const residents =
-        residentIds.length > 0
-          ? await User.findAll({
+          if (recipientUserIds.length > 0) {
+            const recipients = await User.findAll({
               where: {
-                id: { [Op.in]: residentIds },
-                role: {
-                  [Op.in]: [
-                    "RESIDENT",
-                    "FAMILY_MEMBER",
-                    "COMMITTEE_MEMBER",
-                    "SOCIETY_ADMIN",
-                  ],
-                },
+                id: { [Op.in]: recipientUserIds },
                 status: "ACTIVE",
               },
               attributes: ["id", "fcm_token"],
-            })
-          : [];
-      const allSettings = await UserSetting.findAll({
-        where: { user_id: residentIds },
-        attributes: ["user_id", "notice_updates"],
-      });
-      const settingsMap = Object.fromEntries(
-        allSettings.map((s) => [s.user_id, s])
-      );
+            });
 
-      for (const resident of residents) {
-        const settings = settingsMap[resident.id];
+            const allSettings = await UserSetting.findAll({
+              where: { user_id: recipientUserIds },
+              attributes: ["user_id", "notice_updates"],
+            });
+            const settingsMap = Object.fromEntries(
+              allSettings.map((s) => [s.user_id, s])
+            );
 
-        if (!settings || settings.notice_updates === true) {
-          await notificationService.sendNotification({
-            societyId: targetSocietyId,
-            receiverUserId: resident.id,
-            senderUserId: req.user.id,
-            receiverRole: "RESIDENT",
-            title: "Society Notice",
-            message: `📢 New notice posted: "${title}"`,
-            type: "NOTICE",
-            actionType: "VIEW_NOTICE",
-            actionRoute: "/resident/notices",
-            fcmToken: resident.fcm_token,
-            sourceEventId: `NOTICE:${notice.id}:${resident.id}`,
-            extraData: {
-              route: "/resident/notices",
-              noticeId: notice.id.toString(),
-            },
+            for (const recipient of recipients) {
+              const settings = settingsMap[recipient.id];
+              if (!settings || settings.notice_updates === true) {
+                await notificationService.sendNotification({
+                  societyId: targetSocietyId,
+                  receiverUserId: recipient.id,
+                  senderUserId: req.user.id,
+                  receiverRole: "RESIDENT",
+                  title: "Flat Notice",
+                  message: `📢 Notice for your flat: "${title}"`,
+                  type: "NOTICE",
+                  actionType: "VIEW_NOTICE",
+                  actionRoute: "/resident/notices",
+                  fcmToken: recipient.fcm_token,
+                  sourceEventId: `NOTICE:${notice.id}:${recipient.id}`,
+                  extraData: {
+                    route: "/resident/notices",
+                    noticeId: notice.id.toString(),
+                  },
+                });
+              }
+            }
+          }
+        } else {
+          // Society-wide notice: broadcast to society room
+          if (global.io) {
+            global.io
+              .to(`society_${targetSocietyId}`)
+              .emit("notice_created", fullNotice || notice);
+            global.io
+              .to(`society_${targetSocietyId}`)
+              .emit("noticeCreated", fullNotice || notice);
+          }
+
+          const societyMemberIds = await getSocietyMemberUserIds(targetSocietyId);
+          const residentIds = societyMemberIds.filter((id) => id !== req.user.id);
+
+          const residents =
+            residentIds.length > 0
+              ? await User.findAll({
+                  where: {
+                    id: { [Op.in]: residentIds },
+                    role: {
+                      [Op.in]: [
+                        "RESIDENT",
+                        "FAMILY_MEMBER",
+                        "COMMITTEE_MEMBER",
+                        "SOCIETY_ADMIN",
+                      ],
+                    },
+                    status: "ACTIVE",
+                  },
+                  attributes: ["id", "fcm_token"],
+                })
+              : [];
+          const allSettings = await UserSetting.findAll({
+            where: { user_id: residentIds },
+            attributes: ["user_id", "notice_updates"],
           });
-        }
-      }
-    }
+          const settingsMap = Object.fromEntries(
+            allSettings.map((s) => [s.user_id, s])
+          );
 
-    res.status(200).json(fullNotice || notice);
+          for (const resident of residents) {
+            const settings = settingsMap[resident.id];
+
+            if (!settings || settings.notice_updates === true) {
+              await notificationService.sendNotification({
+                societyId: targetSocietyId,
+                receiverUserId: resident.id,
+                senderUserId: req.user.id,
+                receiverRole: "RESIDENT",
+                title: "Society Notice",
+                message: `📢 New notice posted: "${title}"`,
+                type: "NOTICE",
+                actionType: "VIEW_NOTICE",
+                actionRoute: "/resident/notices",
+                fcmToken: resident.fcm_token,
+                sourceEventId: `NOTICE:${notice.id}:${resident.id}`,
+                extraData: {
+                  route: "/resident/notices",
+                  noticeId: notice.id.toString(),
+                },
+              });
+            }
+          }
+        }
+      } catch (bgError) {
+        console.error("Async notice notifications error:", bgError);
+      }
+    });
   } catch (err) {
     console.error("Create Notice Error:", err);
     res.status(500).json({ message: err.message });
@@ -500,15 +538,15 @@ const getNotices = async (req, res) => {
 
     const totalAll = search
       ? await Notice.count({
-          where:
-            andConditions.filter((c) => !c[Op.or] || c[Op.or][0]?.title === undefined).length > 0
-              ? {
-                  [Op.and]: andConditions.filter(
-                    (c) => !c[Op.or] || c[Op.or][0]?.title === undefined
-                  ),
-                }
-              : {},
-        })
+        where:
+          andConditions.filter((c) => !c[Op.or] || c[Op.or][0]?.title === undefined).length > 0
+            ? {
+              [Op.and]: andConditions.filter(
+                (c) => !c[Op.or] || c[Op.or][0]?.title === undefined
+              ),
+            }
+            : {},
+      })
       : count;
 
     // Attach acknowledgement status for logged-in user
@@ -516,8 +554,8 @@ const getNotices = async (req, res) => {
     const acks =
       noticeIds.length > 0
         ? await NoticeAcknowledgement.findAll({
-            where: { notice_id: noticeIds, user_id: req.user.id },
-          })
+          where: { notice_id: noticeIds, user_id: req.user.id },
+        })
         : [];
     const ackMap = Object.fromEntries(acks.map((a) => [a.notice_id, a]));
 
@@ -567,10 +605,12 @@ const viewNotice = async (req, res) => {
     const notice = await Notice.findByPk(id);
     if (!notice) return res.status(404).json({ message: "Notice not found" });
 
-    if (
-      req.user.role !== "SUPER_ADMIN" &&
-      String(notice.society_id) !== String(req.user.society_id)
-    ) {
+    const isSocAuthorized = await isUserAuthorizedForSociety(
+      req.user,
+      notice.society_id,
+      req.headers["x-society-id"]
+    );
+    if (!isSocAuthorized) {
       return res.status(403).json({ message: "Access denied" });
     }
 
@@ -637,10 +677,12 @@ const acknowledgeNotice = async (req, res) => {
     const notice = await Notice.findByPk(id);
     if (!notice) return res.status(404).json({ message: "Notice not found" });
 
-    if (
-      req.user.role !== "SUPER_ADMIN" &&
-      String(notice.society_id) !== String(req.user.society_id)
-    ) {
+    const isSocAuthorized = await isUserAuthorizedForSociety(
+      req.user,
+      notice.society_id,
+      req.headers["x-society-id"]
+    );
+    if (!isSocAuthorized) {
       return res.status(403).json({ message: "Access denied" });
     }
 
@@ -685,6 +727,22 @@ const acknowledgeNotice = async (req, res) => {
       if (!ack.viewed_at) ack.viewed_at = now;
       if (!ack.acknowledged_at) ack.acknowledged_at = now;
       await ack.save();
+    }
+
+    if (global.io) {
+      global.io.to(`user_${req.user.id}`).emit("notice_acknowledged", {
+        notice_id: Number(id),
+        user_id: req.user.id,
+        acknowledgement_status: "ACKNOWLEDGED",
+        acknowledged_at: ack.acknowledged_at,
+      });
+
+      global.io.to(`society_${notice.society_id}`).emit("notice_acknowledgement_updated", {
+        notice_id: Number(id),
+        user_id: req.user.id,
+        acknowledgement_status: "ACKNOWLEDGED",
+        acknowledged_at: ack.acknowledged_at,
+      });
     }
 
     res.status(200).json({
@@ -811,26 +869,26 @@ const getNoticeAcknowledgements = async (req, res) => {
     const memberships =
       recipientIds.length > 0
         ? await FlatMembership.findAll({
-            where: { user_id: { [Op.in]: recipientIds }, is_current: true },
-            include: [{ model: Flat, attributes: ["id", "flat_number"] }],
-          })
+          where: { user_id: { [Op.in]: recipientIds }, is_current: true },
+          include: [{ model: Flat, attributes: ["id", "flat_number"] }],
+        })
         : [];
 
     const HouseHoldMember = require("../models/HouseHoldMember");
     const householdMembers =
       recipientIds.length > 0
         ? await HouseHoldMember.findAll({
-            where: { user_id: { [Op.in]: recipientIds } },
-            include: [{ model: Flat, attributes: ["id", "flat_number"] }],
-          })
+          where: { user_id: { [Op.in]: recipientIds } },
+          include: [{ model: Flat, attributes: ["id", "flat_number"] }],
+        })
         : [];
 
     const directFlats =
       recipientIds.length > 0
         ? await Flat.findAll({
-            where: { resident_id: { [Op.in]: recipientIds } },
-            attributes: ["id", "flat_number", "resident_id"],
-          })
+          where: { resident_id: { [Op.in]: recipientIds } },
+          attributes: ["id", "flat_number", "resident_id"],
+        })
         : [];
 
     const flatMap = {};
@@ -883,8 +941,8 @@ const getNoticeAcknowledgements = async (req, res) => {
     const acks =
       recipientIds.length > 0
         ? await NoticeAcknowledgement.findAll({
-            where: { notice_id: id, user_id: { [Op.in]: recipientIds } },
-          })
+          where: { notice_id: id, user_id: { [Op.in]: recipientIds } },
+        })
         : [];
     const ackMap = Object.fromEntries(acks.map((a) => [a.user_id, a]));
 

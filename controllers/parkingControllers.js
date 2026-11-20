@@ -1432,6 +1432,196 @@ const adminAssignResidentSlotSafe = async (req, res) => {
 };
 
 // Add to module.exports:
+
+/* ═══════════════════════════════════════════════════
+   UPDATE PARKING REQUEST (Resident / Admin)
+   PUT /parking/:id
+═══════════════════════════════════════════════════ */
+const updateParkingRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { guest_name, vehicle_name, vehicle_number, vehicle_type, expected_arrival, duration_hours, flat_id } = req.body;
+    const userId = req.user.id;
+    const societyId = req.user.society_id;
+    const effectiveRole = (req.user.activeRole || req.user.role || "").toUpperCase();
+    const isResident = effectiveRole === "RESIDENT" || effectiveRole === "FAMILY_MEMBER";
+
+    const request = await ParkingRequest.findOne({
+      where: { id, society_id: societyId },
+      include: [{ model: Flat, attributes: ["id", "flat_number"] }],
+    });
+
+    if (!request) {
+      return res.status(404).json({ message: "Parking request not found" });
+    }
+
+    if (isResident) {
+      const primaryId = await getPrimaryResidentId(userId);
+      const userFlatIds = await getAllFlatIdsForUser(userId, societyId);
+      const isOwnerOfRequest =
+        request.resident_id === userId ||
+        request.resident_id === primaryId ||
+        userFlatIds.includes(Number(request.flat_id));
+
+      if (!isOwnerOfRequest) {
+        return res.status(403).json({ message: "You are not authorized to edit this parking request" });
+      }
+
+      if (request.status !== "PENDING") {
+        return res.status(400).json({ message: `Cannot edit a request that is already ${request.status.toLowerCase()}` });
+      }
+    }
+
+    const updates = {};
+
+    if (vehicle_number) {
+      const cleanVehicle = sanitizeText(vehicle_number).toUpperCase();
+      if (isEmpty(cleanVehicle)) {
+        return res.status(400).json({ message: "Vehicle number is required" });
+      }
+      updates.vehicle_number = cleanVehicle;
+
+      // Also update linked unassigned vehicle if resident parking
+      if (request.parking_type === "RESIDENT" && request.vehicle_id) {
+        await Vehicle.update(
+          { vehicle_number: cleanVehicle },
+          { where: { id: request.vehicle_id, society_id: societyId, parking_slot_id: null } }
+        );
+      }
+    }
+
+    if (vehicle_type) {
+      const vType = String(vehicle_type).toUpperCase();
+      if (!["CAR", "BIKE"].includes(vType)) {
+        return res.status(400).json({ message: "Vehicle type must be CAR or BIKE" });
+      }
+      updates.vehicle_type = vType;
+      if (request.parking_type === "RESIDENT" && request.vehicle_id) {
+        await Vehicle.update(
+          { vehicle_type: vType },
+          { where: { id: request.vehicle_id, society_id: societyId, parking_slot_id: null } }
+        );
+      }
+    }
+
+    if (guest_name !== undefined || vehicle_name !== undefined) {
+      const nameVal = sanitizeText(guest_name || vehicle_name);
+      if (nameVal && (isValidPersonName(nameVal) || isValidTitle(nameVal))) {
+        updates.guest_name = nameVal;
+      }
+      if (request.parking_type === "RESIDENT" && request.vehicle_id && nameVal) {
+        await Vehicle.update(
+          { vehicle_name: nameVal },
+          { where: { id: request.vehicle_id, society_id: societyId, parking_slot_id: null } }
+        );
+      }
+    }
+
+    if (expected_arrival !== undefined) {
+      updates.expected_arrival = expected_arrival || null;
+    }
+
+    if (duration_hours !== undefined) {
+      const dh = Number(duration_hours);
+      if (dh > 0) updates.duration_hours = dh;
+    }
+
+    if (flat_id) {
+      const targetFlatId = parseInt(flat_id, 10);
+      if (isResident) {
+        const owned = await isFlatOfUser(userId, targetFlatId);
+        if (!owned) return res.status(403).json({ message: "Flat does not belong to this user" });
+      }
+      updates.flat_id = targetFlatId;
+    }
+
+    await request.update(updates);
+
+    const updated = await ParkingRequest.findByPk(request.id, {
+      include: [
+        { model: Flat, attributes: ["flat_number"] },
+        { model: User, as: "resident", attributes: ["name"] },
+      ],
+    });
+
+    global.io?.to(`society_${societyId}`).emit("parking_request_updated", updated);
+
+    return res.json({ success: true, message: "Parking request updated successfully", data: updated });
+  } catch (err) {
+    console.error("UPDATE PARKING REQUEST ERROR:", err);
+    return res.status(500).json({ message: "Server Error" });
+  }
+};
+
+/* ═══════════════════════════════════════════════════
+   DELETE PARKING REQUEST (Resident / Admin)
+   DELETE /parking/:id
+═══════════════════════════════════════════════════ */
+const deleteParkingRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const societyId = req.user.society_id;
+    const effectiveRole = (req.user.activeRole || req.user.role || "").toUpperCase();
+    const isResident = effectiveRole === "RESIDENT" || effectiveRole === "FAMILY_MEMBER";
+
+    const request = await ParkingRequest.findOne({
+      where: { id, society_id: societyId },
+    });
+
+    if (!request) {
+      return res.status(404).json({ message: "Parking request not found" });
+    }
+
+    if (isResident) {
+      const primaryId = await getPrimaryResidentId(userId);
+      const userFlatIds = await getAllFlatIdsForUser(userId, societyId);
+      const isOwnerOfRequest =
+        request.resident_id === userId ||
+        request.resident_id === primaryId ||
+        userFlatIds.includes(Number(request.flat_id));
+
+      if (!isOwnerOfRequest) {
+        return res.status(403).json({ message: "You are not authorized to delete this parking request" });
+      }
+
+      if (request.status !== "PENDING") {
+        return res.status(400).json({ message: `Cannot delete a request that is already ${request.status.toLowerCase()}` });
+      }
+    }
+
+    // If resident request with linked unassigned vehicle, clean up vehicle row if still unassigned
+    if (request.parking_type === "RESIDENT") {
+      if (request.vehicle_id) {
+        await Vehicle.destroy({
+          where: {
+            id: request.vehicle_id,
+            society_id: societyId,
+            parking_slot_id: null,
+          },
+        });
+      } else if (request.vehicle_number) {
+        await Vehicle.destroy({
+          where: {
+            vehicle_number: request.vehicle_number,
+            society_id: societyId,
+            parking_slot_id: null,
+          },
+        });
+      }
+    }
+
+    await request.destroy();
+
+    global.io?.to(`society_${societyId}`).emit("parking_request_deleted", { id: Number(id) });
+
+    return res.json({ success: true, message: "Parking request deleted successfully" });
+  } catch (err) {
+    console.error("DELETE PARKING REQUEST ERROR:", err);
+    return res.status(500).json({ message: "Server Error" });
+  }
+};
+
 module.exports = {
   requestParking,
   lookupResidentVehicle,
@@ -1445,5 +1635,7 @@ module.exports = {
   adminAssignResidentSlot: adminAssignResidentSlotSafe,
   adminRejectResidentSlot,       // ← add
   getUnassignedResidentVehicles, 
-  adminCancelVehicleRequest,// ← add
+  adminCancelVehicleRequest,
+  updateParkingRequest,
+  deleteParkingRequest,
 };

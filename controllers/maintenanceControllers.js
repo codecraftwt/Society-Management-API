@@ -686,6 +686,7 @@ const generateBills = async (req, res) => {
     const results = [];
     const summary = { generated: 0, skipped_duplicates: 0, skipped_sqft: 0, missing_areas: [], errors: [] };
     const notified = new Set();
+    const notificationQueue = [];
 
     for (const item of items) {
       if (item.is_already_billed) {
@@ -710,40 +711,19 @@ const generateBills = async (req, res) => {
       results.push(bill);
       summary.generated += 1;
 
-      // Notification
+      // Queue notification to be sent asynchronously after response
       const targetUserId = item.resident_id;
       if (targetUserId && !notified.has(`${item.flat_id}:${targetUserId}`)) {
         notified.add(`${item.flat_id}:${targetUserId}`);
-        try {
-          const user = await User.findByPk(targetUserId, { attributes: ["id", "fcm_token"] });
-          if (user) {
-            const settings = await UserSetting.findOne({ where: { user_id: user.id } });
-            if (!settings || settings.payment_updates !== false) {
-              const formattedDueDate = due_date
-                ? new Date(due_date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
-                : null;
-              const notifMsg = formattedDueDate
-                ? `Your maintenance bill of ₹${Number(bill.amount).toFixed(2)} for ${requestedMonth} is now available. Due date: ${formattedDueDate}.`
-                : `Your maintenance bill of ₹${Number(bill.amount).toFixed(2)} for ${requestedMonth} is now available.`;
-
-              await notificationService.sendNotification({
-                societyId,
-                receiverUserId: user.id,
-                receiverRole: "RESIDENT",
-                title: "New Maintenance Bill",
-                message: notifMsg,
-                type: "BILL",
-                actionType: "BILL_PAYMENT",
-                actionRoute: "/resident/bills",
-                fcmToken: user.fcm_token,
-                sourceEventId: `MAINTENANCE_BILL:${bill.id}:${user.id}`,
-                extraData: { route: "/resident/bills", billId: bill.id.toString() },
-              });
-            }
-          }
-        } catch (notifErr) {
-          summary.errors.push(`Notification failed for flat ${item.flat_id}: ${notifErr.message}`);
-        }
+        notificationQueue.push({
+          targetUserId,
+          societyId,
+          billId: bill.id,
+          billAmount: bill.amount,
+          requestedMonth,
+          dueDate: due_date,
+          flatId: item.flat_id,
+        });
       }
     }
 
@@ -757,7 +737,46 @@ const generateBills = async (req, res) => {
       actor: req.user,
     });
 
-    return res.json({ summary, bills: results });
+    // Send HTTP response immediately so the UI closes the modal and reports success without blocking
+    res.json({ summary, bills: results });
+
+    // Send notifications in background so web/mobile modals close first before toasts/sockets trigger
+    if (notificationQueue.length > 0) {
+      setImmediate(async () => {
+        for (const notifItem of notificationQueue) {
+          try {
+            const user = await User.findByPk(notifItem.targetUserId, { attributes: ["id", "fcm_token"] });
+            if (user) {
+              const settings = await UserSetting.findOne({ where: { user_id: user.id } });
+              if (!settings || settings.payment_updates !== false) {
+                const formattedDueDate = notifItem.dueDate
+                  ? new Date(notifItem.dueDate).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+                  : null;
+                const notifMsg = formattedDueDate
+                  ? `Your maintenance bill of ₹${Number(notifItem.billAmount).toFixed(2)} for ${notifItem.requestedMonth} is now available. Due date: ${formattedDueDate}.`
+                  : `Your maintenance bill of ₹${Number(notifItem.billAmount).toFixed(2)} for ${notifItem.requestedMonth} is now available.`;
+
+                await notificationService.sendNotification({
+                  societyId: notifItem.societyId,
+                  receiverUserId: user.id,
+                  receiverRole: "RESIDENT",
+                  title: "New Maintenance Bill",
+                  message: notifMsg,
+                  type: "BILL",
+                  actionType: "BILL_PAYMENT",
+                  actionRoute: "/resident/bills",
+                  fcmToken: user.fcm_token,
+                  sourceEventId: `MAINTENANCE_BILL:${notifItem.billId}:${user.id}`,
+                  extraData: { route: "/resident/bills", billId: notifItem.billId.toString() },
+                });
+              }
+            }
+          } catch (notifErr) {
+            console.error(`[generateBills] Notification failed for flat ${notifItem.flatId}:`, notifErr.message);
+          }
+        }
+      });
+    }
   } catch (err) {
     console.error("[generateBills] error:", err);
     return res.status(400).json({ message: err.message || "Failed to generate maintenance bills" });
