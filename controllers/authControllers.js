@@ -671,11 +671,15 @@ exports.login = async (req, res) => {
         user.approval_status = "APPROVED";
         await user.save();
       }
-    } else if (user.status !== "ACTIVE") {
+    } else if (
+      user.status !== "ACTIVE" ||
+      String(user.approval_status || "").toUpperCase() === "PENDING" ||
+      String(user.approval_status || "").toUpperCase() === "REJECTED"
+    ) {
       const appStatus = (user.approval_status || "").toUpperCase();
       // Machine-readable codes so the client can branch on account state
       // instead of pattern-matching the message text.
-      if (appStatus === "PENDING") {
+      if (appStatus === "PENDING" || String(user.status || "").toUpperCase() === "PENDING") {
         return res.status(400).json({
           code: "APPROVAL_PENDING",
           message: "Your registration is pending approval by the society admin. You can log in once approved.",

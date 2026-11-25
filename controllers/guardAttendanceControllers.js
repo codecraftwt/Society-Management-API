@@ -184,65 +184,59 @@ const punchIn = handle(async (req, res) => {
 
   const { shift: myShift, occurrence } = occurrences[0];
 
-  // ── 4. Society location must be configured ──
+  // ── 4. Society geofence check ──
   const society = await Society.findByPk(societyId, {
     attributes: ["latitude", "longitude", "location_radius"],
   });
 
-  if (!society || society.latitude == null || society.longitude == null) {
-    if (req.file?.filename) {
-      cloudinary.uploader.destroy(req.file.filename, { resource_type: "image" }).catch(() => {});
-    }
-    return res.status(400).json({
-      message: "Society location has not been configured yet. Please contact admin.",
-      code: "GEOFENCE_NOT_CONFIGURED",
-    });
-  }
-
-  // ── 5. Guard GPS coordinates must be present and valid ──
-  const lat = parseFloat(req.body?.lat);
-  const lng = parseFloat(req.body?.lng);
+  const hasGeofence = Boolean(society && society.latitude != null && society.longitude != null);
+  const lat = req.body?.lat != null ? parseFloat(req.body.lat) : null;
+  const lng = req.body?.lng != null ? parseFloat(req.body.lng) : null;
   const accuracy = req.body?.accuracy != null ? parseFloat(req.body.accuracy) : null;
 
-  if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-    if (req.file?.filename) {
-      cloudinary.uploader.destroy(req.file.filename, { resource_type: "image" }).catch(() => {});
+  let distanceMetres = null;
+  let radiusMetres = null;
+  let effectiveRadius = null;
+
+  if (hasGeofence) {
+    // ── 5. Guard GPS coordinates must be present and valid ──
+    if (lat == null || lng == null || isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      if (req.file?.filename) {
+        cloudinary.uploader.destroy(req.file.filename, { resource_type: "image" }).catch(() => {});
+      }
+      return res.status(400).json({
+        message: "Valid GPS coordinates (lat, lng) are required.",
+        code: "INVALID_GPS",
+      });
     }
-    return res.status(400).json({
-      message: "Valid GPS coordinates (lat, lng) are required.",
-      code: "INVALID_GPS",
-    });
-  }
 
-  // ── 6. Geofence check — server is authoritative ──
-  const distanceMetres = haversineMetres(
-    parseFloat(society.latitude),
-    parseFloat(society.longitude),
-    lat,
-    lng
-  );
-  const radiusMetres = parseFloat(society.location_radius) || 50;
+    // ── 6. Geofence check — server is authoritative ──
+    distanceMetres = haversineMetres(
+      parseFloat(society.latitude),
+      parseFloat(society.longitude),
+      lat,
+      lng
+    );
+    radiusMetres = parseFloat(society.location_radius) || 50;
 
-  // Real-world mobile/browser GPS accuracy tolerance:
-  // Mobile GPS naturally has 15-20m drift (especially at gates, under roofs); browser/network geolocation can have 50-120m inaccuracy.
-  // We incorporate a realistic GPS tolerance buffer (capped at 100m to prevent out-of-city abuse).
-  const accuracyBuffer = Math.min(
-    Math.max(accuracy != null && !isNaN(accuracy) ? accuracy * 0.75 : 15, 15),
-    100
-  );
-  const effectiveRadius = radiusMetres + accuracyBuffer;
+    const accuracyBuffer = Math.min(
+      Math.max(accuracy != null && !isNaN(accuracy) ? accuracy * 0.75 : 15, 15),
+      100
+    );
+    effectiveRadius = radiusMetres + accuracyBuffer;
 
-  if (distanceMetres > effectiveRadius) {
-    if (req.file?.filename) {
-      cloudinary.uploader.destroy(req.file.filename, { resource_type: "image" }).catch(() => {});
+    if (distanceMetres > effectiveRadius) {
+      if (req.file?.filename) {
+        cloudinary.uploader.destroy(req.file.filename, { resource_type: "image" }).catch(() => {});
+      }
+      return res.status(403).json({
+        message: `You are outside the society location (${Math.round(distanceMetres)}m away, allowed within ${Math.round(radiusMetres)}m). Please move closer to the society gate and try again.`,
+        code: "OUTSIDE_GEOFENCE",
+        distance_metres: Math.round(distanceMetres),
+        allowed_radius: Math.round(radiusMetres),
+        effective_radius: Math.round(effectiveRadius),
+      });
     }
-    return res.status(403).json({
-      message: `You are outside the society location (${Math.round(distanceMetres)}m away, allowed within ${Math.round(radiusMetres)}m). Please move closer to the society gate and try again.`,
-      code: "OUTSIDE_GEOFENCE",
-      distance_metres: Math.round(distanceMetres),
-      allowed_radius: Math.round(radiusMetres),
-      effective_radius: Math.round(effectiveRadius),
-    });
   }
 
   // ── 7. Selfie must be present (MIME + size already validated by multer) ──
@@ -278,11 +272,11 @@ const punchIn = handle(async (req, res) => {
     society_id: societyId,
     attendance_date: occurrence.occurrence_date,
     punch_in: now,
-    punch_in_lat: lat,
-    punch_in_lng: lng,
-    punch_in_accuracy: !isNaN(accuracy) ? accuracy : null,
-    punch_in_distance: Math.round(distanceMetres * 100) / 100,
-    punch_in_radius: radiusMetres,
+    punch_in_lat: lat != null && !isNaN(lat) ? lat : null,
+    punch_in_lng: lng != null && !isNaN(lng) ? lng : null,
+    punch_in_accuracy: accuracy != null && !isNaN(accuracy) ? accuracy : null,
+    punch_in_distance: distanceMetres != null ? Math.round(distanceMetres * 100) / 100 : null,
+    punch_in_radius: radiusMetres != null ? radiusMetres : null,
     punch_in_selfie_public_id: selfiePublicId,
     punch_in_selfie_url: selfieUrl,
     punch_out_source: null,
@@ -345,49 +339,49 @@ const punchOut = handle(async (req, res) => {
     });
   }
 
-  // ── 2. Society geofence must be configured ──
+  // ── 2. Society geofence check ──
   const society = await Society.findByPk(societyId, {
     attributes: ["latitude", "longitude", "location_radius"],
   });
 
-  if (!society || society.latitude == null || society.longitude == null) {
-    return res.status(400).json({
-      message: "Society location has not been configured. Please contact admin.",
-      code: "GEOFENCE_NOT_CONFIGURED",
-    });
-  }
-
-  // ── 3. GPS coordinates ──
-  const lat = parseFloat(req.body?.lat);
-  const lng = parseFloat(req.body?.lng);
+  const hasGeofence = Boolean(society && society.latitude != null && society.longitude != null);
+  const lat = req.body?.lat != null ? parseFloat(req.body.lat) : null;
+  const lng = req.body?.lng != null ? parseFloat(req.body.lng) : null;
   const accuracy = req.body?.accuracy != null ? parseFloat(req.body.accuracy) : null;
 
-  if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-    return res.status(400).json({ message: "Valid GPS coordinates (lat, lng) are required.", code: "INVALID_GPS" });
-  }
+  let distanceMetres = null;
+  let radiusMetres = null;
+  let effectiveRadius = null;
 
-  // ── 4. Geofence check ──
-  const distanceMetres = haversineMetres(
-    parseFloat(society.latitude),
-    parseFloat(society.longitude),
-    lat,
-    lng
-  );
-  const radiusMetres = parseFloat(society.location_radius) || 50;
-  const accuracyBuffer = Math.min(
-    Math.max(accuracy != null && !isNaN(accuracy) ? accuracy * 0.75 : 15, 15),
-    100
-  );
-  const effectiveRadius = radiusMetres + accuracyBuffer;
+  if (hasGeofence) {
+    // ── 3. GPS coordinates ──
+    if (lat == null || lng == null || isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      return res.status(400).json({ message: "Valid GPS coordinates (lat, lng) are required.", code: "INVALID_GPS" });
+    }
 
-  if (distanceMetres > effectiveRadius) {
-    return res.status(403).json({
-      message: `You are outside the society location (${Math.round(distanceMetres)}m away, allowed within ${Math.round(radiusMetres)}m). Please move closer to the society gate and try again.`,
-      code: "OUTSIDE_GEOFENCE",
-      distance_metres: Math.round(distanceMetres),
-      allowed_radius: Math.round(radiusMetres),
-      effective_radius: Math.round(effectiveRadius),
-    });
+    // ── 4. Geofence check ──
+    distanceMetres = haversineMetres(
+      parseFloat(society.latitude),
+      parseFloat(society.longitude),
+      lat,
+      lng
+    );
+    radiusMetres = parseFloat(society.location_radius) || 50;
+    const accuracyBuffer = Math.min(
+      Math.max(accuracy != null && !isNaN(accuracy) ? accuracy * 0.75 : 15, 15),
+      100
+    );
+    effectiveRadius = radiusMetres + accuracyBuffer;
+
+    if (distanceMetres > effectiveRadius) {
+      return res.status(403).json({
+        message: `You are outside the society location (${Math.round(distanceMetres)}m away, allowed within ${Math.round(radiusMetres)}m). Please move closer to the society gate and try again.`,
+        code: "OUTSIDE_GEOFENCE",
+        distance_metres: Math.round(distanceMetres),
+        allowed_radius: Math.round(radiusMetres),
+        effective_radius: Math.round(effectiveRadius),
+      });
+    }
   }
 
   // Optional selfie if provided, but NOT required
@@ -412,10 +406,10 @@ const punchOut = handle(async (req, res) => {
   const [affected] = await GuardAttendance.update(
     {
       punch_out: punchOutTime,
-      punch_out_lat: lat,
-      punch_out_lng: lng,
-      punch_out_accuracy: !isNaN(accuracy) ? accuracy : null,
-      punch_out_distance: Math.round(distanceMetres * 100) / 100,
+      punch_out_lat: lat != null && !isNaN(lat) ? lat : null,
+      punch_out_lng: lng != null && !isNaN(lng) ? lng : null,
+      punch_out_accuracy: accuracy != null && !isNaN(accuracy) ? accuracy : null,
+      punch_out_distance: distanceMetres != null ? Math.round(distanceMetres * 100) / 100 : null,
       ...(selfiePublicId
         ? { punch_out_selfie_public_id: selfiePublicId, punch_out_selfie_url: selfieUrl }
         : {}),
@@ -577,6 +571,7 @@ const getTodayAttendance = handle(async (req, res) => {
           latitude: society.latitude ? parseFloat(society.latitude) : null,
           longitude: society.longitude ? parseFloat(society.longitude) : null,
           radius: society.location_radius ? parseFloat(society.location_radius) : 50,
+          is_set: Boolean(society.latitude != null && society.longitude != null),
         }
       : null,
     server_now: getCurrentISTDateTime(),

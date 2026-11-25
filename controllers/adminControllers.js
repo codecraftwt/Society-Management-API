@@ -599,8 +599,17 @@ exports.rejectResident = async (req, res) => {
 
     for (const flat of targetFlats) {
       flatNumber = flat.flat_number;
-      await FlatMembership.destroy({ where: { user_id: user.id, flat_id: flat.id }, transaction });
-      await ResidentHistory.destroy({ where: { user_id: user.id, flat_id: flat.id }, transaction });
+      // Preserve the rejected tenant's relationship for owner-visible history.
+      // Closing the records (instead of deleting them) keeps the audit trail
+      // while still removing the tenant from the active occupancy.
+      await FlatMembership.update(
+        { is_current: false, is_staying: false, move_out_date: new Date() },
+        { where: { user_id: user.id, flat_id: flat.id }, transaction }
+      );
+      await ResidentHistory.update(
+        { is_current: false, move_out_date: new Date() },
+        { where: { user_id: user.id, flat_id: flat.id }, transaction }
+      );
 
       const ownerMembership = await FlatMembership.findOne({
         where: { flat_id: flat.id, role: "OWNER", is_current: true },
@@ -633,8 +642,14 @@ exports.rejectResident = async (req, res) => {
     });
 
     for (const fm of targetMemberships) {
-      await FlatMembership.destroy({ where: { id: fm.id }, transaction });
-      await ResidentHistory.destroy({ where: { user_id: user.id, flat_id: fm.flat_id }, transaction });
+      await FlatMembership.update(
+        { is_current: false, is_staying: false, move_out_date: new Date() },
+        { where: { id: fm.id }, transaction }
+      );
+      await ResidentHistory.update(
+        { is_current: false, move_out_date: new Date() },
+        { where: { user_id: user.id, flat_id: fm.flat_id }, transaction }
+      );
       if (!flatNumber && fm.Flat?.flat_number) flatNumber = fm.Flat.flat_number;
 
       const ownerMembership = await FlatMembership.findOne({

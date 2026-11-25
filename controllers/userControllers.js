@@ -2659,8 +2659,7 @@ const getResidents = async (req, res) => {
     
 
     // Cascading Filter Params
-
-    const { society_id, block_id, floor_id, flat_id, role: filterRole } = req.query;
+    const { society_id, block_id, floor_id, flat_id, role: filterRole, approval_status: filterApprovalStatus } = req.query;
 
 
 
@@ -2916,7 +2915,35 @@ const getResidents = async (req, res) => {
 
       });
 
-      const memberIds = userSocieties.map((us) => us.user_id);
+      // A tenant can be linked to the society through a current flat
+      // membership even when the legacy users.society_id or user_societies
+      // row is missing/stale. Include those users so pending tenant
+      // applications are visible in the admin resident directory.
+      const tenantMemberships = await FlatMembership.findAll({
+        where: { role: "TENANT", is_current: true },
+        attributes: ["user_id"],
+        include: [{
+          model: Flat,
+          attributes: [],
+          required: true,
+          include: [
+            { model: Block, attributes: ["society_id"], required: false },
+            { model: Floor, attributes: ["id"], required: false, include: [{ model: Block, attributes: ["society_id"], required: false }] },
+          ],
+        }],
+      });
+      const tenantIdsForSociety = tenantMemberships
+        .filter((membership) => {
+          const flat = membership.Flat;
+          const societyId = flat?.Block?.society_id || flat?.Floor?.Block?.society_id;
+          return Number(societyId) === Number(targetSocietyId);
+        })
+        .map((membership) => membership.user_id)
+        .filter(Boolean);
+      const memberIds = [...new Set([
+        ...userSocieties.map((us) => us.user_id),
+        ...tenantIdsForSociety,
+      ])];
 
       const societyRoleRows = memberIds.length > 0
 
@@ -3130,7 +3157,7 @@ const getResidents = async (req, res) => {
 
     // Fetch active FlatMemberships for the matched residents
 
-    const allMemberships = await FlatMembership.findAll({
+    let allMemberships = await FlatMembership.findAll({
 
       where: { user_id: { [Op.in]: userIds }, is_current: true },
 
@@ -3138,7 +3165,7 @@ const getResidents = async (req, res) => {
 
         model: Flat,
 
-        attributes: ["id", "flat_number", "flat_type", "floor_id", "occupancy_status"],
+        attributes: ["id", "flat_number", "flat_type", "floor_id", "occupancy_status", "resident_id"],
 
         include: [
 
@@ -3172,9 +3199,81 @@ const getResidents = async (req, res) => {
 
 
 
+    // Self-healing / DB reconciliation: Auto-reconcile stale FlatMemberships where resident moved out
+
+    const residentHistories = userIds.length > 0 ? await ResidentHistory.findAll({
+
+      where: { user_id: { [Op.in]: userIds } },
+
+      order: [["created_at", "DESC"]],
+
+    }) : [];
+
+
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    const staleMembershipIds = new Set();
+
+
+
+    for (const m of allMemberships) {
+
+      if (!m.flat_id) continue;
+
+      const userHistForFlat = residentHistories.filter(
+
+        (h) => Number(h.flat_id) === Number(m.flat_id) && Number(h.user_id) === Number(m.user_id)
+
+      );
+
+      const hasCurrentHistory = userHistForFlat.some((h) => h.is_current);
+
+      const hasPastHistory = userHistForFlat.some((h) => !h.is_current && h.move_out_date);
+
+      const flatVacantNotResident = m.Flat && m.Flat.occupancy_status === "VACANT" && Number(m.Flat.resident_id) !== Number(m.user_id);
+
+
+
+      if ((hasPastHistory && !hasCurrentHistory) || flatVacantNotResident) {
+
+        staleMembershipIds.add(m.id);
+
+        const pastRec = userHistForFlat.find((h) => !h.is_current && h.move_out_date);
+
+        const moveOutDate = pastRec?.move_out_date
+
+          ? new Date(pastRec.move_out_date).toISOString().slice(0, 10)
+
+          : todayStr;
+
+        m.update({
+
+          is_current: false,
+
+          is_staying: false,
+
+          move_out_date: moveOutDate,
+
+        }).catch(() => {});
+
+      }
+
+    }
+
+
+
+    if (staleMembershipIds.size > 0) {
+
+      allMemberships = allMemberships.filter((m) => !staleMembershipIds.has(m.id));
+
+    }
+
+
+
     // Fallback: Fetch flats directly assigned via Flat.resident_id (e.g. legacy/direct assignments)
 
-    const directFlats = userIds.length > 0 ? await Flat.findAll({
+    const directFlatsRaw = userIds.length > 0 ? await Flat.findAll({
 
       where: { resident_id: { [Op.in]: userIds } },
 
@@ -3207,6 +3306,10 @@ const getResidents = async (req, res) => {
       ],
 
     }) : [];
+
+
+
+    const directFlats = directFlatsRaw.filter((f) => f && f.occupancy_status !== "VACANT");
 
 
 
@@ -3406,68 +3509,77 @@ const getResidents = async (req, res) => {
 
         const userMems = allMemberships.filter((m) => m.user_id === user.id);
 
-        const isFam =
-
-          user.role === "FAMILY_MEMBER" ||
-
-          rList.includes("FAMILY_MEMBER") ||
-
-          String(user.resident_type || "").toUpperCase() === "FAMILY_MEMBER" ||
-
-          userHousehold.length > 0;
+        const isOwner =
+          String(user.resident_type || "").toUpperCase() === "OWNER" ||
+          userMems.some((m) => String(m.role || "").toUpperCase() === "OWNER") ||
+          directFlats.some((f) => f && f.resident_id === user.id);
 
         const isTenant =
+          !isOwner && (
+            rList.includes("TENANT") ||
+            String(user.resident_type || "").toUpperCase() === "TENANT" ||
+            userMems.some((m) => String(m.role || "").toUpperCase() === "TENANT")
+          );
 
-          rList.includes("TENANT") ||
-
-          String(user.resident_type || "").toUpperCase() === "TENANT" ||
-
-          userMems.some((m) => String(m.role || "").toUpperCase() === "TENANT");
-
-
+        // A family member is strictly an occupant added to a household by a primary owner/tenant.
+        // Primary owners and tenants are never family members.
+        const isFam =
+          !isOwner &&
+          !isTenant && (
+            user.role === "FAMILY_MEMBER" ||
+            rList.includes("FAMILY_MEMBER") ||
+            String(user.resident_type || "").toUpperCase() === "FAMILY_MEMBER" ||
+            userHousehold.length > 0
+          );
 
         switch (targetRole) {
-
           case "COMMITTEE_MEMBER":
-
             return rList.includes("COMMITTEE_MEMBER");
-
           case "ACCOUNTANT":
-
             return rList.includes("ACCOUNTANT");
-
           case "ADMIN":
-
             return rList.includes("ADMIN") || rList.includes("SUPER_ADMIN");
-
           case "SOCIETY_ADMIN":
-
             return rList.includes("SOCIETY_ADMIN");
-
           case "FAMILY_MEMBER":
-
             return isFam;
-
           case "TENANT":
-
             return isTenant;
-
           case "RESIDENT":
-
             if (rList.includes("COMMITTEE_MEMBER") || rList.includes("ACCOUNTANT")) return false;
-
             if (isFam) return false;
-
-            return !isTenant || rList.includes("RESIDENT") || String(user.resident_type || "").toUpperCase() === "OWNER";
-
+            return isOwner || (!isTenant && rList.includes("RESIDENT"));
           default:
-
             return rList.includes(targetRole);
-
         }
-
       });
+    }
 
+    // 5. Filter by Approval Status if approval_status is supplied
+    if (filterApprovalStatus) {
+      const targetStatus = String(filterApprovalStatus).trim().toUpperCase();
+      uniqueResidents = uniqueResidents.filter((user) => {
+        const userMems = allMemberships.filter((m) => m.user_id === user.id);
+        const targetSocRecord = targetSocietyId ? userMems.find((m) => Number(m.society_id) === Number(targetSocietyId)) : null;
+        let effStatus = String(user.approval_status || "").toUpperCase();
+        if (targetSocRecord) {
+          if (targetSocRecord.membership_status === "PENDING") effStatus = "PENDING";
+          else if (targetSocRecord.membership_status === "ACTIVE") effStatus = "APPROVED";
+          else if (targetSocRecord.membership_status === "REJECTED") effStatus = "REJECTED";
+        }
+        if (!effStatus && String(user.status || "").toUpperCase() === "ACTIVE") effStatus = "APPROVED";
+
+        if (targetStatus === "PENDING") {
+          return effStatus === "PENDING" || userMems.some((m) => m.membership_status === "PENDING");
+        }
+        if (targetStatus === "REJECTED") {
+          return effStatus === "REJECTED" || (targetSocRecord && targetSocRecord.membership_status === "REJECTED");
+        }
+        if (targetStatus === "APPROVED") {
+          return effStatus === "APPROVED" || (!effStatus && !userMems.some((m) => m.membership_status === "PENDING"));
+        }
+        return true;
+      });
     }
 
 
@@ -3916,7 +4028,7 @@ const getResidents = async (req, res) => {
 
           address: s.address,
 
-          membership_status: "ACTIVE",
+          membership_status: (String(user.approval_status || "").toUpperCase() === "PENDING" || String(user.status || "").toUpperCase() === "PENDING") ? "PENDING" : (user.status || "ACTIVE"),
 
           is_default: true,
 
@@ -3946,7 +4058,7 @@ const getResidents = async (req, res) => {
 
             address: s.address,
 
-            membership_status: "ACTIVE",
+            membership_status: (String(user.approval_status || "").toUpperCase() === "PENDING" || String(user.status || "").toUpperCase() === "PENDING") ? "PENDING" : (user.status || "ACTIVE"),
 
             is_default: true,
 
@@ -4074,18 +4186,23 @@ const getResidents = async (req, res) => {
 
         if (roles.has("TENANT")) return "TENANT";
 
+        // Check if user is directly assigned to any flat
+        const isDirectOwner = directFlats.some(
+          (f) => f && f.resident_id === user.id && (flatIdSet.size === 0 || flatIdSet.has(f.id))
+        );
+        if (isDirectOwner) return "OWNER";
+
+        // If user's declared resident_type is OWNER or TENANT, respect it
+        const declaredType = String(user.resident_type || "").toUpperCase();
+        if (declaredType === "OWNER") return "OWNER";
+        if (declaredType === "TENANT") return "TENANT";
+
         if (
-
           user.role === "FAMILY_MEMBER" ||
-
           flatsForType.some((f) => f && f.role === "FAMILY_MEMBER") ||
-
           userHouseholdFlats.length > 0
-
         ) {
-
           return "FAMILY_MEMBER";
-
         }
 
         if (user.resident_type) return user.resident_type;
@@ -4110,25 +4227,25 @@ const getResidents = async (req, res) => {
 
 
 
-      if (targetSocRecord) {
+      if (String(user.approval_status || "").toUpperCase() === "PENDING" || targetSocRecord?.membership_status === "PENDING") {
 
-        if (targetSocRecord.membership_status === "PENDING") {
+        effectiveApprovalStatus = "PENDING";
 
-          effectiveApprovalStatus = "PENDING";
+        effectiveStatus = "PENDING";
 
-          effectiveStatus = "PENDING";
+      } else if (String(user.approval_status || "").toUpperCase() === "REJECTED" || targetSocRecord?.membership_status === "REJECTED") {
 
-        } else if (targetSocRecord.membership_status === "ACTIVE") {
+        effectiveApprovalStatus = "REJECTED";
+
+        effectiveStatus = "INACTIVE";
+
+      } else if (targetSocRecord) {
+
+        if (targetSocRecord.membership_status === "ACTIVE") {
 
           effectiveApprovalStatus = "APPROVED";
 
           effectiveStatus = "ACTIVE";
-
-        } else if (targetSocRecord.membership_status === "REJECTED") {
-
-          effectiveApprovalStatus = "REJECTED";
-
-          effectiveStatus = "INACTIVE";
 
         } else if (targetSocRecord.membership_status === "SUSPENDED" || targetSocRecord.membership_status === "LEFT") {
 
@@ -4137,6 +4254,7 @@ const getResidents = async (req, res) => {
         }
 
       }
+
 
 
 
@@ -4156,9 +4274,9 @@ const getResidents = async (req, res) => {
 
       const hasPendingMembership = targetSocietyNum
 
-        ? (targetSocRecord ? targetSocRecord.membership_status === "PENDING" : user.approval_status === "PENDING")
+        ? (effectiveApprovalStatus === "PENDING" || targetSocRecord?.membership_status === "PENDING" || String(user.approval_status || "").toUpperCase() === "PENDING")
 
-        : (userSocietiesList.some((s) => s.membership_status === "PENDING") || user.approval_status === "PENDING");
+        : (userSocietiesList.some((s) => s.membership_status === "PENDING") || String(user.approval_status || "").toUpperCase() === "PENDING");
 
 
 
@@ -4172,13 +4290,23 @@ const getResidents = async (req, res) => {
 
       const historyMap = new Map();
 
+
+
       userPastMemberships.forEach((m) => {
 
         const flat = m.Flat;
 
+        if (!flat) return;
+
         const bSocId = m.society_id || flat.Floor?.Block?.society_id || flat.Block?.society_id || user.society_id;
 
-        const key = `${flat.id}_${m.role || "RESIDENT"}_${m.move_out_date || ""}`;
+        const outDate = m.move_out_date ? new Date(m.move_out_date).toISOString().slice(0, 10) : "";
+
+        const inDate = m.move_in_date ? new Date(m.move_in_date).toISOString().slice(0, 10) : "";
+
+        const key = `${flat.id}_${outDate || inDate}`;
+
+
 
         historyMap.set(key, {
 
@@ -4200,9 +4328,9 @@ const getResidents = async (req, res) => {
 
           role:         m.role || user.resident_type || "RESIDENT",
 
-          move_in_date: m.move_in_date || null,
+          move_in_date: inDate || null,
 
-          move_out_date: m.move_out_date || null,
+          move_out_date: outDate || null,
 
           status:       "VACATED",
 
@@ -4216,11 +4344,35 @@ const getResidents = async (req, res) => {
 
         const flat = h.Flat;
 
+        if (!flat) return;
+
         const bSocId = flat.Floor?.Block?.society_id || flat.Block?.society_id || user.society_id;
 
-        const key = `${flat.id}_${h.move_out_date || ""}`;
+        const outDate = h.move_out_date ? new Date(h.move_out_date).toISOString().slice(0, 10) : "";
 
-        if (!historyMap.has(key)) {
+        const inDate = h.move_in_date ? new Date(h.move_in_date).toISOString().slice(0, 10) : "";
+
+        const key = `${flat.id}_${outDate || inDate}`;
+
+
+
+        // Check if an entry for this flat already exists in historyMap
+
+        const existingKey = Array.from(historyMap.keys()).find((k) => k === key || k.startsWith(`${flat.id}_`));
+
+
+
+        if (existingKey) {
+
+          // Merge any missing move_in_date / move_out_date into existing record without duplicating
+
+          const existing = historyMap.get(existingKey);
+
+          if (!existing.move_in_date && inDate) existing.move_in_date = inDate;
+
+          if (!existing.move_out_date && outDate) existing.move_out_date = outDate;
+
+        } else {
 
           historyMap.set(key, {
 
@@ -4242,9 +4394,9 @@ const getResidents = async (req, res) => {
 
             role:         user.resident_type || "RESIDENT",
 
-            move_in_date: h.move_in_date || null,
+            move_in_date: inDate || null,
 
-            move_out_date: h.move_out_date || null,
+            move_out_date: outDate || null,
 
             status:       "VACATED",
 
@@ -7093,6 +7245,44 @@ const promoteToCommittee = async (req, res) => {
 
       return res.status(400).json({ message: "Only residents can be promoted to committee member" });
 
+    // Strict Rule: Only flat owners can become committee members. Tenants and family members are not eligible.
+    const rawType = String(user.resident_type || user.role || "").toUpperCase();
+    const userRoles = Array.isArray(user.roles) ? user.roles.map((r) => String(r).toUpperCase()) : [];
+
+    if (rawType === "TENANT" || userRoles.includes("TENANT")) {
+      return res.status(400).json({
+        message: "Only flat owners can become committee members. Tenants are not eligible.",
+      });
+    }
+
+    if (
+      rawType === "FAMILY_MEMBER" ||
+      rawType === "FAMILY" ||
+      userRoles.includes("FAMILY_MEMBER") ||
+      userRoles.includes("FAMILY")
+    ) {
+      return res.status(400).json({
+        message: "Only flat owners can become committee members. Family members are not eligible.",
+      });
+    }
+
+    const isHouseholdMember = await HouseHoldMember.findOne({ where: { user_id: userId } });
+    if (isHouseholdMember) {
+      return res.status(400).json({
+        message: "Only flat owners can become committee members. Family members are not eligible.",
+      });
+    }
+
+    const userMemberships = await FlatMembership.findAll({ where: { user_id: userId, is_current: true } });
+    if (userMemberships.length > 0) {
+      const isOwnerInAnyFlat = userMemberships.some((m) => m.role === "OWNER");
+      if (!isOwnerInAnyFlat) {
+        return res.status(400).json({
+          message: "Only flat owners can become committee members. Tenants and family members are not eligible.",
+        });
+      }
+    }
+
 
 
     // A rejected registration must be re-approved before it can hold a role,
@@ -7421,6 +7611,7 @@ const addTenantByOwner = async (req, res) => {
 
       // the lifecycle (remove/renew) has the same membership contract.
 
+
       ownerMembership = await FlatMembership.create({
 
         flat_id,
@@ -7431,7 +7622,7 @@ const addTenantByOwner = async (req, res) => {
 
         role: "OWNER",
 
-        is_staying: true,
+        is_staying: false,
 
         pays_maintenance: true,
 
@@ -7499,9 +7690,9 @@ const addTenantByOwner = async (req, res) => {
 
       society_id: req.user.society_id,
 
-      approval_status: "PENDING",
+      approval_status: "INACTIVE",
 
-      status: "ACTIVE",
+      status: "PENDING",
 
       resident_type: "TENANT",
 
@@ -7510,6 +7701,35 @@ const addTenantByOwner = async (req, res) => {
       occupant_count: occupant_count || 1,
 
     });
+
+    const [userSoc] = await UserSociety.findOrCreate({
+
+      where: { user_id: tenant.id, society_id: req.user.society_id },
+
+      defaults: {
+
+        user_id: tenant.id,
+
+        society_id: req.user.society_id,
+
+        membership_status: "PENDING",
+
+        resident_type: "TENANT",
+
+        is_default: true,
+
+      },
+
+    });
+
+    await UserSocietyRole.findOrCreate({
+
+      where: { user_society_id: userSoc.id, role: "RESIDENT" },
+
+      defaults: { user_society_id: userSoc.id, role: "RESIDENT" },
+
+    });
+
 
 
 
@@ -7523,7 +7743,7 @@ const addTenantByOwner = async (req, res) => {
 
       role: "TENANT",
 
-      is_staying: true,
+      is_staying: false,
 
       pays_maintenance: false,
 
@@ -7551,63 +7771,8 @@ const addTenantByOwner = async (req, res) => {
 
 
 
-    await ownerMembership.update({ is_staying: false });
-
-    await Flat.update(
-
-      { resident_id: tenant.id, occupancy_status: "RENTED" },
-
-      { where: { id: flat_id } }
-
-    );
-
-
-
-    const admins = await User.findAll({
-
-      where: {
-
-        society_id: req.user.society_id,
-
-        approval_status: "APPROVED",
-
-        status: "ACTIVE",
-
-      },
-
-      attributes: ["id"],
-
-    });
-
-
-
-    await Promise.all(
-
-      admins.map((admin) =>
-
-        notificationService.sendNotification({
-
-          societyId: req.user.society_id,
-
-          receiverUserId: admin.id,
-
-          senderUserId: admin.id,
-
-          receiverRole: "SOCIETY_ADMIN",
-
-          title: "New Tenant Approval Required",
-
-          message: `Owner ${req.user.name} added tenant ${name} for Flat ${flat_id}. Please verify documents.`,
-
-          type: "SYSTEM",
-
-          sourceEventId: `TENANT_ADD_REQUEST:${flat_id}:${admin.id}`,
-
-        })
-
-      )
-
-    );
+    // Note: owner remains active until admin approves tenant.
+    // Upon approval, approveResident will set tenant is_staying: true, owner is_staying: false, and Flat.resident_id: tenant.id.
 
 
 
@@ -8147,6 +8312,87 @@ const getPendingResidents = async (req, res) => {
 
    ===== */
 
+const getTenantHistoryForOwner = async (req, res) => {
+  try {
+    const ownerMemberships = await FlatMembership.findAll({ where: { user_id: req.user.id, role: "OWNER" }, attributes: ["flat_id"] });
+    const flatIds = [...new Set(ownerMemberships.map((m) => m.flat_id).filter(Boolean))];
+    if (!flatIds.length) return res.json({ data: [] });
+
+    const memberships = await FlatMembership.findAll({
+      where: { flat_id: { [Op.in]: flatIds }, role: "TENANT" },
+      include: [
+        { model: User, attributes: ["id", "name", "email", "phone", "approval_status", "rejection_reason", "status", "approved_at", "created_at"] },
+        { model: Flat, attributes: ["id", "flat_number", "flat_type"], include: [
+          { model: Floor, attributes: ["floor_number"], required: false, include: [{ model: Block, attributes: ["name"], required: false }] },
+          { model: Block, attributes: ["name"], required: false },
+        ] },
+      ],
+      order: [["createdAt", "DESC"]],
+    });
+
+    const data = memberships.filter((m) => m.User).map((m) => {
+      const approval = String(m.User.approval_status || "").toUpperCase();
+      const status = approval === "REJECTED" ? "REJECTED" : approval === "PENDING" ? "PENDING" : m.is_current ? "APPROVED" : "REMOVED";
+      return {
+        id: m.id, tenant_id: m.User.id, tenant_name: m.User.name, tenant_email: m.User.email,
+        tenant_phone: m.User.phone, flat_id: m.flat_id, flat_number: m.Flat?.flat_number || null,
+        block_name: m.Flat?.Floor?.Block?.name || m.Flat?.Block?.name || null,
+        floor_number: m.Flat?.Floor?.floor_number ?? null, status,
+        approval_status: m.User.approval_status, rejection_reason: m.User.rejection_reason || null,
+        is_current: Boolean(m.is_current), move_in_date: m.move_in_date, move_out_date: m.move_out_date,
+        created_at: m.createdAt || m.created_at,
+        decision_at: m.User?.approved_at || null,
+        updated_at: m.updatedAt || m.updated_at || null,
+      };
+    });
+    // Older rejected tenants may have had their membership deleted by the
+    // previous rejection flow. Keep those users visible from the durable User
+    // record so their stored rejection reason is not lost from the resident UI.
+    const rejectedUsers = await User.findAll({
+      where: {
+        society_id: req.user.society_id,
+        resident_type: "TENANT",
+        approval_status: "REJECTED",
+      },
+      attributes: ["id", "name", "email", "phone", "approval_status", "rejection_reason", "created_at", "approved_at"],
+    });
+    rejectedUsers.forEach((tenant) => {
+      if (data.some((item) => Number(item.tenant_id) === Number(tenant.id))) return;
+      data.push({
+        id: `rejected-${tenant.id}`,
+        tenant_id: tenant.id,
+        tenant_name: tenant.name,
+        tenant_email: tenant.email,
+        tenant_phone: tenant.phone,
+        flat_id: null,
+        flat_number: null,
+        block_name: null,
+        floor_number: null,
+        status: "REJECTED",
+        approval_status: tenant.approval_status,
+        rejection_reason: tenant.rejection_reason || null,
+        is_current: false,
+        move_in_date: null,
+        move_out_date: null,
+        created_at: tenant.created_at || null,
+        decision_at: tenant.approved_at || null,
+        updated_at: tenant.approved_at || null,
+      });
+    });
+
+    data.sort((a, b) => {
+      const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return bTime - aTime;
+    });
+
+    res.json({ data });
+  } catch (err) {
+    console.error("Error in getTenantHistoryForOwner:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
 module.exports = {
 
   createSocietyAdmin,
@@ -8214,6 +8460,8 @@ module.exports = {
   removeTenantByOwner,
 
   renewTenantLease,
+
+  getTenantHistoryForOwner,
 
 };
 

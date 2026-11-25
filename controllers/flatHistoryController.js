@@ -1,8 +1,100 @@
-const { Flat, User } = require("../models");
+const { Flat, User, Bill, Complaint, Parcel, ParkingRequest } = require("../models");
 const ResidentHistory = require("../models/ResidentHistory");
 const FlatMembership = require("../models/FlatMembership");
 const { recalcOccupancyStatus } = require("./flatMembershipController");
 const { ensureAssignable } = require("../utils/approvalGuard");
+const { Op } = require("sequelize");
+
+// 🔍 Check whether a resident can be moved out or has pending clearance issues
+const getMoveOutClearanceIssues = async (flat_id, user_id) => {
+  const issues = [];
+  const details = {
+    pendingBills: [],
+    openComplaints: [],
+    pendingParcels: [],
+    pendingParkingRequests: [],
+  };
+
+  // 1. Pending/unpaid bills on this flat
+  const pendingBills = await Bill.findAll({
+    where: {
+      flat_id,
+      status: { [Op.notIn]: ["PAID", "paid"] },
+    },
+    attributes: ["id", "title", "amount", "status", "due_date", "billing_month"],
+  });
+
+  if (pendingBills.length > 0) {
+    const totalPendingAmount = pendingBills.reduce((sum, b) => sum + Number(b.amount || 0), 0);
+    issues.push(`${pendingBills.length} unpaid bill(s) totaling ₹${totalPendingAmount.toLocaleString("en-IN")}`);
+    details.pendingBills = pendingBills;
+  }
+
+  // 2. Open complaints on this flat or logged by this resident
+  const openComplaints = await Complaint.findAll({
+    where: {
+      [Op.or]: [
+        { flat_id, status: { [Op.in]: ["OPEN", "IN_PROGRESS"] } },
+        ...(user_id ? [{ resident_id: user_id, status: { [Op.in]: ["OPEN", "IN_PROGRESS"] } }] : []),
+      ],
+    },
+    attributes: ["id", "title", "status", "created_at"],
+  });
+
+  if (openComplaints.length > 0) {
+    issues.push(`${openComplaints.length} open/in-progress complaint(s)`);
+    details.openComplaints = openComplaints;
+  }
+
+  // 3. Undelivered / at-gate parcels for this flat
+  const pendingParcels = await Parcel.findAll({
+    where: {
+      flat_id,
+      status: { [Op.in]: ["EXPECTED", "AT_GATE"] },
+    },
+    attributes: ["id", "courier_name", "status", "entry_time"],
+  });
+
+  if (pendingParcels.length > 0) {
+    issues.push(`${pendingParcels.length} undelivered parcel(s) at gate/expected`);
+    details.pendingParcels = pendingParcels;
+  }
+
+  // 4. Pending parking requests for this flat or resident
+  const pendingParking = await ParkingRequest.findAll({
+    where: {
+      [Op.or]: [
+        { flat_id, status: "PENDING" },
+        ...(user_id ? [{ resident_id: user_id, status: "PENDING" }] : []),
+      ],
+    },
+    attributes: ["id", "guest_name", "vehicle_number", "status"],
+  });
+
+  if (pendingParking.length > 0) {
+    issues.push(`${pendingParking.length} pending parking request(s)`);
+    details.pendingParkingRequests = pendingParking;
+  }
+
+  return {
+    canMoveOut: issues.length === 0,
+    issues,
+    details,
+  };
+};
+
+const checkMoveOutClearance = async (req, res) => {
+  try {
+    const { flat_id, user_id } = req.params;
+    if (!flat_id) {
+      return res.status(400).json({ message: "flat_id is required" });
+    }
+    const clearance = await getMoveOutClearanceIssues(flat_id, user_id);
+    return res.json(clearance);
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
 
 
 // 🟢 MOVE-IN (assign new resident)
@@ -92,6 +184,17 @@ const moveOutResident = async (req, res) => {
       return res.status(400).json({ message: "flat_id and user_id are required" });
     }
 
+    // 0. Clearance Gate: Must clear pending bills, complaints, parcels, and parking requests before moving out
+    const clearance = await getMoveOutClearanceIssues(flat_id, user_id);
+    if (!clearance.canMoveOut) {
+      return res.status(400).json({
+        message: `Cannot mark resident as moved out. Please clear all pending items first: ${clearance.issues.join("; ")}`,
+        canMoveOut: false,
+        issues: clearance.issues,
+        details: clearance.details,
+      });
+    }
+
     const departingUser = await User.findByPk(user_id, { attributes: ["resident_type"] });
     const departingType = String(departingUser?.resident_type || "OWNER").toUpperCase();
 
@@ -111,63 +214,93 @@ const moveOutResident = async (req, res) => {
     );
 
     // Close the matching membership so occupancy and gate-pass eligibility do
-    // not keep treating a moved-out tenant as the current occupant.
+    // not keep treating a moved-out resident as the current occupant.
     const today = new Date().toISOString().slice(0, 10);
-    const departingMembership = await FlatMembership.findOne({
+    const departingMemberships = await FlatMembership.findAll({
       where: { flat_id, user_id, is_current: true },
     });
-    if (departingMembership) {
-      if (departingMembership.role === "TENANT") {
-        await departingMembership.update({
-          is_current: false,
-          is_staying: false,
-          move_out_date: today,
-        });
-        const ownerMembership = await FlatMembership.findOne({
-          where: { flat_id, role: "OWNER", is_current: true },
-        });
-        if (ownerMembership) await ownerMembership.update({ is_staying: true });
-      } else {
-        await departingMembership.update({ is_staying: false });
-      }
+    for (const departingMembership of departingMemberships) {
+      await departingMembership.update({
+        is_current: false,
+        is_staying: false,
+        move_out_date: today,
+      });
     }
 
+    if (departingType === "TENANT") {
+      const ownerMembership = await FlatMembership.findOne({
+        where: { flat_id, role: "OWNER", is_current: true },
+      });
+      if (ownerMembership) await ownerMembership.update({ is_staying: true });
+    }
+
+    // Release any parking slots assigned to this resident for this flat
+    try {
+      const ParkingSlot = require("../models/ParkingSlot");
+      if (ParkingSlot) {
+        await ParkingSlot.update(
+          { resident_id: null, flat_id: null, status: "AVAILABLE" },
+          { where: { flat_id, resident_id: user_id, status: "ASSIGNED" } }
+        );
+      }
+    } catch (_) {}
+
     // Keep the flat's primary pointer on the remaining current owner, if any.
-    const remainingOwner = await ResidentHistory.findOne({
+    let remainingOwner = await ResidentHistory.findOne({
       where: { flat_id, is_current: true },
-      include: [{ model: User, attributes: ["id", "resident_type"] }],
+      include: [{ model: User, where: { resident_type: "OWNER" }, attributes: ["id", "resident_type"] }],
       order: [["move_in_date", "ASC"]],
     });
 
     let activeResidentId = remainingOwner?.user_id || null;
-    if (!remainingOwner && departingType === "TENANT") {
+
+    // Also check FlatMembership for the active owner
+    if (!activeResidentId) {
+      const activeOwnerMembership = await FlatMembership.findOne({
+        where: { flat_id, role: "OWNER", is_current: true },
+      });
+      if (activeOwnerMembership) {
+        activeResidentId = activeOwnerMembership.user_id;
+      }
+    }
+
+    if (!activeResidentId && departingType === "TENANT") {
       const ownerHistory = await ResidentHistory.findOne({
         where: { flat_id },
         include: [{ model: User, where: { resident_type: "OWNER" }, attributes: ["id", "resident_type"] }],
         order: [["move_out_date", "DESC"], ["move_in_date", "DESC"]],
       });
       if (ownerHistory) {
-        await ResidentHistory.create({
-          flat_id,
-          user_id: ownerHistory.user_id,
-          move_in_date: new Date(),
-          is_current: true,
-        });
         activeResidentId = ownerHistory.user_id;
       }
     }
 
+    // Ensure the reinstated owner has an active ResidentHistory record
     if (activeResidentId) {
+      const existingHistory = await ResidentHistory.findOne({
+        where: { flat_id, user_id: activeResidentId, is_current: true },
+      });
+      if (!existingHistory) {
+        await ResidentHistory.create({
+          flat_id,
+          user_id: activeResidentId,
+          move_in_date: new Date(),
+          is_current: true,
+        });
+      }
+
       await FlatMembership.update(
         { is_staying: true },
         { where: { flat_id, user_id: activeResidentId, is_current: true } }
       );
     }
 
-    // 2. Remove the departing resident from the flat pointer only when no
-    // other current resident remains.
+    // 2. Point flat resident to the reinstated primary owner
     await Flat.update(
-      { resident_id: activeResidentId },
+      {
+        resident_id: activeResidentId,
+        occupancy_status: activeResidentId ? "OWNER_OCCUPIED" : "VACANT",
+      },
       { where: { id: flat_id } }
     );
 
@@ -225,6 +358,26 @@ const getFlatHistory = async (req, res) => {
     );
 
     let needsRefetch = false;
+
+    // Auto-reconcile stale FlatMemberships where ResidentHistory shows the resident already moved out
+    const todayIso = new Date().toISOString().slice(0, 10);
+    for (const m of memberships) {
+      const pastHistory = history.find(
+        (h) => Number(h.user_id) === Number(m.user_id) && !h.is_current && h.move_out_date
+      );
+      const activeHistory = history.find(
+        (h) => Number(h.user_id) === Number(m.user_id) && h.is_current
+      );
+      if (pastHistory && !activeHistory) {
+        await m.update({
+          is_current: false,
+          is_staying: false,
+          move_out_date: pastHistory.move_out_date
+            ? new Date(pastHistory.move_out_date).toISOString().slice(0, 10)
+            : todayIso,
+        });
+      }
+    }
 
     // Auto-heal from active FlatMemberships
     for (const m of memberships) {
@@ -308,4 +461,6 @@ module.exports = {
   moveInResident,
   moveOutResident,
   getFlatHistory,
+  checkMoveOutClearance,
+  getMoveOutClearanceIssues,
 };

@@ -100,6 +100,40 @@ const uploadDocumentsController = async (req, res) => {
       pan_public_id:    pan.filename,
     });
 
+    // Notify admins now that KYC documents are uploaded for the new tenant
+    if (req.query.userId && (req.user.role === "RESIDENT" || req.user.activeRole === "RESIDENT")) {
+      try {
+        const Flat = require("../models/Flat");
+        const notificationService = require("../services/notificationService");
+        const tenantMembership = await FlatMembership.findOne({
+          where: { user_id: userId, role: "TENANT", is_current: true },
+          include: [{ model: Flat, attributes: ["id", "flat_number"] }],
+        });
+        if (tenantMembership) {
+          const tenantUser = await User.findByPk(userId, { attributes: ["name"] });
+          const flatLabel = tenantMembership.Flat?.flat_number || tenantMembership.flat_id;
+          const admins = await User.findAll({
+            where: { society_id: req.user.society_id, status: "ACTIVE" },
+            attributes: ["id"],
+          });
+          admins.forEach((admin) => {
+            notificationService.sendNotification({
+              societyId: req.user.society_id,
+              receiverUserId: admin.id,
+              senderUserId: req.user.id,
+              receiverRole: "SOCIETY_ADMIN",
+              title: "New Tenant Approval Required",
+              message: `Owner ${req.user.name} added tenant ${tenantUser?.name || ""} for Flat ${flatLabel}. Please verify documents.`,
+              type: "SYSTEM",
+              sourceEventId: `TENANT_ADD_REQUEST:${tenantMembership.flat_id}:${admin.id}`,
+            }).catch(() => {});
+          });
+        }
+      } catch (notifErr) {
+        console.error("Failed to send tenant approval notification:", notifErr);
+      }
+    }
+
     res.json({ message: "Documents uploaded successfully", documents: newDocs });
   } catch (err) {
     res.status(500).json({ error: err.message });

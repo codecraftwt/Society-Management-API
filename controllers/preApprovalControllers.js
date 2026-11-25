@@ -294,6 +294,27 @@ const notifyOnDutyGuard = async (societyId, title, message, actionRoute) => {
       status: "PENDING",
     });
 
+    // ✅ If guest is coming with a vehicle, automatically record a temporary guest parking request
+    if (vehicle_number && sanitizeText(vehicle_number)) {
+      try {
+        const cleanVeh = sanitizeText(vehicle_number).toUpperCase().replace(/\s+/g, " ").trim();
+        await ParkingRequest.create({
+          society_id: req.user.society_id,
+          guest_name: cleanName,
+          vehicle_number: cleanVeh,
+          vehicle_type: req.body.vehicle_type || "CAR",
+          flat_id,
+          resident_id: req.user.id,
+          status: "PENDING",
+          parking_type: "VISITOR",
+          expected_arrival: valid_date ? new Date(valid_date) : new Date(),
+          duration_hours: resolvedType === "DAILY" ? 24 : Math.max(1, Math.ceil(dwell / 60)),
+        });
+      } catch (prErr) {
+        console.error("⚠️ Failed to auto-create visitor parking request:", prErr);
+      }
+    }
+
     const society = await Society.findByPk(req.user.society_id, { attributes: ["id", "name"] });
 
     return res.status(201).json({
@@ -550,19 +571,39 @@ const verifyGatePass = async (req, res) => {
         slot.status = "ASSIGNED";
         await slot.save();
 
-        parkingRequest = await ParkingRequest.create({
-          society_id: req.user.society_id,
-          guest_name: approval.visitor_name,
-          vehicle_number: approval.vehicle_number,
-          vehicle_type: resolvedType,
-          flat_id: flat.id,
-          resident_id: approval.resident_id,
-          status: "APPROVED",
-          assigned_spot: slot.slot_number,
-          expected_arrival: new Date(),
-          duration_hours: 24,
-          parking_type: "VISITOR",
+        const cleanVeh = approval.vehicle_number.trim();
+        let existingReq = await ParkingRequest.findOne({
+          where: {
+            society_id: req.user.society_id,
+            vehicle_number: cleanVeh,
+            parking_type: "VISITOR",
+            status: "PENDING",
+          },
+          order: [["createdAt", "DESC"]],
         });
+
+        if (existingReq) {
+          existingReq.status = "APPROVED";
+          existingReq.assigned_spot = slot.slot_number;
+          existingReq.vehicle_type = resolvedType;
+          existingReq.expected_arrival = new Date();
+          await existingReq.save();
+          parkingRequest = existingReq;
+        } else {
+          parkingRequest = await ParkingRequest.create({
+            society_id: req.user.society_id,
+            guest_name: approval.visitor_name,
+            vehicle_number: cleanVeh,
+            vehicle_type: resolvedType,
+            flat_id: flat.id,
+            resident_id: approval.resident_id,
+            status: "APPROVED",
+            assigned_spot: slot.slot_number,
+            expected_arrival: new Date(),
+            duration_hours: 24,
+            parking_type: "VISITOR",
+          });
+        }
       }
 
       // NOTE: daily pass status stays PENDING (daily usage tracked via logs)
@@ -689,19 +730,39 @@ const verifyGatePass = async (req, res) => {
       slot.status = "ASSIGNED";
       await slot.save();
 
-      parkingRequest = await ParkingRequest.create({
-        society_id: req.user.society_id,
-        guest_name: approval.visitor_name,
-        vehicle_number: approval.vehicle_number,
-        vehicle_type: resolvedType,
-        flat_id: flat.id,
-        resident_id: approval.resident_id,
-        status: "APPROVED",
-        assigned_spot: slot.slot_number,
-        expected_arrival: new Date(),
-        duration_hours: 24,
-        parking_type: "VISITOR", // ✅ ADDED
+      const cleanVeh = approval.vehicle_number.trim();
+      let existingReq = await ParkingRequest.findOne({
+        where: {
+          society_id: req.user.society_id,
+          vehicle_number: cleanVeh,
+          parking_type: "VISITOR",
+          status: "PENDING",
+        },
+        order: [["createdAt", "DESC"]],
       });
+
+      if (existingReq) {
+        existingReq.status = "APPROVED";
+        existingReq.assigned_spot = slot.slot_number;
+        existingReq.vehicle_type = resolvedType;
+        existingReq.expected_arrival = new Date();
+        await existingReq.save();
+        parkingRequest = existingReq;
+      } else {
+        parkingRequest = await ParkingRequest.create({
+          society_id: req.user.society_id,
+          guest_name: approval.visitor_name,
+          vehicle_number: cleanVeh,
+          vehicle_type: resolvedType,
+          flat_id: flat.id,
+          resident_id: approval.resident_id,
+          status: "APPROVED",
+          assigned_spot: slot.slot_number,
+          expected_arrival: new Date(),
+          duration_hours: 24,
+          parking_type: "VISITOR",
+        });
+      }
     }
 
     // ✅ Mark approval as used ONLY after successful entry

@@ -678,6 +678,8 @@ const markExit = async (req, res) => {
 
     const request = await ParkingRequest.findByPk(id);
     if (!request) return res.status(404).json({ message: "Request not found" });
+    if (request.parking_type === "RESIDENT")
+      return res.status(400).json({ message: "Permanent resident parking slots cannot be exited." });
     if (request.status !== "APPROVED")
       return res.status(400).json({ message: "Only active requests can be marked as exited" });
 
@@ -744,6 +746,7 @@ const getParkingRequests = async (req, res) => {
     const { id, society_id } = req.user;
     const effectiveRole = (req.user.activeRole || req.user.role || "").toUpperCase();
     const isResident = effectiveRole === "RESIDENT" || effectiveRole === "FAMILY_MEMBER";
+    const isGuard = effectiveRole === "GUARD";
 
     const page   = Math.max(1,   parseInt(req.query.page)  || 1);
     const limit  = Math.min(100, parseInt(req.query.limit) || 5);
@@ -779,6 +782,22 @@ const getParkingRequests = async (req, res) => {
         where.parking_type = req.query.parking_type;
       }
       if (req.query.flat_id) where.flat_id = req.query.flat_id;
+    }
+
+    // Pending visitor passes are allocated at the gate during Gate Pass verification (/guard/gatepass).
+    // Guards should not see unarrived pending visitor passes in their general parking dashboard.
+    if (isGuard) {
+      const guardExclusion = {
+        [Op.or]: [
+          { parking_type: { [Op.ne]: "VISITOR" } },
+          { status: { [Op.ne]: "PENDING" } }
+        ]
+      };
+      if (where[Op.and]) {
+        where[Op.and].push(guardExclusion);
+      } else {
+        where[Op.and] = [guardExclusion];
+      }
     }
 
     if (filter !== "ALL") where.status = filter;
@@ -830,6 +849,20 @@ const getParkingRequests = async (req, res) => {
         baseWhere.parking_type = req.query.parking_type;
       }
       if (req.query.flat_id) baseWhere.flat_id = req.query.flat_id;
+    }
+
+    if (isGuard) {
+      const guardExclusion = {
+        [Op.or]: [
+          { parking_type: { [Op.ne]: "VISITOR" } },
+          { status: { [Op.ne]: "PENDING" } }
+        ]
+      };
+      if (baseWhere[Op.and]) {
+        baseWhere[Op.and].push(guardExclusion);
+      } else {
+        baseWhere[Op.and] = [guardExclusion];
+      }
     }
 
     const [totalAll, totalPending, totalApproved, totalRejected, totalCompleted] =

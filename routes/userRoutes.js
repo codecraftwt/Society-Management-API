@@ -15,7 +15,7 @@ const {
   updateAccountant, getMyProfile, updateMyProfile,
   uploadMyProfilePicture, removeMyProfilePicture,
   forgotPassword, resetPassword,updateFCMToken,promoteToCommittee, removeCommittee, addTenantByOwner,
-  removeTenantByOwner, getPendingResidents, renewTenantLease, deleteAccountant
+  removeTenantByOwner, getPendingResidents, renewTenantLease, deleteAccountant, getTenantHistoryForOwner
 } = require("../controllers/userControllers");
 
 // Allow Super Admin, Admin, Committee, Accountant to view and manage residents
@@ -101,6 +101,7 @@ router.post("/forgot-password", forgotPassword);
 router.post("/reset-password", resetPassword);
 router.post("/resident/add-tenant", auth, role("RESIDENT"), addTenantByOwner);
 router.post("/resident/remove-tenant", auth, role("RESIDENT"), removeTenantByOwner);
+router.get("/resident/tenant-history", auth, role("RESIDENT"), getTenantHistoryForOwner);
 
 // Pending approvals (committee & accountant can review & approve tenant applications too)
 router.get(

@@ -233,20 +233,20 @@ const createNotice = async (req, res) => {
           const residents =
             residentIds.length > 0
               ? await User.findAll({
-                  where: {
-                    id: { [Op.in]: residentIds },
-                    role: {
-                      [Op.in]: [
-                        "RESIDENT",
-                        "FAMILY_MEMBER",
-                        "COMMITTEE_MEMBER",
-                        "SOCIETY_ADMIN",
-                      ],
-                    },
-                    status: "ACTIVE",
+                where: {
+                  id: { [Op.in]: residentIds },
+                  role: {
+                    [Op.in]: [
+                      "RESIDENT",
+                      "FAMILY_MEMBER",
+                      "COMMITTEE_MEMBER",
+                      "SOCIETY_ADMIN",
+                    ],
                   },
-                  attributes: ["id", "fcm_token"],
-                })
+                  status: "ACTIVE",
+                },
+                attributes: ["id", "fcm_token"],
+              })
               : [];
           const allSettings = await UserSetting.findAll({
             where: { user_id: residentIds },

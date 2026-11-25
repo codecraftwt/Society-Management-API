@@ -355,7 +355,7 @@ const seed = async () => {
         relation: hh.relation,
         phone: hh.phone,
         flat_id: hh.flat.id,
-        user_id: hh.user ? hh.user.id : null,
+        user_id: null,
         isAdmin: hh.isAdmin,
       });
     }
