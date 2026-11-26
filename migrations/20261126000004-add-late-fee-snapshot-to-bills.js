@@ -17,7 +17,8 @@ module.exports = {
 
     const cols = await getColumns(conn, "bills");
     if (!cols.has("late_fee_enabled")) {
-      await conn.query("ALTER TABLE bills ADD COLUMN late_fee_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER calculation_details");
+      const afterClause = cols.has("calculation_details") ? " AFTER calculation_details" : "";
+      await conn.query(`ALTER TABLE bills ADD COLUMN late_fee_enabled TINYINT(1) NOT NULL DEFAULT 0${afterClause}`);
     }
     if (!cols.has("late_fee_type")) {
       await conn.query("ALTER TABLE bills ADD COLUMN late_fee_type VARCHAR(32) NULL DEFAULT NULL AFTER late_fee_enabled");

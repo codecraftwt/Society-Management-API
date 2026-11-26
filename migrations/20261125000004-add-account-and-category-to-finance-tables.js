@@ -83,17 +83,20 @@ module.exports = {
     `);
 
     // 5. MaintenanceRates, bills, amenity_bookings: financial_account_id
-    const mrCols = await getColumns(conn, "MaintenanceRates");
+    const mrTable = await resolveTableName(conn, ["MaintenanceRates", "maintenancerates"]);
+    const mrCols = await getColumns(conn, mrTable);
     if (!mrCols.has("financial_account_id")) {
-      await conn.query("ALTER TABLE MaintenanceRates ADD COLUMN financial_account_id INT NULL DEFAULT NULL");
+      await conn.query(`ALTER TABLE \`${mrTable}\` ADD COLUMN financial_account_id INT NULL DEFAULT NULL`);
     }
-    const billCols = await getColumns(conn, "bills");
+    const billsTable = await resolveTableName(conn, ["bills", "Bills"]);
+    const billCols = await getColumns(conn, billsTable);
     if (!billCols.has("financial_account_id")) {
-      await conn.query("ALTER TABLE bills ADD COLUMN financial_account_id INT NULL DEFAULT NULL");
+      await conn.query(`ALTER TABLE \`${billsTable}\` ADD COLUMN financial_account_id INT NULL DEFAULT NULL`);
     }
-    const abCols = await getColumns(conn, "amenity_bookings");
+    const abTable = await resolveTableName(conn, ["amenity_bookings", "AmenityBookings"]);
+    const abCols = await getColumns(conn, abTable);
     if (!abCols.has("financial_account_id")) {
-      await conn.query("ALTER TABLE amenity_bookings ADD COLUMN financial_account_id INT NULL DEFAULT NULL");
+      await conn.query(`ALTER TABLE \`${abTable}\` ADD COLUMN financial_account_id INT NULL DEFAULT NULL`);
     }
 
     // 6. financial_audit_logs: expand action ENUM
