@@ -132,6 +132,11 @@ const AmenityBooking = sequelize.define(
       allowNull: true,
       defaultValue: null,
     },
+    financial_account_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: null,
+    },
 
     /*
      * For PAID bookings: the booking is auto-cancelled if payment is not

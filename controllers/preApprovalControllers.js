@@ -373,9 +373,22 @@ const freeVisitorParking = async (visitorLog) => {
        ✅ DAILY passes: max 2 scans per IST day (entry/exit), resets daily
        ✅ dwell_minutes snapshot + response fields for guard UI
 ═══════════════════════════════════════════ */
+const parseGatePassGuestCount = (rawCount, purpose) => {
+  if (rawCount !== undefined && rawCount !== null && rawCount !== "") {
+    const parsed = Number(rawCount);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
+      return { error: "Guest count must be a whole number between 1 and 100." };
+    }
+    return { value: parsed };
+  }
+  return {
+    value: String(purpose || "").toUpperCase() === "GUEST" ? 1 : null,
+  };
+};
+
 const verifyGatePass = async (req, res) => {
   try {
-    const { code, slot_number, vehicle_type } = req.body;
+    const { code, slot_number, vehicle_type, guest_count } = req.body;
 
     console.log("VERIFY BODY:", { code, slot_number, vehicle_type, guard_id: req.user.id, society_id: req.user.society_id });
 
@@ -539,6 +552,11 @@ const verifyGatePass = async (req, res) => {
         });
       }
 
+      const parsedGuestCount = parseGatePassGuestCount(guest_count, approval.purpose);
+      if (parsedGuestCount.error) {
+        return res.status(400).json({ message: parsedGuestCount.error });
+      }
+
       const visitor = await VisitorLog.create({
         visitor_name: approval.visitor_name,
         purpose: approval.purpose,
@@ -549,6 +567,7 @@ const verifyGatePass = async (req, res) => {
         society_id: req.user.society_id,
         preapproval_id: approval.id,
         dwell_minutes: approval.dwell_minutes,
+        guest_count: parsedGuestCount.value,
       });
 
       let parkingRequest = null;
@@ -691,6 +710,11 @@ const verifyGatePass = async (req, res) => {
       });
     }
 
+    const parsedGuestCount = parseGatePassGuestCount(guest_count, approval.purpose);
+    if (parsedGuestCount.error) {
+      return res.status(400).json({ message: parsedGuestCount.error });
+    }
+
     // ✅ ONLY CREATE VISITOR LOG AFTER SLOT IS SELECTED (or if no vehicle)
     const visitor = await VisitorLog.create({
       visitor_name: approval.visitor_name,
@@ -702,6 +726,7 @@ const verifyGatePass = async (req, res) => {
       society_id: req.user.society_id,
       preapproval_id: approval.id,
       dwell_minutes: approval.dwell_minutes,
+      guest_count: parsedGuestCount.value,
     });
 
     let parkingRequest = null;

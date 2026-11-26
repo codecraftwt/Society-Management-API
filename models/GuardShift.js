@@ -24,6 +24,12 @@ const GuardShift = sequelize.define("GuardShift",{
     allowNull: false
   },
 
+  shift_place_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: null
+  },
+
   start_date: {
     type: DataTypes.DATEONLY,
     allowNull: false

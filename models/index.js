@@ -14,6 +14,7 @@ const EmergencyAlert = require("./EmergencyAlert");
 const VisitorPreApproval = require("./VisitorPreApproval");
 const GuardShift = require("./GuardShift");
 const GuardShiftTiming = require("./GuardShiftTiming");
+const GuardShiftPlace = require("./GuardShiftPlace");
 const Notification = require("./Notification");
 const Vehicle = require("./Vehicle");
 const ParkingRequest = require("./ParkingRequest");
@@ -34,12 +35,18 @@ const UserDocuments = require("./UserDocuments");
 const FlatMembership = require("./FlatMembership");
 const BillingRule = require("./BillingRule");
 const MaintenanceRate = require("./MaintenanceRate");
+const MaintenanceLateFeeConfig = require("./MaintenanceLateFeeConfig");
+const BillLateFeeWaiver = require("./BillLateFeeWaiver");
 const AccountantAssignment = require("./AccountantAssignment");
 const RolePermission = require("./RolePermission");
 const EmergencyAcknowledgement = require("./EmergencyAcknowledgement");
 const Expense = require("./Expense");
 const LedgerEntry = require("./LedgerEntry");
 const FinancialAuditLog = require("./FinancialAuditLog");
+const SocietyFinancialAccount = require("./SocietyFinancialAccount");
+const ExpenseCategory = require("./ExpenseCategory");
+const FixedDeposit = require("./FixedDeposit");
+const FixedDepositTransaction = require("./FixedDepositTransaction");
 const CleaningStaff = require("./CleaningStaff");
 const CleaningStaffPass = require("./CleaningStaffPass");
 const CleaningStaffAttendance = require("./CleaningStaffAttendance");
@@ -52,6 +59,9 @@ const SocietyInvite = require("./SocietyInvite");
 const Rule = require("./Rule");
 const RuleVersion = require("./RuleVersion");
 const RuleAcknowledgement = require("./RuleAcknowledgement");
+const MeetingCategory = require("./MeetingCategory");
+const MeetingMinutes = require("./MeetingMinutes");
+const MeetingAttendee = require("./MeetingAttendee");
 
 
 
@@ -264,6 +274,11 @@ GuardShift.belongsTo(Society, { foreignKey: "society_id" });
 Society.hasMany(GuardShiftTiming, { foreignKey: "society_id" });
 GuardShiftTiming.belongsTo(Society, { foreignKey: "society_id" });
 
+Society.hasMany(GuardShiftPlace, { foreignKey: "society_id", as: "guardShiftPlaces" });
+GuardShiftPlace.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+GuardShiftPlace.hasMany(GuardShift, { foreignKey: "shift_place_id", as: "shifts" });
+GuardShift.belongsTo(GuardShiftPlace, { foreignKey: "shift_place_id", as: "shiftPlace" });
+
 
 Society.hasMany(Notification, { foreignKey: "society_id" });
 Notification.belongsTo(Society, { foreignKey: "society_id" });
@@ -283,6 +298,14 @@ MaintenanceRate.belongsTo(Society, { foreignKey: "society_id" });
 // A maintenance rate can produce many maintenance bills.
 MaintenanceRate.hasMany(Bill, { foreignKey: "maintenance_rate_id", as: "bills" });
 Bill.belongsTo(MaintenanceRate, { foreignKey: "maintenance_rate_id", as: "rate" });
+
+// === MAINTENANCE LATE FEE CONFIG & WAIVER HISTORY ===
+Society.hasOne(MaintenanceLateFeeConfig, { foreignKey: "society_id", as: "lateFeeConfig" });
+MaintenanceLateFeeConfig.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
+Bill.hasMany(BillLateFeeWaiver, { foreignKey: "bill_id", as: "lateFeeWaivers" });
+BillLateFeeWaiver.belongsTo(Bill, { foreignKey: "bill_id", as: "bill" });
+BillLateFeeWaiver.belongsTo(User, { foreignKey: "waived_by", as: "waivedByUser" });
 
 // === VEHICLE RELATIONS ===
 
@@ -556,6 +579,46 @@ LedgerEntry.belongsTo(Society, { foreignKey: "society_id", as: "society" });
 Society.hasMany(FinancialAuditLog, { foreignKey: "society_id", as: "auditLogs" });
 FinancialAuditLog.belongsTo(Society, { foreignKey: "society_id", as: "society" });
 
+// Financial Accounts, Expense Categories & Fixed Deposits
+Society.hasMany(SocietyFinancialAccount, { foreignKey: "society_id", as: "financialAccounts" });
+SocietyFinancialAccount.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
+Society.hasMany(ExpenseCategory, { foreignKey: "society_id", as: "expenseCategories" });
+ExpenseCategory.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
+Society.hasMany(FixedDeposit, { foreignKey: "society_id", as: "fixedDeposits" });
+FixedDeposit.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
+FixedDeposit.belongsTo(SocietyFinancialAccount, { foreignKey: "funding_account_id", as: "fundingAccount" });
+FixedDeposit.belongsTo(SocietyFinancialAccount, { foreignKey: "receiving_account_id", as: "receivingAccount" });
+
+FixedDeposit.hasMany(FixedDepositTransaction, { foreignKey: "fixed_deposit_id", as: "transactions" });
+FixedDepositTransaction.belongsTo(FixedDeposit, { foreignKey: "fixed_deposit_id", as: "fixedDeposit" });
+FixedDepositTransaction.belongsTo(SocietyFinancialAccount, { foreignKey: "financial_account_id", as: "financialAccount" });
+FixedDepositTransaction.hasMany(LedgerEntry, { foreignKey: "fd_transaction_id", as: "ledgerEntries" });
+LedgerEntry.belongsTo(FixedDepositTransaction, { foreignKey: "fd_transaction_id", as: "fdTransaction" });
+
+SocietyFinancialAccount.hasMany(Expense, { foreignKey: "financial_account_id", as: "expenses" });
+Expense.belongsTo(SocietyFinancialAccount, { foreignKey: "financial_account_id", as: "financialAccount" });
+
+ExpenseCategory.hasMany(Expense, { foreignKey: "expense_category_id", as: "expenses" });
+Expense.belongsTo(ExpenseCategory, { foreignKey: "expense_category_id", as: "category" });
+
+SocietyFinancialAccount.hasMany(LedgerEntry, { foreignKey: "financial_account_id", as: "ledgerEntries" });
+LedgerEntry.belongsTo(SocietyFinancialAccount, { foreignKey: "financial_account_id", as: "financialAccount" });
+
+SocietyFinancialAccount.hasMany(Payment, { foreignKey: "financial_account_id", as: "payments" });
+Payment.belongsTo(SocietyFinancialAccount, { foreignKey: "financial_account_id", as: "financialAccount" });
+
+SocietyFinancialAccount.hasMany(MaintenanceRate, { foreignKey: "financial_account_id", as: "maintenanceRates" });
+MaintenanceRate.belongsTo(SocietyFinancialAccount, { foreignKey: "financial_account_id", as: "financialAccount" });
+
+SocietyFinancialAccount.hasMany(Bill, { foreignKey: "financial_account_id", as: "bills" });
+Bill.belongsTo(SocietyFinancialAccount, { foreignKey: "financial_account_id", as: "financialAccount" });
+
+SocietyFinancialAccount.hasMany(AmenityBooking, { foreignKey: "financial_account_id", as: "amenityBookings" });
+AmenityBooking.belongsTo(SocietyFinancialAccount, { foreignKey: "financial_account_id", as: "financialAccount" });
+
 /* ==== EVENT MANAGEMENT ASSOCIATIONS ==== */
 Society.hasMany(Event, { foreignKey: "society_id", as: "events" });
 Event.belongsTo(Society, { foreignKey: "society_id", as: "society" });
@@ -605,6 +668,25 @@ AmenityBookingTermsAcceptance.belongsTo(Amenity, { foreignKey: "amenity_id", as:
 AmenityBookingTermsAcceptance.belongsTo(User, { foreignKey: "user_id", as: "user" });
 AmenityBookingTermsAcceptance.belongsTo(Society, { foreignKey: "society_id", as: "society" });
 
+// Meeting Minutes (MOM) Associations
+Society.hasMany(MeetingCategory, { foreignKey: "society_id", as: "meetingCategories" });
+MeetingCategory.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
+Society.hasMany(MeetingMinutes, { foreignKey: "society_id", as: "meetingMinutes" });
+MeetingMinutes.belongsTo(Society, { foreignKey: "society_id", as: "society" });
+
+MeetingCategory.hasMany(MeetingMinutes, { foreignKey: "category_id", as: "meetings" });
+MeetingMinutes.belongsTo(MeetingCategory, { foreignKey: "category_id", as: "category" });
+
+MeetingMinutes.belongsTo(User, { foreignKey: "created_by", as: "creator" });
+MeetingMinutes.belongsTo(User, { foreignKey: "updated_by", as: "updater" });
+
+MeetingMinutes.hasMany(MeetingAttendee, { foreignKey: "meeting_id", as: "attendees" });
+MeetingAttendee.belongsTo(MeetingMinutes, { foreignKey: "meeting_id", as: "meeting" });
+
+User.hasMany(MeetingAttendee, { foreignKey: "user_id", as: "meetingAttendances" });
+MeetingAttendee.belongsTo(User, { foreignKey: "user_id", as: "user" });
+
 module.exports = {
   sequelize,
   User,
@@ -626,6 +708,7 @@ module.exports = {
   Parcel,
   GuardShift,
   GuardShiftTiming,
+  GuardShiftPlace,
   ParkingSlot,
   Amenity,
   AmenityBooking,
@@ -638,12 +721,18 @@ module.exports = {
   FlatMembership,
   BillingRule,
   MaintenanceRate,
+  MaintenanceLateFeeConfig,
+  BillLateFeeWaiver,
   AccountantAssignment,
   RolePermission,
   EmergencyAcknowledgement,
   Expense,
   LedgerEntry,
   FinancialAuditLog,
+  SocietyFinancialAccount,
+  ExpenseCategory,
+  FixedDeposit,
+  FixedDepositTransaction,
   CleaningStaff,
   CleaningStaffPass,
   CleaningStaffAttendance,
@@ -659,4 +748,7 @@ module.exports = {
   AmenityRule,
   AmenityRuleAttachment,
   AmenityBookingTermsAcceptance,
+  MeetingCategory,
+  MeetingMinutes,
+  MeetingAttendee,
 };

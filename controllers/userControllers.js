@@ -7690,9 +7690,9 @@ const addTenantByOwner = async (req, res) => {
 
       society_id: req.user.society_id,
 
-      approval_status: "INACTIVE",
+      approval_status: "PENDING",
 
-      status: "PENDING",
+      status: "INACTIVE",
 
       resident_type: "TENANT",
 

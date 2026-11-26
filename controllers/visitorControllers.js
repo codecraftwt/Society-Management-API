@@ -81,7 +81,20 @@ const addVisitor = async (req, res) => {
       purpose,
       vehicle_number,
       assigned_slot,   // slot_number string sent by the guard UI
+      guest_count,
     } = req.body;
+
+    const resolvedPurpose = String(purpose || "GUEST").toUpperCase();
+    let resolvedGuestCount = null;
+    if (guest_count !== undefined && guest_count !== null && guest_count !== "") {
+      const parsedCount = Number(guest_count);
+      if (!Number.isInteger(parsedCount) || parsedCount < 1 || parsedCount > 100) {
+        return res.status(400).json({ message: "Guest count must be a whole number between 1 and 100." });
+      }
+      resolvedGuestCount = parsedCount;
+    } else if (resolvedPurpose === "GUEST") {
+      resolvedGuestCount = 1;
+    }
 
     const cleanName = sanitizeText(visitor_name);
     const cleanMobile = sanitizeText(mobile);
@@ -166,8 +179,9 @@ const addVisitor = async (req, res) => {
       society_id:     req.user.society_id,
       visitor_name,
       mobile,
-      purpose:        purpose || "GUEST",
+      purpose:        resolvedPurpose,
       vehicle_number: vehicle_number || null,
+      guest_count:    resolvedGuestCount,
     });
 
     /* ── If a vehicle + slot were provided, create ParkingRequest ──

@@ -26,8 +26,16 @@ const Bill = sequelize.define("Bill", {
   },
   // Reference to the MaintenanceRates config that generated this maintenance bill.
   maintenance_rate_id: { type: DataTypes.INTEGER, allowNull: true },
+  // Snapshot of the collection bank account assigned at bill generation/initiation.
+  financial_account_id: { type: DataTypes.INTEGER, allowNull: true },
   // Optional snapshot of how the amount was calculated at generation time.
-  calculation_details: { type: DataTypes.TEXT, allowNull: true }
+  calculation_details: { type: DataTypes.TEXT, allowNull: true },
+  // Late fee policy snapshot captured at bill generation time.
+  late_fee_enabled: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  late_fee_type: { type: DataTypes.STRING(32), allowNull: true, defaultValue: null },
+  late_fee_value: { type: DataTypes.DECIMAL(10, 2), allowNull: true, defaultValue: null },
+  late_fee_grace_days: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  late_fee_max_amount: { type: DataTypes.DECIMAL(10, 2), allowNull: true, defaultValue: null },
 }, {
   tableName: "bills",
   timestamps: true,

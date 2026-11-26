@@ -1,16 +1,23 @@
 const { Op, Sequelize } = require("sequelize");
 const {
   MaintenanceRate,
+  MaintenanceLateFeeConfig,
   Bill,
+  BillLateFeeWaiver,
+  Payment,
   Flat,
   Block,
   FlatMembership,
   User,
   Notification,
   UserSetting,
+  SocietyFinancialAccount,
 } = require("../models");
+const sequelize = require("../config/db");
+const { calculateLateFee, buildBillLateFeeFields } = require("../utils/lateFeeHelper");
 const { sendPushNotification } = require("../utils/pushNotification");
-const { auditLog } = require("../utils/ledgerService");
+const { auditLog, getDefaultBankAccount } = require("../utils/ledgerService");
+const { formatAccount } = require("./financialAccountControllers");
 const notificationService = require("../services/notificationService");
 const { getOccupancyContextForFlats } = require("../utils/flatOccupancy");
 
@@ -28,6 +35,122 @@ const MAINTENANCE_TYPES = ["LUMPSUM", "SQ_FEET", "FLAT"];
 const FLAT_TYPES = ["1BHK", "2BHK", "3BHK", "ROW_HOUSE", "COMMERCIAL", "ALL"];
 const RESIDENT_TYPES = ["OWNER", "TENANT"];
 const FREQUENCIES = ["MONTHLY", "QUARTERLY", "YEARLY", "ONE_TIME"];
+
+const LATE_FEE_TYPES = ["FIXED_PER_MONTH", "FIXED_ONE_TIME", "PERCENT_PER_MONTH"];
+
+function normalizeLateFeePolicyInput(body = {}, fallbackConfig = null) {
+  const hasExplicitEnabled = body.late_fee_enabled !== undefined || body.is_enabled !== undefined;
+  const isEnabled = hasExplicitEnabled
+    ? Boolean(body.late_fee_enabled ?? body.is_enabled)
+    : Boolean(fallbackConfig?.is_enabled);
+
+  const rawType = body.late_fee_type ?? body.fee_type ?? fallbackConfig?.fee_type ?? "FIXED_PER_MONTH";
+  const feeType = String(rawType).toUpperCase();
+  if (!LATE_FEE_TYPES.includes(feeType)) {
+    return { error: `late_fee_type must be one of: ${LATE_FEE_TYPES.join(", ")}` };
+  }
+
+  const rawValue = body.late_fee_value ?? body.fee_amount ?? fallbackConfig?.fee_amount ?? 0;
+  const feeValue = Number(rawValue);
+  if (!Number.isFinite(feeValue) || feeValue < 0) {
+    return { error: "Late fee amount must be a non-negative number." };
+  }
+  if (feeType === "PERCENT_PER_MONTH" && feeValue > 100) {
+    return { error: "Percentage late fee cannot exceed 100%." };
+  }
+
+  const rawGrace = body.late_fee_grace_days ?? body.grace_days ?? fallbackConfig?.grace_days ?? 0;
+  const graceDays = parseInt(rawGrace, 10);
+  if (!Number.isInteger(graceDays) || graceDays < 0 || graceDays > 365) {
+    return { error: "Grace days must be a whole number between 0 and 365." };
+  }
+
+  const rawMax = body.late_fee_max_amount !== undefined ? body.late_fee_max_amount : (body.max_fee_amount !== undefined ? body.max_fee_max_amount : fallbackConfig?.max_fee_amount);
+  let maxFeeAmount = null;
+  if (rawMax !== undefined && rawMax !== null && rawMax !== "") {
+    const parsedMax = Number(rawMax);
+    if (!Number.isFinite(parsedMax) || parsedMax < 0) {
+      return { error: "Maximum late fee must be a non-negative number." };
+    }
+    maxFeeAmount = parsedMax;
+  }
+
+  return {
+    data: {
+      is_enabled: isEnabled,
+      fee_type: feeType,
+      fee_amount: feeValue,
+      grace_days: graceDays,
+      max_fee_amount: maxFeeAmount,
+    },
+  };
+}
+
+/* ─────────────────────────────────────────
+   GET SOCIETY LATE FEE CONFIG
+   GET /maintenance/late-fee-config
+───────────────────────────────────────── */
+const getLateFeeConfig = async (req, res) => {
+  try {
+    const societyId = req.user.society_id;
+    const config = await MaintenanceLateFeeConfig.findOne({ where: { society_id: societyId } });
+    if (!config) {
+      return res.json({
+        society_id: societyId,
+        is_enabled: false,
+        fee_type: "FIXED_PER_MONTH",
+        fee_amount: 0,
+        grace_days: 0,
+        max_fee_amount: null,
+      });
+    }
+    return res.json(config);
+  } catch (err) {
+    console.error("[getLateFeeConfig]", err);
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+/* ─────────────────────────────────────────
+   SAVE SOCIETY LATE FEE CONFIG
+   POST/PUT /maintenance/late-fee-config
+───────────────────────────────────────── */
+const saveLateFeeConfig = async (req, res) => {
+  try {
+    const societyId = req.user.society_id;
+    const { data, error } = normalizeLateFeePolicyInput(req.body);
+    if (error) return res.status(400).json({ message: error });
+
+    let config = await MaintenanceLateFeeConfig.findOne({ where: { society_id: societyId } });
+    const oldVal = config ? config.toJSON() : null;
+    if (config) {
+      await config.update({ ...data, updated_by: req.user.id });
+    } else {
+      config = await MaintenanceLateFeeConfig.create({
+        society_id: societyId,
+        ...data,
+        created_by: req.user.id,
+        updated_by: req.user.id,
+      });
+    }
+
+    await stampAudit({
+      societyId,
+      action: oldVal ? "LATE_FEE_CONFIG_UPDATED" : "LATE_FEE_CONFIG_CREATED",
+      entityType: "MaintenanceLateFeeConfig",
+      entityId: config.id,
+      oldValue: oldVal,
+      newValue: config.toJSON(),
+      reason: null,
+      actor: req.user,
+    });
+
+    return res.status(oldVal ? 200 : 201).json({ config });
+  } catch (err) {
+    console.error("[saveLateFeeConfig]", err);
+    return res.status(500).json({ message: err.message });
+  }
+};
 
 const addDays = (days) => {
   const date = new Date();
@@ -54,6 +177,7 @@ function normalizeRateInput(body, society_id) {
     frequency,
     description,
     is_active,
+    financial_account_id,
   } = body;
   const validNonNegative = (value) => value !== undefined && value !== null && value !== "" && Number.isFinite(Number(value)) && Number(value) >= 0;
 
@@ -103,6 +227,7 @@ function normalizeRateInput(body, society_id) {
       frequency: frequency || "MONTHLY",
       description: (description || "").toString().trim() || null,
       is_active: is_active === undefined ? true : !!is_active,
+      financial_account_id: financial_account_id ? parseInt(financial_account_id, 10) : null,
     },
   };
 }
@@ -148,9 +273,22 @@ const getConfigs = async (req, res) => {
   try {
     const rates = await MaintenanceRate.findAll({
       where: { society_id: req.user.society_id },
+      include: [
+        {
+          model: SocietyFinancialAccount,
+          as: "financialAccount",
+          required: false,
+          attributes: ["id", "account_name", "account_type", "bank_name", "account_number", "status"],
+        },
+      ],
       order: [["maintenance_type", "ASC"], ["flat_type", "ASC"], ["id", "ASC"]],
     });
-    return res.json(rates);
+    const formatted = rates.map((r) => {
+      const j = r.toJSON();
+      if (j.financialAccount) j.financialAccount = formatAccount(j.financialAccount);
+      return j;
+    });
+    return res.json(formatted);
   } catch (err) {
     console.error("[getConfigs]", err);
     res.status(500).json({ message: err.message });
@@ -165,6 +303,15 @@ const saveConfig = async (req, res) => {
   try {
     const { error, data } = normalizeRateInput(req.body, req.user.society_id);
     if (error) return res.status(400).json({ message: error });
+
+    if (data.financial_account_id) {
+      const acc = await SocietyFinancialAccount.findOne({
+        where: { id: data.financial_account_id, society_id: req.user.society_id },
+      });
+      if (!acc) return res.status(404).json({ message: "Selected collection bank account not found." });
+      if (acc.status !== "ACTIVE") return res.status(400).json({ message: "Selected collection bank account is inactive." });
+      if (acc.account_type === "CASH") return res.status(400).json({ message: "Maintenance collection account must be a Bank Account, not Cash." });
+    }
 
     // Validate FLAT configs against the flat types that actually exist in this society.
     if (data.maintenance_type === "FLAT") {
@@ -688,13 +835,23 @@ const generateBills = async (req, res) => {
     const notified = new Set();
     const notificationQueue = [];
 
+    const defaultBank = await getDefaultBankAccount(societyId);
+    const rateById = new Map(rates.map((r) => [r.id, r]));
+    const societyLateFeeConfig = await MaintenanceLateFeeConfig.findOne({ where: { society_id: societyId } });
+    const { data: lateFeePolicy, error: lateFeeError } = normalizeLateFeePolicyInput(req.body, societyLateFeeConfig);
+    if (lateFeeError) {
+      return res.status(400).json({ message: lateFeeError });
+    }
+
     for (const item of items) {
       if (item.is_already_billed) {
         summary.skipped_duplicates += 1;
         continue;
       }
 
+      const matchedRate = rateById.get(item.rate_id);
       const bill = await Bill.create({
+        society_id: societyId,
         flat_id: item.flat_id,
         title: `Maintenance ${requestedMonth}`,
         amount: item.amount,
@@ -705,7 +862,13 @@ const generateBills = async (req, res) => {
         status: "PENDING",
         type: "MAINTENANCE",
         maintenance_rate_id: item.rate_id,
+        financial_account_id: matchedRate?.financial_account_id || defaultBank?.id || null,
         calculation_details: item.calculation_details ? JSON.stringify(item.calculation_details) : null,
+        late_fee_enabled: lateFeePolicy.is_enabled,
+        late_fee_type: lateFeePolicy.is_enabled ? lateFeePolicy.fee_type : null,
+        late_fee_value: lateFeePolicy.is_enabled ? lateFeePolicy.fee_amount : null,
+        late_fee_grace_days: lateFeePolicy.is_enabled ? lateFeePolicy.grace_days : 0,
+        late_fee_max_amount: lateFeePolicy.is_enabled ? lateFeePolicy.max_fee_amount : null,
       });
 
       results.push(bill);
@@ -889,6 +1052,11 @@ const listBills = async (req, res) => {
         "type",
         "maintenance_rate_id",
         "calculation_details",
+        "late_fee_enabled",
+        "late_fee_type",
+        "late_fee_value",
+        "late_fee_grace_days",
+        "late_fee_max_amount",
         "created_at",
       ],
       include: [
@@ -908,10 +1076,32 @@ const listBills = async (req, res) => {
           include: [{ model: Block, attributes: ["id", "name"], required: false }],
           required: true,
         },
+        {
+          model: BillLateFeeWaiver,
+          as: "lateFeeWaivers",
+          required: false,
+          attributes: ["id", "waiver_amount", "reason", "waived_by", "created_at"],
+        },
+        {
+          model: Payment,
+          required: false,
+          attributes: ["id", "amount", "base_amount", "late_fee_amount", "waived_amount", "status", "confirmed_at"],
+        },
       ],
       order: [["created_at", "DESC"]],
     });
-    return res.json(bills);
+    const enriched = bills.map((bill) => {
+      const plain = bill.toJSON();
+      const settledPayment = (plain.Payments || []).find((p) => p.status === "SUCCESS") || null;
+      return {
+        ...plain,
+        ...buildBillLateFeeFields(plain, {
+          waivers: plain.lateFeeWaivers || [],
+          settledPayment,
+        }),
+      };
+    });
+    return res.json(enriched);
   } catch (err) {
     console.error("[listBills]", err);
     res.status(500).json({ message: err.message });
@@ -957,10 +1147,146 @@ const getBillDetail = async (req, res) => {
       owner = flat.FlatMemberships[0];
     }
 
-    return res.json({ bill, rate, owner });
+    const [waivers, payments] = await Promise.all([
+      BillLateFeeWaiver.findAll({
+        where: { bill_id: bill.id },
+        include: [{ model: User, as: "waivedByUser", attributes: ["id", "name", "role"], required: false }],
+        order: [["created_at", "DESC"]],
+      }),
+      Payment.findAll({
+        where: { bill_id: bill.id },
+        order: [["id", "DESC"]],
+      }),
+    ]);
+
+    const settledPayment = payments.find((p) => p.status === "SUCCESS") || null;
+    const lateFeeSummary = buildBillLateFeeFields(bill, { waivers, settledPayment });
+
+    return res.json({
+      bill: { ...bill.toJSON(), ...lateFeeSummary },
+      rate,
+      owner,
+      waivers,
+      lateFeeSummary,
+    });
   } catch (err) {
     console.error("[getBillDetail]", err);
     res.status(500).json({ message: err.message });
+  }
+};
+
+/* ─────────────────────────────────────────
+   WAIVE LATE FEE ON A MAINTENANCE BILL
+   POST /maintenance/bills/:billId/waive-late-fee
+───────────────────────────────────────── */
+const waiveLateFee = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const billId = Number(req.params.billId || req.params.id);
+    const { waiver_amount, reason } = req.body || {};
+
+    if (!Number.isInteger(billId) || billId <= 0) {
+      await t.rollback();
+      return res.status(400).json({ message: "Invalid bill id." });
+    }
+    const cleanReason = String(reason || "").trim();
+    if (!cleanReason) {
+      await t.rollback();
+      return res.status(400).json({ message: "Waiver reason is required." });
+    }
+
+    const parsedWaiver = Number(waiver_amount);
+    if (!Number.isFinite(parsedWaiver) || parsedWaiver <= 0) {
+      await t.rollback();
+      return res.status(400).json({ message: "Waiver amount must be greater than 0." });
+    }
+
+    const bill = await Bill.findOne({
+      where: { id: billId, type: "MAINTENANCE" },
+      include: [{ model: Flat, include: [{ model: Block }] }],
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+    if (!bill) {
+      await t.rollback();
+      return res.status(404).json({ message: "Maintenance bill not found." });
+    }
+
+    const billSocietyId = bill.society_id || bill.Flat?.Block?.society_id;
+    if (Number(billSocietyId) !== Number(req.user.society_id)) {
+      await t.rollback();
+      return res.status(403).json({ message: "Not authorized to waive late fee for this society's bill." });
+    }
+
+    if (bill.status === "PAID") {
+      await t.rollback();
+      return res.status(400).json({ message: "Cannot waive late fee on a bill that is already paid." });
+    }
+    if (bill.status === "PENDING_VERIFICATION") {
+      await t.rollback();
+      return res.status(400).json({ message: "Cannot waive late fee while payment verification is pending." });
+    }
+
+    const existingWaivers = await BillLateFeeWaiver.findAll({
+      where: { bill_id: bill.id },
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    const beforeCalc = calculateLateFee(bill, { waivers: existingWaivers });
+    if (beforeCalc.outstandingLateFee <= 0) {
+      await t.rollback();
+      return res.status(400).json({ message: "There is no outstanding late fee on this bill to waive." });
+    }
+    if (parsedWaiver > beforeCalc.outstandingLateFee) {
+      await t.rollback();
+      return res.status(400).json({
+        message: `Waiver amount (₹${parsedWaiver}) cannot exceed outstanding late fee (₹${beforeCalc.outstandingLateFee}).`,
+      });
+    }
+
+    const waiver = await BillLateFeeWaiver.create(
+      {
+        bill_id: bill.id,
+        waiver_amount: parsedWaiver,
+        reason: cleanReason,
+        waived_by: req.user.id,
+      },
+      { transaction: t }
+    );
+
+    const allWaivers = [...existingWaivers, waiver];
+    const afterSummary = buildBillLateFeeFields(bill, { waivers: allWaivers });
+
+    await stampAudit({
+      societyId: req.user.society_id,
+      action: "BILL_LATE_FEE_WAIVED",
+      entityType: "Bill",
+      entityId: bill.id,
+      oldValue: {
+        late_fee: beforeCalc.outstandingLateFee,
+        waived_amount: beforeCalc.waivedAmount,
+        total_payable: beforeCalc.totalPayable,
+      },
+      newValue: {
+        waiver_amount: parsedWaiver,
+        reason: cleanReason,
+        ...afterSummary,
+      },
+      reason: cleanReason,
+      actor: req.user,
+    });
+
+    await t.commit();
+    return res.status(201).json({
+      message: "Late fee waived successfully.",
+      waiver,
+      summary: afterSummary,
+    });
+  } catch (err) {
+    await t.rollback();
+    console.error("[waiveLateFee]", err);
+    return res.status(500).json({ message: err.message });
   }
 };
 
@@ -968,9 +1294,12 @@ module.exports = {
   getConfigs,
   saveConfig,
   deleteConfig,
+  getLateFeeConfig,
+  saveLateFeeConfig,
   generateBills,
   previewBills,
   listBills,
   getBillDetail,
+  waiveLateFee,
   listFlatTypes,
 };

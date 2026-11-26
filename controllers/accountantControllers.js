@@ -1,5 +1,8 @@
-const { Bill, Flat, User, Block, Payment, Society, AmenityBooking, Amenity, FlatMembership, sequelize } = require("../models");
+const { Bill, Flat, User, Block, Payment, Society, AmenityBooking, Amenity, FlatMembership, SocietyFinancialAccount, sequelize } = require("../models");
 const { Op } = require("sequelize");
+const { createLedgerEntry, ensureCashAccount, getDefaultBankAccount } = require("../utils/ledgerService");
+const { formatAccount } = require("./financialAccountControllers");
+const { processConfirmSingleBill } = require("./billControllers");
 
 const getSocietyBills = async (req, res) => {
   try {
@@ -53,13 +56,36 @@ const getPayments = async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const offset = (page - 1) * pagesize;
 
-    const where = { society_id: req.user.society_id };
+    const societyId = req.user.activeRole === "SUPER_ADMIN"
+      ? parseInt(req.headers["x-society-id"] || req.query.society_id, 10) || req.user.society_id
+      : req.user.society_id;
+
+    const where = { society_id: societyId };
     if (req.query.status) where.status = req.query.status.toUpperCase();
+    else where.status = { [Op.ne]: "INITIATED" };
     if (req.query.source) where.source = req.query.source.toUpperCase();
+    if (req.query.financial_account_id && req.query.financial_account_id !== "ALL") {
+      const upper = String(req.query.financial_account_id).toUpperCase();
+      if (upper === "CASH") {
+        const cashAcc = await ensureCashAccount(societyId);
+        if (cashAcc) where.financial_account_id = cashAcc.id;
+      } else if (upper === "LEGACY") {
+        where.financial_account_id = null;
+      } else {
+        const accId = parseInt(req.query.financial_account_id, 10);
+        if (Number.isInteger(accId) && accId > 0) where.financial_account_id = accId;
+      }
+    }
 
     const { count, rows } = await Payment.findAndCountAll({
       where,
       include: [
+        {
+          model: SocietyFinancialAccount,
+          as: "financialAccount",
+          required: false,
+          attributes: ["id", "account_name", "account_type", "bank_name", "account_number"],
+        },
         {
           model: Bill,
           required: false,
@@ -121,9 +147,15 @@ const getPayments = async (req, res) => {
       offset,
     });
 
+    const formattedRows = rows.map((r) => {
+      const j = r.toJSON ? r.toJSON() : { ...r };
+      if (j.financialAccount) j.financialAccount = formatAccount(j.financialAccount);
+      return j;
+    });
+
     res.status(200).json({
       success: true,
-      data: rows,
+      data: formattedRows,
       pagination: { currentPage: page, totalPages: Math.ceil(count / pagesize), totalItems: count, limit: pagesize },
     });
   } catch (err) {
@@ -268,4 +300,109 @@ const getDashboardStats = async (req, res) => {
   }
 };
 
-module.exports = { getSocietyBills, getPayments, monthlyCollection, getDashboardStats };
+const confirmPaymentRecord = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const payment = await Payment.findByPk(req.params.id, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+    if (!payment) {
+      await t.rollback();
+      return res.status(404).json({ success: false, message: "Payment record not found." });
+    }
+    const societyId = req.user.activeRole === "SUPER_ADMIN"
+      ? parseInt(req.headers["x-society-id"] || req.query.society_id, 10) || payment.society_id
+      : req.user.society_id;
+    if (Number(payment.society_id) !== Number(societyId)) {
+      await t.rollback();
+      return res.status(403).json({ success: false, message: "Not authorized for this society's payment." });
+    }
+    if (payment.status === "SUCCESS") {
+      await t.commit();
+      return res.json({ success: true, alreadyProcessed: true, message: "Payment already confirmed." });
+    }
+    if (payment.status !== "PENDING") {
+      await t.rollback();
+      return res.status(400).json({ success: false, message: `Cannot confirm payment in status ${payment.status}.` });
+    }
+
+    if (payment.bill_id) {
+      await t.rollback();
+      const bill = await Bill.findByPk(payment.bill_id, {
+        include: [{ model: Flat, include: [{ model: Block }] }],
+      });
+      if (!bill) return res.status(404).json({ success: false, message: "Associated bill not found." });
+      await processConfirmSingleBill(bill, req.user, societyId, {
+        payment_mode: req.body?.payment_mode,
+        financial_account_id: req.body?.financial_account_id,
+      });
+      return res.json({ success: true, message: "Bill payment confirmed." });
+    }
+
+    if (payment.amenity_booking_id) {
+      const booking = await AmenityBooking.findByPk(payment.amenity_booking_id, {
+        include: [{ model: Amenity, attributes: ["id", "name", "requires_approval"] }],
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      if (!booking) {
+        await t.rollback();
+        return res.status(404).json({ success: false, message: "Associated amenity booking not found." });
+      }
+      const resolvedMode = req.body?.payment_mode ? String(req.body.payment_mode).toUpperCase() : payment.payment_mode || "RAZORPAY";
+      let resolvedAccId = payment.financial_account_id || booking.financial_account_id || null;
+      if (resolvedMode === "CASH") {
+        const cash = await ensureCashAccount(societyId, t);
+        resolvedAccId = cash?.id || null;
+      } else if (req.body?.financial_account_id) {
+        resolvedAccId = parseInt(req.body.financial_account_id, 10);
+      } else if (!resolvedAccId) {
+        const defBank = await getDefaultBankAccount(societyId, t);
+        resolvedAccId = defBank?.id || null;
+      }
+
+      await payment.update(
+        {
+          status: "SUCCESS",
+          payment_mode: resolvedMode,
+          financial_account_id: resolvedAccId,
+          confirmed_by: req.user.id,
+          confirmed_at: new Date(),
+        },
+        { transaction: t }
+      );
+      await booking.update(
+        {
+          payment_status: "PAID",
+          status: booking.Amenity?.requires_approval ? "PENDING" : "APPROVED",
+          financial_account_id: resolvedAccId,
+        },
+        { transaction: t }
+      );
+      await createLedgerEntry({
+        societyId,
+        type: "CREDIT",
+        source: "AMENITY",
+        referenceId: booking.id,
+        amount: payment.amount,
+        entryDate: booking.from_date || booking.date || new Date().toISOString().slice(0, 10),
+        description: `Amenity booking (${booking.Amenity?.name || "Amenity"}) payment confirmed`,
+        financialAccountId: resolvedAccId,
+        actor: req.user,
+        transaction: t,
+      });
+      await t.commit();
+      return res.json({ success: true, message: "Amenity payment confirmed." });
+    }
+
+    await t.rollback();
+    return res.status(400).json({ success: false, message: "Unsupported payment record." });
+  } catch (err) {
+    await t.rollback();
+    console.error("[confirmPaymentRecord]", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+module.exports = { getSocietyBills, getPayments, monthlyCollection, getDashboardStats, confirmPaymentRecord };

@@ -43,10 +43,14 @@ const downloadRoute        = require("./routes/downloadRoute");
 const permissionRoutes      = require("./routes/permissionRoutes");
 const accountingRoutes      = require("./routes/accountingRoutes");
 const expenseRoutes         = require("./routes/expenseRoutes");
+const financialAccountRoutes = require("./routes/financialAccountRoutes");
+const expenseCategoryRoutes  = require("./routes/expenseCategoryRoutes");
+const fixedDepositRoutes     = require("./routes/fixedDepositRoutes");
 const cleaningStaffRoutes   = require("./routes/cleaningStaffRoutes");
 const guardAttendanceRoutes  = require("./routes/guardAttendanceRoutes");
 const eventRoutes            = require("./routes/eventRoutes");
 const ruleRoutes             = require("./routes/ruleRoutes");
+const meetingMinutesRoutes   = require("./routes/meetingMinutesRoutes");
 const app = express();
 
 app.use(cors());
@@ -99,10 +103,14 @@ app.use("/api/maintenance",   maintenanceRoutes);
 app.use("/api/permissions",   permissionRoutes);
 app.use("/api/account",       accountingRoutes);
 app.use("/api/expenses",      expenseRoutes);
+app.use("/api/financial-accounts", financialAccountRoutes);
+app.use("/api/expense-categories", expenseCategoryRoutes);
+app.use("/api/fixed-deposits",     fixedDepositRoutes);
 app.use("/api/cleaning-staff", cleaningStaffRoutes);
 app.use("/api/guard-attendance", guardAttendanceRoutes);
 app.use("/api/events",            eventRoutes);
 app.use("/api/rules",             ruleRoutes);
+app.use("/api/meeting-minutes",   meetingMinutesRoutes);
 app.use("/uploads",            express.static("uploads"));
 
 app.get("/", (req, res) => {

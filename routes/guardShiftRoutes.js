@@ -13,6 +13,10 @@ const {
   getGuardShiftByGuard,
   getShiftTimingsCtrl,
   upsertShiftTimings,
+  listShiftPlaces,
+  createShiftPlace,
+  updateShiftPlace,
+  deleteShiftPlace,
 } = require("../controllers/guardShiftControllers");
 
 
@@ -26,6 +30,12 @@ router.get("/my", auth, role("GUARD"), getMyShift);
 // would be captured as a guardId param.
 router.get("/timings", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getShiftTimingsCtrl);
 router.put("/timings", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), upsertShiftTimings);
+
+// Society shift-places config — MUST stay before GET /:guardId
+router.get("/places", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT", "GUARD"), listShiftPlaces);
+router.post("/places", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), createShiftPlace);
+router.put("/places/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), updateShiftPlace);
+router.delete("/places/:id", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), deleteShiftPlace);
 
 // Admin / Committee views all shifts
 router.get("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getSocietyShifts);

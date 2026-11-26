@@ -17,6 +17,7 @@ const {
   forgotPassword, resetPassword,updateFCMToken,promoteToCommittee, removeCommittee, addTenantByOwner,
   removeTenantByOwner, getPendingResidents, renewTenantLease, deleteAccountant, getTenantHistoryForOwner
 } = require("../controllers/userControllers");
+const { getManagementTeam } = require("../controllers/managementTeamController");
 
 // Allow Super Admin, Admin, Committee, Accountant to view and manage residents
 router.get("/resident/unassigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), getUnassignedResidents);
@@ -87,6 +88,14 @@ router.delete("/me/profile-picture", auth, removeMyProfilePicture);
 
 // ✅ All authenticated roles can view their own profile and permissions
 router.get("/me", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT", "RESIDENT", "GUARD", "FAMILY_MEMBER"), getMyProfile);
+
+// ✅ Society Management Team Directory (Admin, Committee Members, Accountants for the user's society)
+router.get(
+  "/management-team",
+  auth,
+  role("RESIDENT", "FAMILY_MEMBER", "COMMITTEE_MEMBER", "SOCIETY_ADMIN", "ACCOUNTANT", "GUARD", "SUPER_ADMIN"),
+  getManagementTeam
+);
 
 // Allow Super Admin to manage accountant
 router.post("/accountant", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), createAccountant);

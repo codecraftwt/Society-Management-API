@@ -12,12 +12,12 @@
 // // //   unassignResident,
 // // //   getAssignedFlats,
 // // //   getUnassignedFlats,
-// // //   getNeighbours,
+// // // 
 // // //   deleteFlat
 // // // } = require("../controllers/flatControllers");
 
 // // // // ✅ Neighbours & Listings
-// // // router.get("/neighbours", auth, role("RESIDENT", "FAMILY_MEMBER"), getNeighbours);
+// // // 
 // // // router.get("/getall", auth, role("SOCIETY_ADMIN"), getAllFlats);
 // // // router.get("/unassigned", auth, role("SOCIETY_ADMIN", "ACCOUNTANT"), getUnassignedFlats);
 // // // router.get("/assigned", auth, role("SOCIETY_ADMIN", "RESIDENT", "GUARD", "ACCOUNTANT","FAMILY_MEMBER"), getAssignedFlats);
@@ -48,13 +48,13 @@
 // //   unassignResident,
 // //   getAssignedFlats,
 // //   getUnassignedFlats,
-// //   getNeighbours,
+// // 
 // //   deleteFlat,
 // //   getAllFlats
 // // } = require("../controllers/flatControllers");
 
 // // // ✅ Neighbours & Listings
-// // router.get("/neighbours", auth, role("RESIDENT", "FAMILY_MEMBER"), getNeighbours);
+// // 
 // // router.get("/getall", auth, role("SOCIETY_ADMIN"), getAllFlats);
 // // router.get("/unassigned", auth, role("SOCIETY_ADMIN", "ACCOUNTANT"), getUnassignedFlats);
 // // router.get("/assigned", auth, role("SOCIETY_ADMIN", "RESIDENT", "GUARD", "ACCOUNTANT","FAMILY_MEMBER"), getAssignedFlats);
@@ -92,7 +92,7 @@
 //   assignResident,
 //   getUnassignedFlats,
 //   deleteFlat,
-//   getNeighbours,
+// 
 //   getFlatsByBlockAndFloor
 // } = require("../controllers/flatControllers");
 
@@ -100,7 +100,7 @@
 // router.get("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN"), getAllFlats);
 // router.get("/unassigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getUnassignedFlats);
 // router.get("/assigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER"), getAssignedFlats);
-// router.get("/neighbours", auth, role("RESIDENT", "FAMILY_MEMBER"), getNeighbours);
+// 
 // router.get("/filter", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "GUARD"), getFlatsByBlockAndFloor);
 // router.get("/:blockId", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "GUARD"), getFlatsByBlockAndFloor);
 
@@ -128,7 +128,7 @@ const {
   assignResident,
   getUnassignedFlats,
   deleteFlat,
-  getNeighbours,
+
   getFlatsByBlockAndFloor,
   updateFlat,
   bulkUpdateFlats,
@@ -139,7 +139,7 @@ router.get("/", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "
 router.get("/getall", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), getAllFlats);
 router.get("/unassigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"), getUnassignedFlats);
 router.get("/assigned", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "GUARD", "ACCOUNTANT"), getAssignedFlats);
-router.get("/neighbours", auth, role("RESIDENT", "FAMILY_MEMBER"), getNeighbours);
+
 router.get("/filter", auth, role("SUPER_ADMIN", "SOCIETY_ADMIN", "GUARD", "COMMITTEE_MEMBER", "ACCOUNTANT"), getFlatsByBlockAndFloor);
 
 // ✅ THIS WAS MISSING — frontend calls /flats/list?blockId=X

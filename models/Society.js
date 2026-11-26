@@ -12,6 +12,8 @@ const Society = sequelize.define("Society", {
   opening_balance_effective_date: { type: DataTypes.DATEONLY, allowNull: true },
   opening_balance_set_by: { type: DataTypes.INTEGER, allowNull: true },
   opening_balance_set_at: { type: DataTypes.DATE, allowNull: true },
+  accounting_mode: { type: DataTypes.ENUM("LEGACY", "MULTI_ACCOUNT"), allowNull: false, defaultValue: "LEGACY" },
+  accounting_cutover_date: { type: DataTypes.DATEONLY, allowNull: true },
   // Society-specific dynamic theme branding customization
   primary_color: { type: DataTypes.STRING(20), allowNull: true, defaultValue: null },
   accent_color: { type: DataTypes.STRING(20), allowNull: true, defaultValue: null },

@@ -2,6 +2,7 @@ const { Op } = require("sequelize");
 const {
   GuardAttendance,
   GuardShift,
+  GuardShiftPlace,
   Society,
   User,
 } = require("../models");
@@ -549,7 +550,14 @@ const getTodayAttendance = handle(async (req, res) => {
         society_id: societyId,
         attendance_date: { [Op.in]: [addDays(today, -1), today] },
       },
-      include: [{ model: GuardShift, as: "shift", attributes: ["shift_type", "start_date", "end_date"] }],
+      include: [
+        {
+          model: GuardShift,
+          as: "shift",
+          attributes: ["shift_type", "start_date", "end_date", "shift_place_id"],
+          include: [{ model: GuardShiftPlace, as: "shiftPlace", attributes: ["id", "name"] }],
+        },
+      ],
       order: [["punch_in", "DESC"]],
     }),
     societyId
@@ -621,7 +629,8 @@ const listAttendance = handle(async (req, res) => {
       {
         model: GuardShift,
         as: "shift",
-        attributes: ["shift_type", "start_date", "end_date"],
+        attributes: ["shift_type", "start_date", "end_date", "shift_place_id"],
+        include: [{ model: GuardShiftPlace, as: "shiftPlace", attributes: ["id", "name"] }],
       },
       {
         model: Society,
@@ -666,7 +675,12 @@ const getTodaySummary = handle(async (req, res) => {
     where,
     include: [
       { model: User, as: "guard", attributes: ["id", "name", "phone", "profile_picture"] },
-      { model: GuardShift, as: "shift", attributes: ["shift_type"] },
+      {
+        model: GuardShift,
+        as: "shift",
+        attributes: ["shift_type", "shift_place_id"],
+        include: [{ model: GuardShiftPlace, as: "shiftPlace", attributes: ["id", "name"] }],
+      },
       { model: Society, as: "society", attributes: ["id", "name"] },
     ],
     order: [["punch_in", "ASC"]],

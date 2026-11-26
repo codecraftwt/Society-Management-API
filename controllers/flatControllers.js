@@ -216,14 +216,14 @@ const assignFlatToResident = async (req, res) => {
       { where: { flat_id: flatId, is_current: true } }
     );
     await FlatMembership.create({
-      flat_id:          flatId,
-      user_id:          resident_id,
-      society_id:       effectiveSocietyId || null,
-      role:             "OWNER",
-      is_staying:       true,
+      flat_id: flatId,
+      user_id: resident_id,
+      society_id: effectiveSocietyId || null,
+      role: "OWNER",
+      is_staying: true,
       pays_maintenance: true,
-      move_in_date:     new Date(),
-      is_current:       true,
+      move_in_date: new Date(),
+      is_current: true,
     });
 
     const flatUpdate = { resident_id };
@@ -445,7 +445,7 @@ const assignResident = async (req, res) => {
     const flatUpdate = {
       resident_id,
       // Routine resident assignment must not overwrite an already-configured BHK
-      flat_type:        flat.flat_type || (["1BHK", "2BHK", "3BHK"].includes(flat_type) ? flat_type : null),
+      flat_type: flat.flat_type || (["1BHK", "2BHK", "3BHK"].includes(flat_type) ? flat_type : null),
       occupancy_status: isTenant ? "RENTED" : "OWNER_OCCUPIED",
     };
     if (req.body.area_sqft != null) flatUpdate.area_sqft = Number(req.body.area_sqft);
@@ -582,14 +582,14 @@ const assignResident = async (req, res) => {
       }, { transaction });
     } else {
       await FlatMembership.create({
-        flat_id:          flatId,
-        user_id:          resident_id,
-        society_id:       effectiveSocietyId,
-        role:             resident_type || "OWNER",
-        is_staying:       true,
+        flat_id: flatId,
+        user_id: resident_id,
+        society_id: effectiveSocietyId,
+        role: resident_type || "OWNER",
+        is_staying: true,
         pays_maintenance: true,
-        move_in_date:     new Date(),
-        is_current:       true,
+        move_in_date: new Date(),
+        is_current: true,
       }, { transaction });
     }
 
@@ -613,7 +613,7 @@ const assignResident = async (req, res) => {
     if (parking_slots.length > 0) {
       for (const [idx, slotData] of parking_slots.entries()) {
         const slotWhere = {
-          id:     slotData.slot_id,
+          id: slotData.slot_id,
           status: "AVAILABLE",
         };
         if (effectiveSocietyId) {
@@ -636,9 +636,9 @@ const assignResident = async (req, res) => {
         // Use what the frontend sent, but enforce index rule as safety net:
         // index 0 = DEFAULT (permanent flat entitlement)
         // index 1+ = EXTRA  (additional removable slot)
-        slot.flat_id      = flatId;
-        slot.resident_id  = resident_id;
-        slot.status       = "ASSIGNED";
+        slot.flat_id = flatId;
+        slot.resident_id = resident_id;
+        slot.status = "ASSIGNED";
         slot.parking_type = idx === 0 ? "DEFAULT" : "EXTRA"; // ✅ enforce on ParkingSlot
 
         await slot.save({ transaction });
@@ -700,10 +700,10 @@ const deleteFlat = async (req, res) => {
 ───────────────────────────────────────────────────────────── */
 const getAssignedFlats = async (req, res) => {
   try {
-    const page       = parseInt(req.query.page)  || 1;
-    const limit      = parseInt(req.query.limit) || 10;
-    const offset     = (page - 1) * limit;
-    const search     = req.query.search      || "";
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+    const search = req.query.search || "";
     const filterType = String(req.query.filter_type || "").toUpperCase();
     const hasTypeFilter = filterType === "OWNER" || filterType === "TENANT";
 
@@ -714,8 +714,8 @@ const getAssignedFlats = async (req, res) => {
     const blockIds = blocks.map((b) => b.id);
 
     const flatWhere = {
-      resident_id:      { [Op.ne]: null },
-      block_id:         { [Op.in]: blockIds },
+      resident_id: { [Op.ne]: null },
+      block_id: { [Op.in]: blockIds },
       ...(search && { flat_number: { [Op.like]: `%${search}%` } }),
     };
 
@@ -724,19 +724,19 @@ const getAssignedFlats = async (req, res) => {
       attributes: ["id", "flat_number", "flat_type", "floor_id", "block_id", "area_sqft"],
       include: [
         {
-          model:      User,
+          model: User,
           attributes: ["id", "name", "phone", "resident_type"],
-          where:      { status: "ACTIVE" },
-          required:   true,
+          where: { status: "ACTIVE" },
+          required: true,
         },
         {
-          model:    Floor,
+          model: Floor,
           required: false,
           attributes: ["id", "floor_number"],
           include: [{ model: Block, required: false, attributes: ["id", "name", "property_type"] }],
         },
         {
-          model:    Block,
+          model: Block,
           required: false,
           attributes: ["id", "name", "property_type"],
         },
@@ -790,8 +790,8 @@ const getAssignedFlats = async (req, res) => {
       data: rows,
       pagination: {
         currentPage: page,
-        totalPages:  Math.ceil(count / limit),
-        totalItems:  count,
+        totalPages: Math.ceil(count / limit),
+        totalItems: count,
       },
       totalAll: count,
     });
@@ -830,40 +830,6 @@ const unassignResident = async (req, res) => {
 
     res.json({ message: "Resident unassigned + history updated" });
   } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-};
-
-const getNeighbours = async (req, res) => {
-  try {
-    const blocks = await Block.findAll({
-      where: { society_id: req.user.society_id },
-      attributes: ["id"],
-    });
-    const blockIds = blocks.map((b) => b.id);
-
-    const myFlats = await Flat.findAll({
-      where: { resident_id: req.user.id, block_id: { [Op.in]: blockIds } },
-      attributes: ["id"],
-    });
-    const myFlatIds = myFlats.map((f) => f.id);
-
-    const where = { resident_id: { [Op.ne]: null }, block_id: { [Op.in]: blockIds } };
-    if (myFlatIds.length > 0) where.id = { [Op.notIn]: myFlatIds };
-
-    const neighbours = await Flat.findAll({
-      where,
-      attributes: ["id", "flat_number", "flat_type"],
-      include: [
-        { model: User, attributes: ["id", "name", "phone", "email"], required: true },
-        ...FLAT_LOCATION_INCLUDE,
-      ],
-      order: [["flat_number", "ASC"]],
-    });
-
-    res.status(200).json(neighbours);
-  } catch (err) {
-    console.error("Error in getNeighbours:", err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -1077,8 +1043,8 @@ module.exports = {
   unassignResident,
   getUnassignedFlats,
   deleteFlat,
-  getNeighbours,
-  getNeighbours,
+
+
   getFlatsByBlockAndFloor,
   getFlatsByBlock: getFlatsByBlockAndFloor, // Alias for convenience
   updateFlat,

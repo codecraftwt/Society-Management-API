@@ -64,6 +64,11 @@ const MaintenanceRate = sequelize.define(
       allowNull: false,
       defaultValue: true,
     },
+    financial_account_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: null,
+    },
   },
   {
     tableName: "MaintenanceRates",

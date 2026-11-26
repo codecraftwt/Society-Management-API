@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const auth = require("../middlewares/authMiddleware");
 const role = require("../middlewares/roleMiddleware");
+const { checkPermission } = require("../middlewares/permissionMiddleware");
 const maintenanceController = require("../controllers/maintenanceControllers");
 
 const VIEW_ROLES = ["SOCIETY_ADMIN", "COMMITTEE_MEMBER", "ACCOUNTANT"];
@@ -26,5 +27,11 @@ router.post("/generate", auth, role(...WRITE_ROLES), maintenanceController.gener
 // Generated bill viewing
 router.get("/bills", auth, role(...VIEW_ROLES), maintenanceController.listBills);
 router.get("/bills/:id", auth, role(...VIEW_ROLES), maintenanceController.getBillDetail);
+
+// Late fee configuration & bill waiver (gated by dynamic RBAC)
+router.get("/late-fee-config", auth, role("SUPER_ADMIN", ...VIEW_ROLES), checkPermission("maintenance", "view"), maintenanceController.getLateFeeConfig);
+router.post("/late-fee-config", auth, role("SUPER_ADMIN", ...WRITE_ROLES), checkPermission("maintenance", "edit"), maintenanceController.saveLateFeeConfig);
+router.put("/late-fee-config", auth, role("SUPER_ADMIN", ...WRITE_ROLES), checkPermission("maintenance", "edit"), maintenanceController.saveLateFeeConfig);
+router.post("/bills/:billId/waive-late-fee", auth, role("SUPER_ADMIN", ...WRITE_ROLES), checkPermission("maintenance", "edit"), maintenanceController.waiveLateFee);
 
 module.exports = router;

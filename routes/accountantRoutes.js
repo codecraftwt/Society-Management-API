@@ -9,6 +9,7 @@ const {
   getPayments,
   monthlyCollection,
   getDashboardStats,
+  confirmPaymentRecord,
 } = require("../controllers/accountantControllers");
 
 const {
@@ -46,6 +47,7 @@ const financeViewRoles = ["SUPER_ADMIN", "SOCIETY_ADMIN", "COMMITTEE_MEMBER", "A
 router.get("/dashboard-stats", auth, role(...financeViewRoles), getDashboardStats);
 router.get("/bills", auth, role(...financeViewRoles), getSocietyBills);
 router.get("/payments", auth, role(...financeViewRoles), getPayments);
+router.put("/payments/:id/confirm", auth, role(...financeViewRoles), confirmPaymentRecord);
 router.get("/payments/summary", auth, role(...financeViewRoles), monthlyCollection);
 
 const uploadProfilePicture = require("../middlewares/uploadProfilePicture");

@@ -1,6 +1,18 @@
-const { LedgerEntry, FinancialAuditLog } = require("../models");
+const { Op } = require("sequelize");
+const { LedgerEntry, FinancialAuditLog, SocietyFinancialAccount, Society } = require("../models");
 
-const VALID_SOURCES = ["BILL", "MAINTENANCE", "AMENITY", "EXPENSE", "ADJUSTMENT"];
+const VALID_SOURCES = [
+  "BILL",
+  "MAINTENANCE",
+  "AMENITY",
+  "EXPENSE",
+  "ADJUSTMENT",
+  "CASH_IN",
+  "ACCOUNT_TRANSFER",
+  "FD_TRANSFER",
+  "FD_MATURITY",
+  "FD_INTEREST",
+];
 const VALID_TYPES = ["CREDIT", "DEBIT"];
 
 /* Roles that carry finance/admin authority. Order = seniority for audit stamps. */
@@ -43,9 +55,78 @@ function resolveActorRole(actor) {
 }
 
 /**
+ * Ensure the society has an active CASH account; creates one lazily if missing.
+ */
+async function ensureCashAccount(societyId, transaction) {
+  if (!societyId) return null;
+  const opts = transaction ? { transaction } : {};
+  let cash = await SocietyFinancialAccount.findOne({
+    where: { society_id: societyId, account_type: "CASH" },
+    ...opts,
+  });
+  if (!cash) {
+    cash = await SocietyFinancialAccount.create(
+      {
+        society_id: societyId,
+        account_name: "Cash in Hand",
+        account_type: "CASH",
+        opening_balance: 0,
+        current_balance: 0,
+        is_default: false,
+        status: "ACTIVE",
+      },
+      opts
+    );
+  }
+  return cash;
+}
+
+/**
+ * Resolve the society's active default bank account (non-CASH).
+ */
+async function getDefaultBankAccount(societyId, transaction) {
+  if (!societyId) return null;
+  const opts = transaction ? { transaction } : {};
+  const explicitDefault = await SocietyFinancialAccount.findOne({
+    where: {
+      society_id: societyId,
+      is_default: true,
+      status: "ACTIVE",
+      account_type: { [Op.ne]: "CASH" },
+    },
+    ...opts,
+  });
+  if (explicitDefault) return explicitDefault;
+
+  return SocietyFinancialAccount.findOne({
+    where: {
+      society_id: societyId,
+      status: "ACTIVE",
+      account_type: { [Op.ne]: "CASH" },
+    },
+    order: [["id", "ASC"]],
+    ...opts,
+  });
+}
+
+/**
+ * Atomically apply a signed balance delta to a SocietyFinancialAccount.
+ */
+async function applyAccountBalanceDelta({ financialAccountId, delta, transaction }) {
+  if (!financialAccountId || !Number.isFinite(Number(delta)) || Number(delta) === 0) return null;
+  const acc = await SocietyFinancialAccount.findByPk(financialAccountId, {
+    ...(transaction ? { transaction, lock: transaction.LOCK.UPDATE } : {}),
+  });
+  if (!acc) return null;
+  const nextBal = Math.round((Number(acc.current_balance || 0) + Number(delta)) * 100) / 100;
+  await acc.update({ current_balance: nextBal }, transaction ? { transaction } : {});
+  return acc;
+}
+
+/**
  * Create a ledger entry inside the given transaction.
  * The unique DB key (society_id, source, reference_id, type) prevents
- * duplicate entries for the same financial unit.
+ * duplicate entries for the same financial unit when referenceId is non-null.
  */
 async function createLedgerEntry({
   societyId,
@@ -55,8 +136,11 @@ async function createLedgerEntry({
   amount,
   entryDate,
   description = null,
+  financialAccountId = null,
+  fdTransactionId = null,
   actor,
   transaction,
+  skipBalanceUpdate = false,
 }) {
   if (!societyId) throw new Error("society_id is required for a ledger entry");
   if (!VALID_TYPES.includes(type)) throw new Error(`Invalid ledger type: ${type}`);
@@ -64,15 +148,19 @@ async function createLedgerEntry({
   const amt = Number(amount);
   if (!Number.isFinite(amt) || amt < 0) throw new Error("Ledger amount must be a non-negative number");
 
-  const existing = await LedgerEntry.findOne({
-    where: { society_id: societyId, type, source, reference_id: referenceId || null },
-    ...(transaction ? { transaction } : {}),
-  });
-  if (existing) return existing; // idempotent - never double post
+  if (referenceId !== null && referenceId !== undefined) {
+    const existing = await LedgerEntry.findOne({
+      where: { society_id: societyId, type, source, reference_id: referenceId },
+      ...(transaction ? { transaction } : {}),
+    });
+    if (existing) return existing; // idempotent - never double post
+  }
 
-  return LedgerEntry.create(
+  const entry = await LedgerEntry.create(
     {
       society_id: societyId,
+      financial_account_id: financialAccountId || null,
+      fd_transaction_id: fdTransactionId || null,
       type,
       source,
       reference_id: referenceId,
@@ -84,22 +172,34 @@ async function createLedgerEntry({
     },
     transaction ? { transaction } : {}
   );
+
+  if (financialAccountId && !skipBalanceUpdate && amt > 0) {
+    const delta = type === "CREDIT" ? amt : -amt;
+    await applyAccountBalanceDelta({ financialAccountId, delta, transaction });
+  }
+
+  return entry;
 }
 
 /**
  * Reverse a previously posted ledger entry (void/cancel).
  * Marks the original REVERSED and posts the opposite-type entry.
  */
-async function reverseLedgerEntry({ entry, actor, reason, transaction }) {
+async function reverseLedgerEntry({ entry, actor, reason, transaction, skipBalanceUpdate = false }) {
   if (!entry || (entry.status && entry.status === "REVERSED")) return entry;
+
+  const reversalType = entry.type === "CREDIT" ? "DEBIT" : "CREDIT";
+  const amt = Number(entry.amount);
 
   const reversal = await LedgerEntry.create(
     {
       society_id: entry.society_id,
-      type: entry.type === "CREDIT" ? "DEBIT" : "CREDIT",
+      financial_account_id: entry.financial_account_id || null,
+      fd_transaction_id: entry.fd_transaction_id || null,
+      type: reversalType,
       source: entry.source,
       reference_id: entry.reference_id,
-      amount: Number(entry.amount),
+      amount: amt,
       entry_date: new Date().toISOString().slice(0, 10),
       description: `Reversal: ${reason || "voided"}`,
       created_by: actor?.id ?? null,
@@ -111,6 +211,16 @@ async function reverseLedgerEntry({ entry, actor, reason, transaction }) {
   );
 
   await entry.update({ status: "REVERSED" }, transaction ? { transaction } : {});
+
+  if (entry.financial_account_id && !skipBalanceUpdate && amt > 0) {
+    const delta = reversalType === "CREDIT" ? amt : -amt;
+    await applyAccountBalanceDelta({
+      financialAccountId: entry.financial_account_id,
+      delta,
+      transaction,
+    });
+  }
+
   return reversal;
 }
 
@@ -190,4 +300,14 @@ async function auditLog({
   );
 }
 
-module.exports = { createLedgerEntry, reverseLedgerEntry, auditLog, resolveActorRole, VALID_SOURCES, VALID_TYPES };
+module.exports = {
+  createLedgerEntry,
+  reverseLedgerEntry,
+  auditLog,
+  resolveActorRole,
+  ensureCashAccount,
+  getDefaultBankAccount,
+  applyAccountBalanceDelta,
+  VALID_SOURCES,
+  VALID_TYPES,
+};

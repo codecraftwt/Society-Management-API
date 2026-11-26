@@ -19,7 +19,7 @@ const {
 const { Op }                   = require("sequelize");
 const { sendPushNotification } = require("../utils/pushNotification");
 const { groupAmenityBookings } = require("../utils/groupAmenityBookings");
-const { createLedgerEntry, reverseLedgerEntry } = require("../utils/ledgerService");
+const { createLedgerEntry, reverseLedgerEntry, getDefaultBankAccount } = require("../utils/ledgerService");
 const { computeRulesetVersion } = require("./amenityRulesController");
 
 /* ─── Demo UPI payment helper ─── */
@@ -380,6 +380,20 @@ exports.createBooking = async (req, res) => {
     const requestedFlatId = req.body.flat_id ? Number(req.body.flat_id) : null;
     if (requestedFlatId && !authorizedFlatIds.includes(requestedFlatId)) { await t.rollback(); return res.status(403).json({ success: false, message: "Selected flat is not authorized." }); }
     const flatId = requestedFlatId || authorizedFlatIds[0] || null;
+    const currentTenant = flatId
+      ? await FlatMembership.findOne({
+          where: { flat_id: flatId, society_id: societyId, role: "TENANT", is_current: true },
+          attributes: ["user_id"],
+          transaction: t,
+        })
+      : null;
+    if (currentTenant && Number(currentTenant.user_id) !== Number(userId)) {
+      await t.rollback();
+      return res.status(403).json({
+        success: false,
+        message: "This flat is currently occupied by a tenant. Amenities can only be booked by the current tenant.",
+      });
+    }
     const userRecord = await User.findByPk(userId, { attributes: ["resident_type"] });
     const selectedMembership = flatId
       ? await FlatMembership.findOne({ where: { user_id: userId, flat_id: flatId, society_id: societyId, is_current: true }, attributes: ["role"] })
@@ -578,6 +592,15 @@ exports.createBooking = async (req, res) => {
     const unitCount    = bookingUnits({ from_date: fromDate, to_date: toDate, slots: slotList });
     const totalAmount  = applicableRate * unitCount;
 
+    const defaultBank = await getDefaultBankAccount(societyId, t);
+    if (!defaultBank) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Online collection bank account is not configured for this society. Please contact society admin.",
+      });
+    }
+
     const row = await AmenityBooking.create({
       society_id:         societyId,
       amenity_id:         amenityId,
@@ -595,6 +618,7 @@ exports.createBooking = async (req, res) => {
       occupancy_category: occupancyCategory,
       rate_per_hour_snapshot: applicableRate,
       amount: totalAmount,
+      financial_account_id: defaultBank.id,
       terms_accepted: hasActiveRules,
       terms_accepted_at: hasActiveRules ? new Date() : null,
     }, { transaction: t });
@@ -718,15 +742,33 @@ exports.verifyPayment = async (req, res) => {
         }
       }
       const amt = bookingAmount(amenity, b);
+      const existingSuccessPay = await Payment.findOne({
+        where: { amenity_booking_id: b.id, status: "SUCCESS" },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      if (existingSuccessPay || b.payment_status === "PAID") {
+        continue;
+      }
+
+      const socId = b.society_id || req.user.society_id;
+      let accId = b.financial_account_id || null;
+      if (!accId) {
+        const defBank = await getDefaultBankAccount(socId, t);
+        accId = defBank?.id || null;
+      }
+
       await b.update({
         status:             nextStatus,
         payment_status:     "PAID",
         payment_expires_at: null,
+        financial_account_id: accId,
       }, { transaction: t });
 
       await Payment.create({
         amenity_booking_id: b.id,
-        society_id: b.society_id || req.user.society_id,
+        society_id: socId,
+        financial_account_id: accId,
         resident_id: b.user_id,
         amount: amt,
         payment_mode: "UPI",
@@ -735,13 +777,14 @@ exports.verifyPayment = async (req, res) => {
       }, { transaction: t });
 
       await createLedgerEntry({
-        societyId: b.society_id || req.user.society_id,
+        societyId: socId,
         type: "CREDIT",
         source: "AMENITY",
         referenceId: b.id,
         amount: amt,
         entryDate: b.from_date || b.date || new Date().toISOString().slice(0, 10),
         description: `Amenity payment (${amenity?.name || "Amenity"})`,
+        financialAccountId: accId,
         actor: req.user,
         transaction: t,
       });

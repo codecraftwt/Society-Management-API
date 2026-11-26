@@ -38,6 +38,7 @@ const ALL_MODULE_ACTIONS = {
   cleaning_staff: ["view", "create", "edit", "status", "create_passes", "edit_passes", "edit_attendance", "scan"],
   events: ["view", "create", "edit", "delete"],
   rules: ["view", "create", "edit", "delete"],
+  meeting_minutes: ["view", "create", "edit", "delete"],
 };
 
 // Default baseline section enablement per role
@@ -70,6 +71,7 @@ const DEFAULT_SECTION_ENABLEMENT = {
     cleaning_staff: true,
     events: true,
     rules: true,
+    meeting_minutes: true,
   },
   ACCOUNTANT: {
     dashboard: true,

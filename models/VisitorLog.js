@@ -85,6 +85,13 @@ const VisitorLog = sequelize.define(
       allowNull: false,
       defaultValue: false,
     },
+
+    /* Total number of guests arrived (used for GUEST entries). */
+    guest_count: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: null,
+    },
   },
   {
     tableName: "visitorlogs",

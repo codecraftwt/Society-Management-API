@@ -1,4 +1,4 @@
-const { User, Block, HouseHoldMember, Society, FlatMembership } = require("../models");
+const { User, Block, HouseHoldMember, Society, FlatMembership, SocietyFinancialAccount } = require("../models");
 const { getUserOwnedFlatIds, getUserAuthorizedFlatIds } = require("../utils/accessHelpers");
 
 const Bill = require("../models/Bill");
@@ -6,8 +6,10 @@ const Flat = require("../models/Flat");
 const Floor = require("../models/Floor");
 const UserSetting = require("../models/UserSetting");
 const Payment = require("../models/Payment");
+const BillLateFeeWaiver = require("../models/BillLateFeeWaiver");
 const { sendPushNotification } = require("../utils/pushNotification");
-const { createLedgerEntry } = require("../utils/ledgerService");
+const { createLedgerEntry, ensureCashAccount, getDefaultBankAccount } = require("../utils/ledgerService");
+const { calculateLateFee, buildBillLateFeeFields } = require("../utils/lateFeeHelper");
 const sequelize = require("../config/db");
 const notificationService = require("../services/notificationService");
 
@@ -64,8 +66,28 @@ const createBill = async (req, res) => {
       bill_category,
       other_bill_type,
       issue_date,
-      last_pay_date
+      last_pay_date,
+      financial_account_id
     } = req.body;
+
+    const resolveCollectionBank = async (socId) => {
+      if (!socId) return null;
+      if (financial_account_id) {
+        const chosen = await SocietyFinancialAccount.findOne({
+          where: {
+            id: parseInt(financial_account_id, 10),
+            society_id: socId,
+            status: "ACTIVE",
+            account_type: { [Op.ne]: "CASH" },
+          },
+        });
+        if (!chosen) {
+          throw Object.assign(new Error("Selected collection bank account is invalid or inactive."), { statusCode: 400 });
+        }
+        return chosen;
+      }
+      return getDefaultBankAccount(socId);
+    };
 
     const parsedAmount = Number(amount);
     if (amount === undefined || amount === null || amount === "" || isNaN(parsedAmount) || parsedAmount <= 0) {
@@ -109,8 +131,15 @@ const createBill = async (req, res) => {
         });
       }
 
+      const billSocId = req.user?.society_id || flat?.Block?.society_id || null;
+      let collectionBank = null;
+      try {
+        collectionBank = await resolveCollectionBank(billSocId);
+      } catch (bankErr) {
+        return res.status(bankErr.statusCode || 400).json({ message: bankErr.message });
+      }
       const bill = await Bill.create({
-        society_id: req.user?.society_id || flat?.Block?.society_id || null,
+        society_id: billSocId,
         flat_id,
         resident_id: residentId,
         title,
@@ -121,6 +150,7 @@ const createBill = async (req, res) => {
         issue_date: finalIssueDate,
         due_date: finalDueDate,
         last_pay_date: finalDueDate,
+        financial_account_id: collectionBank?.id || null,
       });
 
       const userIdsToNotify = new Set();
@@ -186,6 +216,12 @@ const createBill = async (req, res) => {
       });
 
       const createdBills = [];
+      let collectionBank = null;
+      try {
+        collectionBank = await resolveCollectionBank(req.user.society_id);
+      } catch (bankErr) {
+        return res.status(bankErr.statusCode || 400).json({ message: bankErr.message });
+      }
 
       for (let flat of flats) {
         const activeMember = flat.FlatMemberships?.find(m => m.is_current) || flat.FlatMemberships?.[0];
@@ -205,6 +241,7 @@ const createBill = async (req, res) => {
           issue_date: finalIssueDate,
           due_date: finalDueDate,
           last_pay_date: finalDueDate,
+          financial_account_id: collectionBank?.id || null,
         });
 
         createdBills.push(bill);
@@ -352,7 +389,7 @@ const getSocietyBills = async (req, res) => {
     const paymentInclude = {
       model: Payment,
       required: false,
-      attributes: ["id", "amount", "payment_mode", "payment_date", "source", "status", "resident_id"],
+      attributes: ["id", "amount", "base_amount", "late_fee_amount", "waived_amount", "payment_mode", "payment_date", "confirmed_at", "source", "status", "resident_id"],
       include: [
         {
           model: User,
@@ -363,10 +400,17 @@ const getSocietyBills = async (req, res) => {
       ],
     };
 
+    const waiverInclude = {
+      model: BillLateFeeWaiver,
+      as: "lateFeeWaivers",
+      required: false,
+      attributes: ["id", "waiver_amount", "reason", "waived_by", "created_at"],
+    };
+
     // ── Paginated query ──
     const { count, rows: bills } = await Bill.findAndCountAll({
       where:    billWhere,
-      include:  [flatInclude, paymentInclude],
+      include:  [flatInclude, paymentInclude, waiverInclude],
       order:    [["created_at", "DESC"]],
       limit,
       offset,
@@ -376,8 +420,12 @@ const getSocietyBills = async (req, res) => {
 
     // ── Unfiltered counts for stat strip & tab badges ──
     const allBillsForCounts = await Bill.findAll({
-      attributes: ["id", "status", "amount"],
+      attributes: ["id", "status", "amount", "due_date", "last_pay_date", "late_fee_enabled", "late_fee_type", "late_fee_value", "late_fee_grace_days", "late_fee_max_amount"],
       where: targetFlatIds !== null ? { flat_id: { [Op.in]: targetFlatIds } } : {},
+      include: [
+        { model: BillLateFeeWaiver, as: "lateFeeWaivers", required: false, attributes: ["waiver_amount"] },
+        { model: Payment, required: false, attributes: ["amount", "late_fee_amount", "waived_amount", "status"] },
+      ],
     });
 
     const totalAll                 = allBillsForCounts.length;
@@ -386,15 +434,18 @@ const getSocietyBills = async (req, res) => {
     const totalPendingVerification = allBillsForCounts.filter(b => b.status === "PENDING_VERIFICATION").length;
     const totalRevenue             = allBillsForCounts
       .filter(b => b.status === "PAID")
-      .reduce((s, b) => s + Number(b.amount || 0), 0);
+      .reduce((s, b) => {
+        const settled = (b.Payments || []).find((p) => p.status === "SUCCESS");
+        return s + Number(settled?.amount ?? b.amount ?? 0);
+      }, 0);
     const totalPendingAmount       = allBillsForCounts
       .filter(b => b.status !== "PAID")
-      .reduce((s, b) => s + Number(b.amount || 0), 0);
-    const totalAllAmount           = allBillsForCounts
-      .reduce((s, b) => s + Number(b.amount || 0), 0);
+      .reduce((s, b) => s + calculateLateFee(b, { waivers: b.lateFeeWaivers || [] }).totalPayable, 0);
+    const totalAllAmount           = totalRevenue + totalPendingAmount;
 
     const formattedBills = bills.map((bill) => {
       const b = bill.toJSON ? bill.toJSON() : bill;
+      const settledPayment = (b.Payments || []).find((p) => p.status === "SUCCESS") || null;
       if (b.Flat) {
         const activeMember = b.Flat.FlatMemberships?.find((m) => m.is_current) || b.Flat.FlatMemberships?.[0];
         // Prefer the active membership's user; fall back to the flat's directly
@@ -405,7 +456,10 @@ const getSocietyBills = async (req, res) => {
           b.User = b.Flat.User || null;
         }
       }
-      return b;
+      return {
+        ...b,
+        ...buildBillLateFeeFields(b, { waivers: b.lateFeeWaivers || [], settledPayment }),
+      };
     });
 
     res.status(200).json({
@@ -498,10 +552,23 @@ const getResidentBills = async (req, res) => {
             },
           ],
         },
+        {
+          model: BillLateFeeWaiver,
+          as: "lateFeeWaivers",
+          required: false,
+          attributes: ["id", "waiver_amount", "reason", "waived_by", "created_at"],
+        },
+        {
+          model: Payment,
+          required: false,
+          attributes: ["id", "amount", "base_amount", "late_fee_amount", "waived_amount", "payment_mode", "payment_date", "confirmed_at", "status"],
+        },
       ],
       order:  [["created_at", "DESC"]],
       limit,
       offset,
+      distinct: true,
+      col: "id",
     });
 
     // ── Tab counts ──
@@ -515,12 +582,28 @@ const getResidentBills = async (req, res) => {
     // ── Due amount (only unpaid PENDING bills total, excluding PENDING_VERIFICATION) ──
     const pendingUnpaidBills = await Bill.findAll({
       where:      { flat_id: { [Op.in]: myFlatIds }, status: "PENDING" },
-      attributes: ["amount"],
+      attributes: ["id", "amount", "due_date", "last_pay_date", "status", "late_fee_enabled", "late_fee_type", "late_fee_value", "late_fee_grace_days", "late_fee_max_amount"],
+      include: [{ model: BillLateFeeWaiver, as: "lateFeeWaivers", required: false, attributes: ["waiver_amount"] }],
     });
-    const totalDue = pendingUnpaidBills.reduce((sum, b) => sum + Number(b.amount || 0), 0);
+    const totalDue = pendingUnpaidBills.reduce(
+      (sum, b) => sum + calculateLateFee(b, { waivers: b.lateFeeWaivers || [] }).totalPayable,
+      0
+    );
+
+    const enrichedBills = bills.map((bill) => {
+      const plain = bill.toJSON ? bill.toJSON() : bill;
+      const settledPayment = (plain.Payments || []).find((p) => p.status === "SUCCESS") || null;
+      return {
+        ...plain,
+        ...buildBillLateFeeFields(plain, {
+          waivers: plain.lateFeeWaivers || [],
+          settledPayment,
+        }),
+      };
+    });
 
     res.status(200).json({
-      data: bills,
+      data: enrichedBills,
       pagination: {
         currentPage: page,
         totalPages:  Math.ceil(count / limit),
@@ -579,7 +662,7 @@ const deleteBill = async (req, res) => {
    Transactional: Payment => SUCCESS, Bill => PAID, Ledger => CREDIT.
    Never leaves Bill=PAID without a SUCCESS Payment and a Ledger CREDIT.
 ===== */
-const processConfirmSingleBill = async (bill, reqUser, targetSocietyId) => {
+const processConfirmSingleBill = async (bill, reqUser, targetSocietyId, overrides = {}) => {
   const t = await sequelize.transaction();
   let confirmed = false;
   try {
@@ -597,40 +680,126 @@ const processConfirmSingleBill = async (bill, reqUser, targetSocietyId) => {
     if (!alreadyPaid) {
       const societyId =
         targetSocietyId || reqUser?.society_id || locked.Flat?.Block?.society_id || locked.Flat?.society_id;
-      const residentId = locked.Flat?.resident_id || undefined;
+      const ownerMembership = locked.flat_id
+        ? await FlatMembership.findOne({
+            where: { flat_id: locked.flat_id, role: "OWNER", is_current: true },
+            include: [{ model: User, attributes: ["id", "name"] }],
+            transaction: t,
+          })
+        : null;
+      const residentId = ownerMembership?.user_id || locked.resident_id || locked.Flat?.resident_id || undefined;
       const source = locked.type === "MAINTENANCE" ? "MAINTENANCE" : "BILL";
 
+      // 0. Compute authoritative late fee breakdown inside transaction.
+      const waivers = await BillLateFeeWaiver.findAll({
+        where: { bill_id: locked.id },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      const feeCalc = calculateLateFee(locked, { waivers });
+
       // 1. Mark the Payment as SUCCESS (create if missing for full audit).
-      const payment = await Payment.findOne({ where: { bill_id: locked.id }, transaction: t });
+      const payment = await Payment.findOne({
+        where: { bill_id: locked.id },
+        order: [["id", "DESC"]],
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+
+      const resolvedMode = overrides.payment_mode
+        ? String(overrides.payment_mode).toUpperCase()
+        : payment?.payment_mode || "UPI";
+
+      let resolvedAccountId = null;
+      if (resolvedMode === "CASH") {
+        const cashAcc = await ensureCashAccount(societyId, t);
+        resolvedAccountId = cashAcc?.id || null;
+      } else {
+        resolvedAccountId =
+          (overrides.financial_account_id ? parseInt(overrides.financial_account_id, 10) : null) ||
+          payment?.financial_account_id ||
+          locked.financial_account_id ||
+          (await getDefaultBankAccount(societyId, t))?.id ||
+          null;
+      }
+
+      let finalCollectedAmount = feeCalc.totalPayable;
+      let finalLateFeeAmount = feeCalc.outstandingLateFee;
+      let finalWaivedAmount = feeCalc.waivedAmount;
+
       if (payment) {
-        await payment.update(
-          { status: "SUCCESS", society_id: societyId, resident_id: residentId, source },
-          { transaction: t }
-        );
+        if (payment.status === "PENDING") {
+          // Resident already submitted/captured this exact payment amount.
+          finalCollectedAmount = Number(payment.amount ?? feeCalc.totalPayable);
+          finalLateFeeAmount = payment.late_fee_amount != null
+            ? Number(payment.late_fee_amount)
+            : Math.max(0, Math.round((finalCollectedAmount - feeCalc.baseAmount) * 100) / 100);
+          finalWaivedAmount = payment.waived_amount != null ? Number(payment.waived_amount) : feeCalc.waivedAmount;
+        }
+        if (payment.status !== "SUCCESS") {
+          await payment.update(
+            {
+              status: "SUCCESS",
+              society_id: societyId,
+              resident_id: payment.resident_id || residentId,
+              source,
+              amount: finalCollectedAmount,
+              base_amount: payment.base_amount ?? feeCalc.baseAmount,
+              late_fee_amount: finalLateFeeAmount,
+              waived_amount: finalWaivedAmount,
+              payment_mode: resolvedMode,
+              financial_account_id: resolvedAccountId,
+              confirmed_by: reqUser?.id || null,
+              confirmed_at: new Date(),
+            },
+            { transaction: t }
+          );
+        } else {
+          finalCollectedAmount = Number(payment.amount ?? feeCalc.totalPayable);
+          finalLateFeeAmount = Number(payment.late_fee_amount || 0);
+        }
       } else {
         await Payment.create({
           bill_id: locked.id,
           society_id: societyId,
+          financial_account_id: resolvedAccountId,
           resident_id: residentId,
-          amount: locked.amount,
-          payment_mode: "UPI",
+          amount: finalCollectedAmount,
+          base_amount: feeCalc.baseAmount,
+          late_fee_amount: finalLateFeeAmount,
+          waived_amount: finalWaivedAmount,
+          payment_mode: resolvedMode,
           source,
           status: "SUCCESS",
+          confirmed_by: reqUser?.id || null,
+          confirmed_at: new Date(),
         }, { transaction: t });
       }
 
-      // 2. Mark bill as PAID
+      // 2. Mark bill as PAID (preserve original Bill.amount)
       await locked.update({ status: "PAID" }, { transaction: t });
 
       // 3. Post a single Ledger CREDIT (idempotent via unique DB key).
+      const payerFlat = locked.flat_id ? await Flat.findByPk(locked.flat_id, { attributes: ["flat_number"], transaction: t }) : null;
+      const payerUser =
+        ownerMembership?.User ||
+        (residentId ? await User.findByPk(residentId, { attributes: ["name"], transaction: t }) : null);
+      const payerText = [payerUser?.name, payerFlat?.flat_number ? `Flat ${payerFlat.flat_number}` : null].filter(Boolean).join(" · ");
+      const lateSuffix = finalLateFeeAmount > 0 ? ` (incl. ₹${finalLateFeeAmount} late fee)` : "";
+      const billDesc =
+        source === "MAINTENANCE"
+          ? `Maintenance (${locked.billing_month || locked.title || "Monthly"}) paid${lateSuffix}${payerText ? ` by ${payerText}` : ""}`
+          : `${locked.title || "Society Bill"} paid${lateSuffix}${payerText ? ` by ${payerText}` : ""}`;
+
       await createLedgerEntry({
         societyId,
         type: "CREDIT",
         source,
         referenceId: locked.id,
-        amount: locked.amount,
+        amount: finalCollectedAmount,
         entryDate: new Date().toISOString().slice(0, 10),
-        description: source === "MAINTENANCE" ? `Maintenance payment confirmed (${locked.title})` : `Bill payment confirmed (${locked.title})`,
+        description: billDesc,
+        financialAccountId: resolvedAccountId,
         actor: reqUser,
         transaction: t,
       });
@@ -732,7 +901,10 @@ const confirmPayment = async (req, res) => {
     }
 
     const targetSocietyId = scope.societyId || bill.Flat?.Block?.society_id || req.user.society_id;
-    await processConfirmSingleBill(bill, req.user, targetSocietyId);
+    await processConfirmSingleBill(bill, req.user, targetSocietyId, {
+      payment_mode: req.body?.payment_mode,
+      financial_account_id: req.body?.financial_account_id,
+    });
 
     return res.status(200).json({
       success: true,

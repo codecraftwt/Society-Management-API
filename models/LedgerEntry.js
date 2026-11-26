@@ -15,10 +15,23 @@ const LedgerEntry = sequelize.define(
   {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
     society_id: { type: DataTypes.INTEGER, allowNull: false },
+    financial_account_id: { type: DataTypes.INTEGER, allowNull: true },
+    fd_transaction_id: { type: DataTypes.INTEGER, allowNull: true },
     type: { type: DataTypes.ENUM("CREDIT", "DEBIT"), allowNull: false },
     // Which financial stream produced this entry.
     source: {
-      type: DataTypes.ENUM("BILL", "MAINTENANCE", "AMENITY", "EXPENSE", "ADJUSTMENT"),
+      type: DataTypes.ENUM(
+        "BILL",
+        "MAINTENANCE",
+        "AMENITY",
+        "EXPENSE",
+        "ADJUSTMENT",
+        "CASH_IN",
+        "ACCOUNT_TRANSFER",
+        "FD_TRANSFER",
+        "FD_MATURITY",
+        "FD_INTEREST"
+      ),
       allowNull: false,
     },
     // Bill id (BILL/MAINTENANCE), amenity booking id (AMENITY) or expense id (EXPENSE).

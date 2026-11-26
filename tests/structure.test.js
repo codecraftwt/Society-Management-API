@@ -157,18 +157,6 @@ describe("Flats API", () => {
     expectOk(res);
   });
 
-  it("GET /api/flats/neighbours succeeds for a resident", async () => {
-    const { headers } = await login("resident");
-    const res = await request(app).get("/api/flats/neighbours").set(headers);
-    expect([200, 400, 404]).toContain(res.status);
-  });
-
-  it("GET /api/flats/neighbours is forbidden for admin", async () => {
-    const { headers } = await login("admin");
-    const res = await request(app).get("/api/flats/neighbours").set(headers);
-    expectForbidden(res);
-  });
-
   it("GET /api/flats/filter requires a valid blockId", async () => {
     const { headers } = await login("admin");
     const res = await request(app).get("/api/flats/filter").set(headers);

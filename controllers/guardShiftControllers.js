@@ -1,5 +1,6 @@
 const GuardShift = require("../models/GuardShift");
 const GuardShiftTiming = require("../models/GuardShiftTiming");
+const GuardShiftPlace = require("../models/GuardShiftPlace");
 const User = require("../models/User");
 const { Op } = require("sequelize");
 const {
@@ -20,10 +21,36 @@ const {
 const datesOverlap = (aStart, aEnd, bStart, bEnd) =>
   aStart <= bEnd && aEnd >= bStart;
 
+const SHIFT_PLACE_INCLUDE = {
+  model: GuardShiftPlace,
+  as: "shiftPlace",
+  attributes: ["id", "name", "description", "is_active"],
+};
+
+const resolveShiftPlaceId = async (rawPlaceId, societyId) => {
+  if (rawPlaceId === undefined) return undefined;
+  if (rawPlaceId === null || rawPlaceId === "") return null;
+  const placeId = parseInt(rawPlaceId, 10);
+  if (!Number.isInteger(placeId) || placeId <= 0) {
+    const err = new Error("Invalid shift place selected.");
+    err.statusCode = 400;
+    throw err;
+  }
+  const where = { id: placeId };
+  if (societyId) where.society_id = societyId;
+  const place = await GuardShiftPlace.findOne({ where });
+  if (!place) {
+    const err = new Error("Selected shift place not found for this society.");
+    err.statusCode = 400;
+    throw err;
+  }
+  return place.id;
+};
+
 /* === UPSERT SHIFT (create or update — overlap validation) === */
 const upsertShift = async (req, res) => {
   try {
-    const { guard_id, shift_type, start_date, end_date } = req.body;
+    const { guard_id, shift_type, shift_place_id, start_date, end_date } = req.body;
     let society_id = req.user.society_id;
 
     /* SUPER_ADMIN isn't scoped to a society — resolve the guard's own society */
@@ -58,17 +85,27 @@ const upsertShift = async (req, res) => {
       });
     }
 
+    const resolvedPlaceId = await resolveShiftPlaceId(shift_place_id, society_id);
+
     /* No overlap — create new record */
     const shift = await GuardShift.create({
       guard_id,
       society_id,
       shift_type,
+      shift_place_id: resolvedPlaceId ?? null,
       start_date,
       end_date,
     });
 
-    res.json(shift);
+    const created = await GuardShift.findByPk(shift.id, {
+      include: [SHIFT_PLACE_INCLUDE],
+    });
+
+    res.json(created || shift);
   } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ message: err.message });
+    }
     if (err.name === "SequelizeUniqueConstraintError") {
       return res.status(409).json({
         message: "A shift with this shift type already exists for this guard. Update the existing shift instead.",
@@ -87,10 +124,12 @@ const updateShift = async (req, res) => {
       return res.status(404).json({ message: "Shift not found" });
     }
 
-    const { shift_type, start_date, end_date } = req.body;
+    const { shift_type, shift_place_id, start_date, end_date } = req.body;
     const newType  = shift_type || shift.shift_type;
     const newStart = start_date || shift.start_date;
     const newEnd   = end_date   || shift.end_date;
+    const resolvedPlaceId = await resolveShiftPlaceId(shift_place_id, shift.society_id);
+    const newPlaceId = resolvedPlaceId !== undefined ? resolvedPlaceId : shift.shift_place_id;
 
     if (newStart > newEnd) {
       return res.status(400).json({ message: "start_date must be on or before end_date" });
@@ -116,9 +155,20 @@ const updateShift = async (req, res) => {
       });
     }
 
-    await shift.update({ shift_type: newType, start_date: newStart, end_date: newEnd });
-    res.json(shift);
+    await shift.update({
+      shift_type: newType,
+      shift_place_id: newPlaceId,
+      start_date: newStart,
+      end_date: newEnd,
+    });
+    const updated = await GuardShift.findByPk(shift.id, {
+      include: [SHIFT_PLACE_INCLUDE],
+    });
+    res.json(updated || shift);
   } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ message: err.message });
+    }
     if (err.name === "SequelizeUniqueConstraintError") {
       return res.status(409).json({
         message: "A shift with this shift type already exists for this guard. Update the existing shift instead.",
@@ -153,6 +203,7 @@ const getMyShift = async (req, res) => {
 
     const shifts = await GuardShift.findAll({
       where,
+      include: [SHIFT_PLACE_INCLUDE],
       order: [["updatedAt", "DESC"]],
     });
 
@@ -228,6 +279,7 @@ const getSocietyShifts = async (req, res) => {
   try {
     const shifts = await GuardShift.findAll({
       where: { society_id: req.user.society_id },
+      include: [SHIFT_PLACE_INCLUDE],
       order: [["start_date", "DESC"]],
     });
     res.json(shifts);
@@ -248,6 +300,7 @@ const getGuardShiftByGuard = async (req, res) => {
 
     const shifts = await GuardShift.findAll({
       where,
+      include: [SHIFT_PLACE_INCLUDE],
       order: [["shift_type", "ASC"]],
     });
 
@@ -335,6 +388,138 @@ const upsertShiftTimings = async (req, res) => {
 };
 
 
+/* ─────────────────────────────────────────────
+   SHIFT PLACES (customizable guard duty posts / gates)
+   ───────────────────────────────────────────── */
+const listShiftPlaces = async (req, res) => {
+  try {
+    const where = {};
+    if (String(req.user.role) !== "SUPER_ADMIN") {
+      where.society_id = req.user.society_id;
+    } else if (req.query.society_id && req.query.society_id !== "ALL") {
+      where.society_id = parseInt(req.query.society_id, 10);
+    }
+
+    if (req.query.activeOnly === "true") {
+      where.is_active = true;
+    }
+
+    const places = await GuardShiftPlace.findAll({
+      where,
+      order: [["name", "ASC"]],
+    });
+
+    res.json({ success: true, places });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+const createShiftPlace = async (req, res) => {
+  try {
+    const societyId = resolveSocietyId(req);
+    const name = String(req.body?.name || "").trim();
+    if (!name) {
+      return res.status(400).json({ message: "Shift place name is required." });
+    }
+    if (name.length > 100) {
+      return res.status(400).json({ message: "Shift place name must be 100 characters or less." });
+    }
+
+    const description = req.body?.description != null ? String(req.body.description).trim() || null : null;
+
+    const existing = await GuardShiftPlace.findOne({
+      where: { society_id: societyId, name },
+    });
+    if (existing) {
+      return res.status(409).json({ message: "A shift place with this name already exists." });
+    }
+
+    const place = await GuardShiftPlace.create({
+      society_id: societyId,
+      name,
+      description,
+      is_active: req.body?.is_active !== undefined ? Boolean(req.body.is_active) : true,
+    });
+
+    res.status(201).json({ success: true, place, message: "Shift place created." });
+  } catch (err) {
+    if (err.name === "SequelizeUniqueConstraintError") {
+      return res.status(409).json({ message: "A shift place with this name already exists." });
+    }
+    res.status(400).json({ message: err.message });
+  }
+};
+
+const updateShiftPlace = async (req, res) => {
+  try {
+    const place = await GuardShiftPlace.findByPk(req.params.id);
+    if (!place) {
+      return res.status(404).json({ message: "Shift place not found." });
+    }
+
+    if (String(req.user.role) !== "SUPER_ADMIN" && place.society_id !== req.user.society_id) {
+      return res.status(403).json({ message: "Not authorized to update this shift place." });
+    }
+
+    const updates = {};
+    if (req.body?.name !== undefined) {
+      const name = String(req.body.name || "").trim();
+      if (!name) {
+        return res.status(400).json({ message: "Shift place name cannot be empty." });
+      }
+      if (name.length > 100) {
+        return res.status(400).json({ message: "Shift place name must be 100 characters or less." });
+      }
+      const dup = await GuardShiftPlace.findOne({
+        where: {
+          society_id: place.society_id,
+          name,
+          id: { [Op.ne]: place.id },
+        },
+      });
+      if (dup) {
+        return res.status(409).json({ message: "A shift place with this name already exists." });
+      }
+      updates.name = name;
+    }
+
+    if (req.body?.description !== undefined) {
+      updates.description = req.body.description != null ? String(req.body.description).trim() || null : null;
+    }
+
+    if (req.body?.is_active !== undefined) {
+      updates.is_active = Boolean(req.body.is_active);
+    }
+
+    await place.update(updates);
+    res.json({ success: true, place, message: "Shift place updated." });
+  } catch (err) {
+    if (err.name === "SequelizeUniqueConstraintError") {
+      return res.status(409).json({ message: "A shift place with this name already exists." });
+    }
+    res.status(400).json({ message: err.message });
+  }
+};
+
+const deleteShiftPlace = async (req, res) => {
+  try {
+    const place = await GuardShiftPlace.findByPk(req.params.id);
+    if (!place) {
+      return res.status(404).json({ message: "Shift place not found." });
+    }
+
+    if (String(req.user.role) !== "SUPER_ADMIN" && place.society_id !== req.user.society_id) {
+      return res.status(403).json({ message: "Not authorized to delete this shift place." });
+    }
+
+    await place.destroy();
+    res.json({ success: true, message: "Shift place deleted." });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 module.exports = {
   upsertShift,
   updateShift,
@@ -344,4 +529,8 @@ module.exports = {
   getGuardShiftByGuard,
   getShiftTimingsCtrl,
   upsertShiftTimings,
+  listShiftPlaces,
+  createShiftPlace,
+  updateShiftPlace,
+  deleteShiftPlace,
 };

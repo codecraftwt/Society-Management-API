@@ -15,6 +15,10 @@ const LedgerEntry = require("../models/LedgerEntry");
 const Payment    = require("../models/Payment");
 const Expense    = require("../models/Expense");
 const AmenityBooking = require("../models/AmenityBooking");
+const SocietyFinancialAccount = require("../models/SocietyFinancialAccount");
+const ExpenseCategory = require("../models/ExpenseCategory");
+const { ensureCashAccount } = require("../utils/ledgerService");
+const { formatAccount } = require("./financialAccountControllers");
 
 const PAGE_LIMIT = 15;
 
@@ -372,25 +376,47 @@ const getFinancialReport = async (req, res) => {
       };
     }
 
-    const [creditEntries, debitEntries] = await Promise.all([
+    const [opCreditEntries, opDebitEntries, allCreditsForBal, allDebitsForBal] = await Promise.all([
       LedgerEntry.findAll({
-        where: { ...ledgerWhere, type: "CREDIT", status: { [Op.ne]: "REVERSED" } },
+        where: {
+          ...ledgerWhere,
+          type: "CREDIT",
+          source: { [Op.in]: ["BILL", "MAINTENANCE", "AMENITY", "FD_INTEREST", "CASH_IN"] },
+          status: "POSTED",
+          reversal_of_id: null,
+        },
         attributes: ["amount", "source"],
       }),
       LedgerEntry.findAll({
-        where: { ...ledgerWhere, type: "DEBIT", status: { [Op.ne]: "REVERSED" } },
+        where: {
+          ...ledgerWhere,
+          type: "DEBIT",
+          source: "EXPENSE",
+          status: "POSTED",
+          reversal_of_id: null,
+        },
         attributes: ["amount", "source"],
+      }),
+      LedgerEntry.findAll({
+        where: { ...ledgerWhere, type: "CREDIT" },
+        attributes: ["amount"],
+      }),
+      LedgerEntry.findAll({
+        where: { ...ledgerWhere, type: "DEBIT" },
+        attributes: ["amount"],
       }),
     ]);
 
-    const income = { BILL: 0, MAINTENANCE: 0, AMENITY: 0 };
-    creditEntries.forEach((e) => {
+    const income = { BILL: 0, MAINTENANCE: 0, AMENITY: 0, FD_INTEREST: 0, CASH_IN: 0 };
+    opCreditEntries.forEach((e) => {
       const src = e.source || "BILL";
-      income[src in income ? src : "BILL"] += Number(e.amount);
+      if (src in income) income[src] += Number(e.amount);
     });
-    const credited   = creditEntries.reduce((s, e) => s + Number(e.amount), 0);
-    const debited    = debitEntries.reduce((s, e) => s + Number(e.amount), 0);
-    const currentBalance = credited - debited;
+    const credited   = opCreditEntries.reduce((s, e) => s + Number(e.amount), 0);
+    const debited    = opDebitEntries.reduce((s, e) => s + Number(e.amount), 0);
+    const allCredBal = allCreditsForBal.reduce((s, e) => s + Number(e.amount), 0);
+    const allDebBal  = allDebitsForBal.reduce((s, e) => s + Number(e.amount), 0);
+    const currentBalance = Math.round((allCredBal - allDebBal) * 100) / 100;
 
     const formattedBills = bills.map((bill) => {
       const b = bill.toJSON ? bill.toJSON() : bill;
@@ -431,15 +457,28 @@ const getPaymentReport = async (req, res) => {
     const offset = (page - 1) * limit;
 
     const { status, source, payment_mode, fromDate, toDate,
-            block_id, floor_id, flat_id, society_id } = req.query;
+            block_id, floor_id, flat_id, society_id, financial_account_id } = req.query;
 
     const { isSuperAdmin, societyId: targetSocId } = resolveReportScope(req, society_id);
 
     const where = {};
     if (targetSocId !== null) where.society_id = targetSocId;
     if (status)          where.status = status;
+    else                 where.status = { [Op.ne]: "INITIATED" };
     if (source)          where.source = source;
     if (payment_mode)    where.payment_mode = payment_mode;
+    if (financial_account_id && financial_account_id !== "ALL") {
+      const upper = String(financial_account_id).toUpperCase();
+      if (upper === "CASH" && targetSocId) {
+        const cashAcc = await ensureCashAccount(targetSocId);
+        if (cashAcc) where.financial_account_id = cashAcc.id;
+      } else if (upper === "LEGACY") {
+        where.financial_account_id = null;
+      } else {
+        const accId = parseInt(financial_account_id, 10);
+        if (Number.isInteger(accId) && accId > 0) where.financial_account_id = accId;
+      }
+    }
 
     const win = dateWindow(fromDate, toDate);
     if (win) where.payment_date = win;
@@ -491,6 +530,7 @@ const getPaymentReport = async (req, res) => {
       where,
       include: [
         { model: Society, as: "society", required: false, attributes: ["id", "name"] },
+        { model: SocietyFinancialAccount, as: "financialAccount", required: false, attributes: ["id", "account_name", "account_type", "bank_name", "account_number"] },
         { model: User, as: "resident", required: false, attributes: ["id", "name", "email", "phone"] },
         {
           model: Bill,
@@ -544,8 +584,14 @@ const getPaymentReport = async (req, res) => {
       .filter((p) => p.status === "PENDING")
       .reduce((s, p) => s + Number(p.amount), 0);
 
+    const formattedPayments = payments.map((p) => {
+      const j = p.toJSON ? p.toJSON() : { ...p };
+      if (j.financialAccount) j.financialAccount = formatAccount(j.financialAccount);
+      return j;
+    });
+
     res.json({
-      data: payments,
+      data: formattedPayments,
       pagination: { currentPage: page, totalPages: Math.ceil(count / limit), totalItems: count, limit },
       counts: {
         total: all.length,
@@ -576,7 +622,7 @@ const getExpenseReport = async (req, res) => {
     const limit  = Math.min(100, parseInt(req.query.limit) || PAGE_LIMIT);
     const offset = (page - 1) * limit;
 
-    const { status, paid_by, payment_mode, fromDate, toDate, society_id } = req.query;
+    const { status, paid_by, payment_mode, fromDate, toDate, society_id, financial_account_id, expense_category_id } = req.query;
 
     const { isSuperAdmin, societyId: targetSocId } = resolveReportScope(req, society_id);
 
@@ -585,13 +631,30 @@ const getExpenseReport = async (req, res) => {
     if (status)       where.status = status;
     if (paid_by)      where.paid_by = paid_by;
     if (payment_mode) where.payment_mode = payment_mode;
+    if (expense_category_id) where.expense_category_id = parseInt(expense_category_id, 10);
+    if (financial_account_id && financial_account_id !== "ALL") {
+      const upper = String(financial_account_id).toUpperCase();
+      if (upper === "CASH" && targetSocId) {
+        const cashAcc = await ensureCashAccount(targetSocId);
+        if (cashAcc) where.financial_account_id = cashAcc.id;
+      } else if (upper === "LEGACY") {
+        where.financial_account_id = null;
+      } else {
+        const accId = parseInt(financial_account_id, 10);
+        if (Number.isInteger(accId) && accId > 0) where.financial_account_id = accId;
+      }
+    }
 
     const win = dateWindow(fromDate, toDate);
     if (win) where.payment_date = win;
 
     const { count, rows: expenses } = await Expense.findAndCountAll({
       where,
-      include: [{ model: Society, as: "society", required: false, attributes: ["id", "name"] }],
+      include: [
+        { model: Society, as: "society", required: false, attributes: ["id", "name"] },
+        { model: SocietyFinancialAccount, as: "financialAccount", required: false, attributes: ["id", "account_name", "account_type", "bank_name", "account_number"] },
+        { model: ExpenseCategory, as: "category", required: false, attributes: ["id", "name"] },
+      ],
       order: [["payment_date", "DESC"], ["id", "DESC"]],
       limit,
       offset,
@@ -604,8 +667,14 @@ const getExpenseReport = async (req, res) => {
     const posted = all.filter((e) => e.status === "POSTED");
     const voided = all.filter((e) => e.status === "VOID");
 
+    const formattedExpenses = expenses.map((e) => {
+      const j = e.toJSON ? e.toJSON() : { ...e };
+      if (j.financialAccount) j.financialAccount = formatAccount(j.financialAccount);
+      return j;
+    });
+
     res.json({
-      data: expenses,
+      data: formattedExpenses,
       pagination: { currentPage: page, totalPages: Math.ceil(count / limit), totalItems: count, limit },
       counts: {
         total: all.length,
